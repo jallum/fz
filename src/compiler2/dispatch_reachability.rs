@@ -11,7 +11,7 @@ use crate::dispatch_matrix::{
 };
 use crate::ground_value::{DispatchShape, GroundValue};
 
-use super::types::{Ty, Types};
+use super::types::{KeyAt, MapKey, Ty, Types};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DispatchReachability {
@@ -472,14 +472,14 @@ pub(crate) fn project_subject(
     match &projection.kind {
         ProjectionKind::TupleField(index) => types.tuple_field_type(&source, *index as usize),
         ProjectionKind::StructField(field) => types
-            .field_lookup(&source, &crate::types::MapKey::Atom(field.clone()))
+            .value_at(&source, &KeyAt::Exact(MapKey::Atom(field.clone())))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::ListHead => types.list_element_type(&source),
         ProjectionKind::ListTail => types.list_tail_type(&source),
         ProjectionKind::MapValue { key } => key
             .as_const()
             .and_then(GroundValue::as_map_key)
-            .and_then(|key| types.field_lookup(&source, &key))
+            .and_then(|key| types.value_at(&source, &KeyAt::Exact(key)))
             .unwrap_or_else(|| types.any()),
         ProjectionKind::BitstringField(extraction) => match extraction.spec.kind {
             BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => types.int(),

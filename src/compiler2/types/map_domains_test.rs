@@ -2,7 +2,7 @@
 //! of key. These tests state what the lattice answers across fields and
 //! domains: an absent key satisfies a domain, a present one must fit it.
 
-use super::{MapDomain, MapKey, MapTypeEntry, MapTypeKey, Ty, Types};
+use super::{KeyAt, MapDomain, MapKey, MapTypeEntry, MapTypeKey, Ty, Types};
 
 fn domain(t: &mut Types, kind: MapDomain, value: Ty) -> Ty {
     t.map_of_entries(&[MapTypeEntry {
@@ -206,51 +206,235 @@ fn a_key_kind_is_read_from_a_key_type() {
     assert_eq!(atoms.domains, vec![MapDomain::Atom]);
 }
 
+fn exact(name: &str) -> KeyAt {
+    KeyAt::Exact(MapKey::Atom(name.to_string()))
+}
+
+/// `%{required(name) => value}` (or optional): one named atom field, every
+/// domain left open.
+fn named(t: &mut Types, name: &str, value: Ty) -> Ty {
+    field(t, name, value, false)
+}
+
+fn assert_value(t: &mut Types, read: Option<Ty>, expected: Ty, intent: &str) {
+    let read = read.unwrap_or_else(|| panic!("{intent}: the lookup answered None"));
+    assert!(
+        t.is_equivalent(&read, &expected),
+        "{intent}: read `{}`, expected `{}`",
+        t.display(&read),
+        t.display(&expected),
+    );
+}
+
+// Census row (a): a literal key the map names.
+
 #[test]
-fn reading_a_key_known_by_type_answers_its_domain_beside_nil() {
+fn a_named_required_field_reads_its_type_and_cannot_miss() {
     let mut t = Types::new();
-    let (binary, int, nil) = (t.str_t(), t.int(), t.nil());
-    let by_binary = domain(&mut t, MapDomain::Binary, int);
+    let int = t.int();
+    let map = named(&mut t, "a", int);
 
-    let read = t.domain_lookup(&by_binary, &binary).expect("a binary is a kind of key");
+    let read = t.value_at(&map, &exact("a"));
 
-    let expected = t.union(int, nil);
-    assert!(t.is_equivalent(&read, &expected));
+    assert_value(&mut t, read, int, "a named field answers its own type");
+    assert!(!t.can_miss(&map, &exact("a")), "a required field is always there");
 }
 
 #[test]
-fn reading_a_key_of_a_kind_the_map_leaves_free_answers_any() {
+fn a_named_optional_field_reads_its_type_without_nil_and_can_miss() {
+    let mut t = Types::new();
+    let binary = t.str_t();
+    let map = field(&mut t, "b", binary, true);
+
+    let read = t.value_at(&map, &exact("b"));
+
+    assert_value(
+        &mut t,
+        read,
+        binary,
+        "the value WHEN PRESENT: absence is the caller's `nil`, not the lookup's",
+    );
+    assert!(t.can_miss(&map, &exact("b")), "an optional field may be absent");
+}
+
+// Census row (b): a literal key the map does not name.
+
+#[test]
+fn an_atom_the_map_does_not_name_reads_the_atom_domain_and_can_miss() {
+    let mut t = Types::new();
+    let int = t.int();
+    let by_atom = domain(&mut t, MapDomain::Atom, int);
+
+    let read = t.value_at(&by_atom, &exact("zzz"));
+
+    assert_value(&mut t, read, int, "an unnamed atom key is held by the atom domain");
+    assert!(t.can_miss(&by_atom, &exact("zzz")), "a domain never requires a key");
+}
+
+#[test]
+fn an_atom_a_map_leaves_unconstrained_reads_any() {
+    let mut t = Types::new();
+    let int = t.int();
+    let any = t.any();
+    let closed_looking = named(&mut t, "a", int);
+
+    let read = t.value_at(&closed_looking, &exact("zzz"));
+
+    assert_value(
+        &mut t,
+        read,
+        any,
+        "a written map type is open: other keys hold anything",
+    );
+    assert!(t.can_miss(&closed_looking, &exact("zzz")));
+}
+
+// Census row (c): a key known only by its type, a binary.
+
+#[test]
+fn a_binary_key_reads_the_binary_domain_without_nil_and_can_miss() {
+    let mut t = Types::new();
+    let (binary, int) = (t.str_t(), t.int());
+    let by_binary = domain(&mut t, MapDomain::Binary, int);
+
+    let read = t.value_at(&by_binary, &KeyAt::OfType(binary));
+
+    assert_value(&mut t, read, int, "a binary key addresses the binary domain");
+    assert!(
+        t.can_miss(&by_binary, &KeyAt::OfType(binary)),
+        "a key known by its type may be absent"
+    );
+}
+
+// Census row (d): a non-literal key of a known type.
+
+#[test]
+fn a_key_of_a_kind_the_map_leaves_free_reads_any() {
     let mut t = Types::new();
     let (int, atom) = (t.int(), t.atom());
     let by_binary = domain(&mut t, MapDomain::Binary, int);
-
-    let read = t.domain_lookup(&by_binary, &atom).expect("an atom is a kind of key");
-
     let any = t.any();
-    assert!(t.is_equivalent(&read, &any));
+
+    let read = t.value_at(&by_binary, &KeyAt::OfType(atom));
+
+    assert_value(&mut t, read, any, "the map says nothing about atom keys");
 }
 
 #[test]
-fn reading_an_atom_key_joins_the_named_atom_fields_with_the_atom_domain() {
+fn an_atom_key_type_joins_the_named_atom_fields_with_the_atom_domain() {
     let mut t = Types::new();
-    let (int, float, atom, nil) = (t.int(), t.float(), t.atom(), t.nil());
-    let named = MapTypeEntry {
+    let (int, float, atom) = (t.int(), t.float(), t.atom());
+    let named_x = MapTypeEntry {
         key: MapTypeKey::Literal(MapKey::Atom("x".to_string())),
         optional: false,
         value: int,
     };
-    let atoms = MapTypeEntry {
+    let by_atom = MapTypeEntry {
         key: MapTypeKey::Domain(MapDomain::Atom),
         optional: true,
         value: float,
     };
-    let map = t.map_of_entries(&[named, atoms]);
+    let map = t.map_of_entries(&[named_x, by_atom]);
 
-    let read = t.domain_lookup(&map, &atom).expect("an atom is a kind of key");
+    let read = t.value_at(&map, &KeyAt::OfType(atom));
 
     let number = t.union(int, float);
-    let expected = t.union(number, nil);
-    assert!(t.is_equivalent(&read, &expected));
+    assert_value(&mut t, read, number, "any atom may be `:x` or another atom");
+}
+
+#[test]
+fn a_key_type_naming_one_atom_reads_that_field() {
+    let mut t = Types::new();
+    let int = t.int();
+    let map = named(&mut t, "a", int);
+    let only_a = t.atom_lit("a");
+
+    let read = t.value_at(&map, &KeyAt::OfType(only_a));
+
+    assert_value(&mut t, read, int, "a pinned variable known to be `:a` reads field `a`");
+}
+
+// Census row (e): a key nobody knows.
+
+#[test]
+fn a_key_that_is_no_kind_of_key_has_no_answer() {
+    let mut t = Types::new();
+    let int = t.int();
+    let by_binary = domain(&mut t, MapDomain::Binary, int);
+    let unsolved = t.param_alpha(0);
+
+    assert_eq!(
+        t.value_at(&by_binary, &KeyAt::OfType(unsolved)),
+        None,
+        "a type variable is not a kind of key"
+    );
+}
+
+#[test]
+fn a_key_nothing_is_known_of_has_no_answer_and_the_reader_says_any() {
+    let mut t = Types::new();
+    let (int, any) = (t.int(), t.any());
+    let by_binary = domain(&mut t, MapDomain::Binary, int);
+
+    assert_eq!(
+        t.value_at(&by_binary, &KeyAt::OfType(any)),
+        None,
+        "`any` is not a kind of key: the reader falls back to `any`"
+    );
+}
+
+// Census row (f): a union of maps.
+
+#[test]
+fn a_union_of_maps_joins_what_each_member_holds() {
+    let mut t = Types::new();
+    let (int, binary) = (t.int(), t.str_t());
+    let first = named(&mut t, "a", int);
+    let second = named(&mut t, "a", binary);
+    let either = t.union(first, second);
+
+    let read = t.value_at(&either, &exact("a"));
+
+    let expected = t.union(int, binary);
+    assert_value(&mut t, read, expected, "each member holds its own `a`");
+    assert!(!t.can_miss(&either, &exact("a")), "every member requires `a`");
+}
+
+#[test]
+fn a_union_whose_member_does_not_name_the_key_reads_any_and_can_miss() {
+    let mut t = Types::new();
+    let (int, binary, any) = (t.int(), t.str_t(), t.any());
+    let has_a = named(&mut t, "a", int);
+    let has_b = named(&mut t, "b", binary);
+    let either = t.union(has_a, has_b);
+
+    let read = t.value_at(&either, &exact("a"));
+
+    assert_value(&mut t, read, any, "the second member is open at `a`");
+    assert!(t.can_miss(&either, &exact("a")), "one member lacks `a`");
+}
+
+// Census row (g): any, and what is no map.
+
+#[test]
+fn any_reads_any_and_can_miss() {
+    let mut t = Types::new();
+    let any = t.any();
+
+    let read = t.value_at(&any, &exact("a"));
+
+    assert_value(&mut t, read, any, "an unknown value may be a map holding anything");
+    assert!(t.can_miss(&any, &exact("a")), "an arbitrary map proves nothing");
+}
+
+#[test]
+fn a_type_with_no_map_in_it_holds_no_key() {
+    let mut t = Types::new();
+    let int = t.int();
+
+    assert_eq!(t.value_at(&int, &exact("a")), None, "no member can hold the key");
+    assert_eq!(t.value_at(&int, &KeyAt::OfType(int)), None);
+    assert!(t.can_miss(&int, &exact("a")), "a non-map has no keys");
 }
 
 #[test]
@@ -283,9 +467,7 @@ fn updating_at_an_atom_key_known_by_type_widens_named_atom_fields_and_leaves_oth
     let number = t.union(int, float);
     let widened_named = field(&mut t, "x", number, false);
     let expected = t.intersect(widened_named, by_binary);
-    let read = t
-        .field_lookup(&updated, &MapKey::Atom("x".to_string()))
-        .expect("x is held");
+    let read = t.value_at(&updated, &exact("x")).expect("x is held");
     assert!(t.is_equivalent(&read, &number));
     assert!(t.is_subtype(&updated, &expected));
     assert!(t.is_subtype(&updated, &by_binary));

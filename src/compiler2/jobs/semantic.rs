@@ -31,7 +31,7 @@ use super::super::semantic::{
     ActivationAnalysis, CallSiteKey, CallSiteResolution, CallSiteSummary, CallSiteTargets, CallTargetSummary,
     SelectedCallee, TrimmedPlans, UndefinedFunction,
 };
-use super::super::types::{ClosureTarget, MapTypeEntry, MapTypeKey, Ty, Types};
+use super::super::types::{ClosureTarget, KeyAt, MapKey, MapTypeEntry, MapTypeKey, Ty, Types};
 use super::super::world::{BodyShape, World};
 use super::keying;
 use fz_engine::FatalError;
@@ -772,7 +772,10 @@ fn apply_step_evidence(
                 }
             }
             let types = world.types_mut();
-            let cannot_miss = keys_are_literal && types.map_surely_has_keys(&base_ty, &keys);
+            let cannot_miss = keys_are_literal
+                && keys
+                    .into_iter()
+                    .all(|key| !types.can_miss(&base_ty, &KeyAt::Exact(key)));
             let ok_ty = if cannot_miss {
                 types.bool_lit(true)
             } else {
@@ -848,27 +851,43 @@ fn apply_step_evidence(
             let Some(key) = lowered_map_key(world, values, index_key) else {
                 return Ok(());
             };
-            let read = match key {
-                Some(key) => world.types_mut().field_lookup(&base_ty, &key),
-                None => value_ty(values, index_key.value)
-                    .and_then(|key_ty| world.types_mut().domain_lookup(&base_ty, &key_ty)),
+            let key = match key {
+                Some(key) => KeyAt::Exact(key),
+                None => match value_ty(values, index_key.value) {
+                    Some(key_ty) => KeyAt::OfType(key_ty),
+                    None => {
+                        values.insert(*value, any_ty(world));
+                        return Ok(());
+                    }
+                },
             };
-            let field_ty = read.unwrap_or_else(|| any_ty(world));
-            values.insert(*value, field_ty);
+            values.insert(*value, map_read_ty(world, &base_ty, &key));
         }
         LoweredStep::FieldAccess { value, base, field } => {
             let Some(base_ty) = value_ty(values, *base) else {
                 return Ok(());
             };
-            let field_ty = world
-                .types_mut()
-                .field_lookup(&base_ty, &super::super::types::MapKey::Atom(field.clone()))
-                .unwrap_or_else(|| any_ty(world));
-            values.insert(*value, field_ty);
+            let key = KeyAt::Exact(MapKey::Atom(field.clone()));
+            values.insert(*value, map_read_ty(world, &base_ty, &key));
         }
         LoweredStep::PopHandler => {}
     }
     Ok(())
+}
+
+/// What `base[key]` and `base.key` answer: the value the key holds when
+/// present, beside `nil` when `base` may lack it. `any` when no member of
+/// `base` can hold the key.
+fn map_read_ty(world: &mut World, base: &Ty, key: &KeyAt) -> Ty {
+    let types = world.types_mut();
+    let Some(value) = types.value_at(base, key) else {
+        return types.any();
+    };
+    if !types.can_miss(base, key) {
+        return value;
+    }
+    let nil = types.nil();
+    types.union(value, nil)
 }
 
 /// Join two path results. `None` ("no evidence on this path yet") is the

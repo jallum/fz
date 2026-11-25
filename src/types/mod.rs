@@ -166,13 +166,8 @@ pub trait Types {
     /// MapUpdate to type the result of `m | { k => v }`.
     fn refine_map_field(&mut self, a: &Self::Ty, key: &MapKey, v: &Self::Ty) -> Self::Ty;
 
-    /// Look up `key` in `a`'s map axis, or — for the atom `value` — its
-    /// resource axis's payload, returning the field's type if statically
-    /// known.
-    fn field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
-
-    /// Literal keys mentioned by `a`'s positive map clauses. Callers still use
-    /// `field_lookup` to obtain the set-theoretic field type.
+    /// Literal keys mentioned by `a`'s positive map clauses. Callers read the
+    /// type each holds with `Types::value_at`.
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey>;
 
     /// Binary least-upper-bound in the **refinement lattice** — the

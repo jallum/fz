@@ -607,7 +607,7 @@ A put naming a key its base lacks leaves the update with no destination, and
 its freeze then answers the miss sentinel instead of a map; the lowering tests that answer
 (`ok`, as a `cond`-shaped decision on `true`) and its miss arm calls
 `Map.update_failure/2`, which finds the missing key and raises. When the
-base's type proves every updated key is present (`Types::map_surely_has_keys`),
+base's type proves every updated key is present (`Types::can_miss` answers no for each key),
 `ok` is typed `true`, the decision's miss arm is trimmed, and the program
 compiles no KeyError path. Otherwise a program whose keys are all present pays
 one test. The raise runs even when the updated map is unused

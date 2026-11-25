@@ -85,6 +85,15 @@ pub struct MapTypeEntry {
     pub value: Ty,
 }
 
+/// The key a read names in a map type: one atom or integer the type may
+/// name as a field, or only a type of key (a binary, a float, a pinned
+/// variable's type, a value nobody knows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyAt {
+    Exact(MapKey),
+    OfType(Ty),
+}
+
 /// What a map key type reaches: the atoms it names outright, and the kinds of
 /// key it covers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -2263,28 +2272,38 @@ impl Types {
         self.intern(d)
     }
 
-    pub fn field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
-        let d = {
-            let cx = self.ctx();
-            field_lookup(cx, cx.descr(a), key)?
-        };
-        Some(self.intern(d))
-    }
-
-    /// What reading a key of type `key` from the maps of `a` answers when the
-    /// type names no single key: what the maps hold under every key the type
-    /// may be, beside `nil`, since a key that is not known may be absent. A
-    /// key of a kind the maps limit reads that kind's domain, and a named
-    /// field of the kind is one of the values it may read. `None` when `a`
-    /// has no map in it or the key is no kind of key.
-    pub fn domain_lookup(&mut self, a: &Ty, key: &Ty) -> Option<Ty> {
-        let kinds = self.map_key_kinds(key)?;
-        let held = {
-            let cx = self.ctx();
-            let read = |sig: &MapSig| held_by_key_kinds(cx, sig, &kinds);
-            held_by_maps(cx, cx.descr(a), &Descr::any(), read)?.union(cx, &Descr::nil())
+    /// The type of the value the maps of `map` hold at `key` when the key is
+    /// present: never widened by `nil` for absence, which is the reader's to
+    /// add when `can_miss`. A key given as a type reads every slot a key of
+    /// that type may be: the named fields it can equal, joined with the
+    /// domains of the kinds it reaches. A union joins over its members, a
+    /// map that leaves the key unconstrained holds `any`, and a resource
+    /// answers its payload for the atom `value`. `None` when no member can
+    /// hold the key, or the key type is no kind of key.
+    pub fn value_at(&mut self, map: &Ty, key: &KeyAt) -> Option<Ty> {
+        let held = match key {
+            KeyAt::Exact(key) => {
+                let cx = self.ctx();
+                value_at_exact(cx, cx.descr(map), key)?
+            }
+            KeyAt::OfType(key) => {
+                let kinds = self.map_key_kinds(key)?;
+                let cx = self.ctx();
+                let read = |sig: &MapSig| held_by_key_kinds(cx, sig, &kinds);
+                held_by_maps(cx, cx.descr(map), &Descr::any(), read)?
+            }
         };
         Some(self.intern(held))
+    }
+
+    /// Whether a read of `key` in `map` may find nothing: some map the type
+    /// describes does not require the key. A key known only by its type may
+    /// always be absent, and so may any key of a type with no map in it.
+    pub fn can_miss(&self, map: &Ty, key: &KeyAt) -> bool {
+        match key {
+            KeyAt::OfType(_) => true,
+            KeyAt::Exact(key) => can_miss_exact(self.ctx(), self.descr(map), key),
+        }
     }
 
     /// `a` after an update that writes `value` under a key of type `key`,
@@ -2312,17 +2331,6 @@ impl Types {
         let widened = self.intern(widened);
         let maps = self.map_top();
         Some(self.intersect(widened, maps))
-    }
-
-    /// Whether every map `a` describes has each of `keys`, so an update
-    /// naming only these keys cannot miss. A type with no map in it has none.
-    pub fn map_surely_has_keys(&self, a: &Ty, keys: &[MapKey]) -> bool {
-        let d = self.descr(a);
-        !d.maps.is_empty()
-            && d.maps.iter().all(|conj| {
-                keys.iter()
-                    .all(|key| conj.pos.iter().any(|sig| map_sig_has_key(sig, key)))
-            })
     }
 
     /// The module every value of `a` names under `__struct__`, when there
@@ -4390,10 +4398,6 @@ impl SharedTypes for Types {
         Types::refine_map_field(self, a, key, v)
     }
 
-    fn field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty> {
-        Types::field_lookup(self, a, key)
-    }
-
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey> {
         Types::map_known_keys(self, a)
     }
@@ -4798,29 +4802,32 @@ fn tuple_field_type(cx: TyCtx<'_>, d: &Descr, index: usize) -> Descr {
     if found { out } else { Descr::none() }
 }
 
-/// Look up `key` across every axis a field can come from: a map's declared
-/// fields, a struct's module under `__struct__`, and — for the atom `value` only — a resource's payload. A resource
-/// carries no field but `value`, so any other key skips the resource axis
-/// exactly as it would a type with no resource axis at all.
-///
-/// A read of a key the map may lack answers `nil` beside the value, as a read
-/// of a missing key does.
-fn field_lookup(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
-    let mut acc = held_by_maps(cx, d, &Descr::any().union(cx, &Descr::nil()), |sig| {
-        let field = sig.field_at(key);
-        let value = cx.descr(&field.ty).clone();
-        if field.optional {
-            value.union(cx, &Descr::nil())
-        } else {
-            value
-        }
-    });
-    if matches!(key, MapKey::Atom(name) if name == "value")
+/// What `d` holds at `key` across every axis a field can come from: a map's
+/// declared fields, a struct's module under `__struct__`, and — for the atom
+/// `value` only — a resource's payload. A resource carries no field but
+/// `value`, so any other key skips the resource axis exactly as it would a
+/// type with no resource axis at all.
+fn value_at_exact(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> Option<Descr> {
+    let mut acc = held_by_maps(cx, d, &Descr::any(), |sig| cx.descr(&sig.field_at(key).ty).clone());
+    if reads_resource_payload(key)
         && let Some(payload) = resource_payload_type(cx, d)
     {
         acc = Some(acc.map_or(payload.clone(), |held| held.union(cx, &payload)));
     }
     acc
+}
+
+/// Whether some map of `d` lacks `key` as a required field, a resource
+/// holding `value` counting as the only holder of it when no map is there.
+fn can_miss_exact(cx: TyCtx<'_>, d: &Descr, key: &MapKey) -> bool {
+    if d.maps.is_empty() {
+        return !(reads_resource_payload(key) && resource_payload_type(cx, d).is_some());
+    }
+    d.maps.iter().any(|conj| !conj.pos.iter().any(|sig| sig.requires(key)))
+}
+
+fn reads_resource_payload(key: &MapKey) -> bool {
+    matches!(key, MapKey::Atom(name) if name == "value")
 }
 
 /// What the maps of `d` hold in one slot, as the signature's own type and
@@ -4881,10 +4888,6 @@ pub(super) fn is_struct_module_key(key: &MapKey) -> bool {
 
 fn struct_module_key() -> MapKey {
     MapKey::Atom(STRUCT_MODULE_FIELD.to_string())
-}
-
-fn map_sig_has_key(sig: &MapSig, key: &MapKey) -> bool {
-    sig.requires(key)
 }
 
 fn map_known_keys(d: &Descr) -> Vec<MapKey> {
