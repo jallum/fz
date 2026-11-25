@@ -210,7 +210,9 @@ once instead of once per rung.
 
 `FactKey::is_cumulative` declares each fact's content algebra. `ReturnType`
 and `ActivationInputs` are **cumulative**: their `World` stores maintain a
-join, so content only grows between ground shifts. Every other
+join, so content only grows between ground shifts. The one exception is
+knowledge: a publisher that learns it no longer feeds an activation withdraws
+its row (*Retraction and preservation*). Every other
 fact — `LoweredBody`, `CallSiteSummary`, `CallSiteTargets`, and the rest — is
 **replacing**: a publisher's latest conclusion simply overwrites the fact's
 current content.
@@ -303,7 +305,15 @@ that silence as a withdrawal retracts a fact that is still true. A NON-rebased
 `AnalyzeActivation` conclusion therefore keeps every `Activation` claim it did
 not re-emit (`World::preserved_analysis_claims`), exactly as its
 `ActivationInputs` contributions ride
-`ContributionMap::conclude_preserving_frontier`. Its `CallSiteSummary` and
+`ContributionMap::conclude_preserving_frontier`. Silence is not the only
+thing it knows. A resolved callsite that now names a different activation
+supersedes the old one, and an activation nothing claims is retired (below) and
+withdraws every row it published; both name the callees whose claim and row
+leave (`JobEffects::withdrawn_activations`). A rebased conclusion's rows replace
+rather than join. A (publisher, callee) pair withdrawn once and added back is
+never withdrawn again, so a callsite whose targets move back and forth cannot
+make a row come and go forever; `World` owns that record and each refusal is
+the event `fz.compiler2.activation_inputs.withdrawal_refused`. Its `CallSiteSummary` and
 `CallSiteTargets` claims are on the other side of the line: the walk publishes
 an edge for EVERY callsite it reaches, unresolved and all
 (`CallSiteResolution`, [`semantic-fixpoint`](semantic-fixpoint.md)), so silence
@@ -739,6 +749,19 @@ other waiter. After an edit this lets callees answer before their callers walk.
 An answer whose producer is retired (a job on a lambda its owner no longer
 mints; `World::is_orphaned`, see macro-expansion.md) will never be published
 again, so it does not hold a reader back: the reader runs and finds it gone.
+
+**Retirement.** A job whose ground is gone concludes without running its body
+(`jobs::run`, `retire_ungrounded`). There are two grounds: a job on an orphaned
+generated lambda, and an `AnalyzeActivation` whose `Activation` fact no caller
+claims. The completion goes through `World::complete_job` like any other, with
+`JobEffects::retired` set: the job's standing claims and reads are re-listed, a
+claim on a callee it no longer feeds leaves
+(`JobEffects::withdrawn_activations`), and the callee, unclaimed in turn, is
+retired when its wake arrives. A retirement is neither a derivation nor a read
+served to a body: `JobCompletion::derivations` and `reads_handed` are 0 and
+`retired` is true. Each one is reported once as `fz.compiler2.job.retired`,
+carrying the job and its `reason` (`orphaned_lambda` or
+`unclaimed_activation`).
 
 This is the shape of `ExecutionContext::drive_until`, simplified; the real loop
 can exit early on a caller-supplied deadline (`DriveOutcome::TimedOut`) or an

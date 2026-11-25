@@ -994,3 +994,252 @@ fn a_closure_column_does_not_stop_a_spec_violation_from_being_diagnosed() {
         "a bare unsolved variable is an unknown column",
     );
 }
+
+/// One activation `caller` with a callee function and two activations of it,
+/// the previous answers of its callsites stored in the world.
+struct SupersessionFixture {
+    world: World,
+    caller: ActivationKey,
+    old: ActivationKey,
+    new: ActivationKey,
+}
+
+impl SupersessionFixture {
+    fn new() -> Self {
+        let mut world = World::new();
+        let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+        let callee = world.reference_function(ModuleId::GLOBAL, "callee", 1);
+        let int = world.types_mut().int();
+        let float = world.types_mut().float();
+        let caller = ActivationKey::from_inputs(root, world.root_function(root), &[], world.types_mut());
+        let old = ActivationKey::from_inputs(root, callee, &[int], world.types_mut());
+        let new = ActivationKey::from_inputs(root, callee, &[float], world.types_mut());
+        Self {
+            world,
+            caller,
+            old,
+            new,
+        }
+    }
+
+    fn callsite(&self, id: u32) -> CallSiteKey {
+        CallSiteKey {
+            activation: self.caller.clone(),
+            callsite: crate::compiler2::body::CallSiteId::from_u32(id),
+        }
+    }
+
+    fn naming(&self, target: &ActivationKey) -> CallSiteResolution<CallSiteSummary> {
+        CallSiteResolution::Resolved(CallSiteSummary {
+            targets: vec![CallTargetSummary {
+                callee: crate::compiler2::semantic::SelectedCallee::Function(target.function),
+                selector: None,
+                surface_inputs: Vec::new(),
+                activation: Some(target.clone()),
+                activation_inputs: None,
+                extern_params: None,
+                return_ty: None,
+            }],
+            return_ty: None,
+            last_resort: None,
+        })
+    }
+
+    /// The previous analysis answered callsite `id` with `target`.
+    fn previously(&mut self, id: u32, target: &ActivationKey) {
+        let resolution = self.naming(target);
+        self.world.define_callsite_summary(self.callsite(id), resolution);
+    }
+
+    /// The previous analysis resolved exactly these callsites.
+    fn previously_resolved(&mut self, ids: &[u32]) {
+        self.world.define_activation_analysis(
+            &self.caller,
+            ActivationAnalysis {
+                input_rows: Vec::new(),
+                entry_reachability: crate::compiler2::semantic::EntryReachability::new(Vec::new()),
+                trimmed: Default::default(),
+                reachable_entries: Vec::new(),
+                callsites: ids
+                    .iter()
+                    .map(|id| crate::compiler2::body::CallSiteId::from_u32(*id))
+                    .collect(),
+                value_types: Default::default(),
+            },
+        );
+    }
+
+    fn emission(&self, id: u32, resolution: CallSiteResolution<CallSiteSummary>) -> CallEmission {
+        CallEmission {
+            key: self.callsite(id),
+            resolution,
+            activations: Vec::new(),
+        }
+    }
+
+    fn superseded(&self, calls: &[CallEmission]) -> Vec<ActivationKey> {
+        superseded_activations(&self.world, &self.caller, calls)
+    }
+}
+
+/// A callsite the walk still reaches and now resolves to another activation
+/// has stopped calling the old one: that is knowledge, so the old one is
+/// superseded.
+#[test]
+fn a_resolved_callsite_that_now_names_another_activation_supersedes_the_old_one() {
+    let mut fixture = SupersessionFixture::new();
+    fixture.previously(1, &fixture.old.clone());
+    fixture.previously_resolved(&[1]);
+    let now = fixture.emission(1, fixture.naming(&fixture.new));
+
+    assert_eq!(fixture.superseded(&[now]), vec![fixture.old.clone()]);
+}
+
+/// Unresolved is the lattice bottom: it says "not nameable yet", not "calls
+/// nothing", so the callee the callsite last named stands.
+#[test]
+fn an_unresolved_callsite_supersedes_nothing() {
+    let mut fixture = SupersessionFixture::new();
+    fixture.previously(1, &fixture.old.clone());
+    fixture.previously_resolved(&[1]);
+    let now = fixture.emission(1, CallSiteResolution::Unresolved);
+
+    assert_eq!(fixture.superseded(&[now]), Vec::<ActivationKey>::new());
+}
+
+/// A callsite the walk no longer reaches says nothing, and its silence covers
+/// the callee another callsite has just stopped naming.
+#[test]
+fn a_callee_a_silent_callsite_last_named_is_not_superseded() {
+    let mut fixture = SupersessionFixture::new();
+    fixture.previously(1, &fixture.old.clone());
+    fixture.previously(2, &fixture.old.clone());
+    fixture.previously_resolved(&[1, 2]);
+    let now = fixture.emission(1, fixture.naming(&fixture.new));
+
+    assert_eq!(fixture.superseded(&[now]), Vec::<ActivationKey>::new());
+}
+
+/// A callee another reached callsite still names is not superseded by the one
+/// that moved away from it.
+#[test]
+fn a_callee_a_resolved_callsite_still_names_is_not_superseded() {
+    let mut fixture = SupersessionFixture::new();
+    fixture.previously(1, &fixture.old.clone());
+    fixture.previously(2, &fixture.old.clone());
+    fixture.previously_resolved(&[1, 2]);
+    let moved = fixture.emission(1, fixture.naming(&fixture.new));
+    let stayed = fixture.emission(2, fixture.naming(&fixture.old));
+
+    assert_eq!(fixture.superseded(&[moved, stayed]), Vec::<ActivationKey>::new());
+}
+
+/// An activation whose last caller stops calling it is retired, not run: its
+/// job concludes without reading its body, no derivation or read is charged to
+/// it, the contribution it made to its own callee leaves with it, and the
+/// callee, now unclaimed in turn, is retired the same way.
+#[test]
+fn an_activation_that_loses_its_last_claimant_is_retired_without_running() {
+    let tel = ConfiguredTelemetry::new();
+    let retirements = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&retirements);
+    tel.attach_raw_event2::<World, crate::compiler2::JobRetirement, _>(
+        &["fz", "compiler2", "job", "retired"],
+        move |_, _, _, _, retirement| {
+            seen.borrow_mut()
+                .push((retirement.job.clone(), retirement.ground.name()))
+        },
+    );
+    let mut world = World::new();
+    world.submit_code(
+        Some("retired_chain.fz".to_string()),
+        r#"
+def leaf(_value), do: 0
+def middle(value), do: leaf(value)
+def top(), do: middle([1])
+def main(), do: top()
+"#
+        .to_string(),
+    );
+    let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
+    assert!(matches!(
+        ExecutionContext::new(&mut world, &tel).drive(),
+        DriveOutcome::Resolved
+    ));
+    let int = world.types_mut().int();
+    let int_list = world.types_mut().non_empty_list(int);
+    let [top, middle, leaf] = ["top", "middle", "leaf"].map(|name| {
+        let arity = usize::from(name != "top");
+        world.reference_function(ModuleId::GLOBAL, name, arity)
+    });
+    let top_activation = world.activation_key(root, top, &[]);
+    let middle_activation = world.activation_key(root, middle, &[int_list]);
+    let leaf_activation = world.activation_key(root, leaf, &[int_list]);
+    for activation in [&middle_activation, &leaf_activation] {
+        assert!(
+            world.has_fact(&FactKey::Activation(activation.clone())),
+            "{activation:?} is claimed while its caller still calls it",
+        );
+    }
+
+    // `top` is re-analysed against a body that calls nothing.
+    let LoweredBody::Clauses {
+        clauses,
+        entries,
+        generated,
+        ..
+    } = (*world.lowered_body(top)).clone();
+    let silent = entries
+        .into_iter()
+        .map(|entry| LoweredEntry {
+            steps: Vec::new(),
+            tail: LoweredTail::Unreachable,
+            ..entry
+        })
+        .collect();
+    assert!(world.define_lowered_body(top, LoweredBody::clauses(clauses, silent, generated)));
+    world.complete_job(
+        Job::LowerFunction(top),
+        JobEffects {
+            outputs: vec![FactKey::LoweredBody(top)],
+            changed: vec![FactKey::LoweredBody(top)],
+            ..JobEffects::default()
+        },
+    );
+    let top_effects = analyze_activation(&mut world, &tel, &top_activation).expect("top concludes on its new body");
+    ExecutionContext::new(&mut world, &tel).complete_job(Job::AnalyzeActivation(top_activation), top_effects);
+    assert!(
+        !world.has_fact(&FactKey::Activation(middle_activation.clone())),
+        "nothing calls middle any more",
+    );
+    assert!(retirements.borrow().is_empty(), "no job has been retired yet");
+
+    let retire = |world: &mut World, activation: &ActivationKey| {
+        let job = Job::AnalyzeActivation(activation.clone());
+        let effects = crate::compiler2::jobs::run(&mut ExecutionContext::new(world, &tel), &job)
+            .expect("an unclaimed activation concludes");
+        assert!(effects.retired, "{job:?} concludes without running its body");
+        ExecutionContext::new(world, &tel).complete_job(job, effects)
+    };
+    let middle_completion = retire(&mut world, &middle_activation);
+    assert_eq!(
+        (middle_completion.derivations, middle_completion.reads_handed),
+        (0, 0),
+        "a retirement is neither a derivation nor a read served to a body",
+    );
+    assert!(
+        !world.has_fact(&FactKey::ActivationInputs(leaf_activation.clone()))
+            && !world.has_fact(&FactKey::Activation(leaf_activation.clone())),
+        "the row middle fed leaf leaves with middle, and with it the claim on leaf",
+    );
+    let leaf_completion = retire(&mut world, &leaf_activation);
+    assert_eq!((leaf_completion.derivations, leaf_completion.reads_handed), (0, 0));
+    assert_eq!(
+        *retirements.borrow(),
+        vec![
+            (Job::AnalyzeActivation(middle_activation), "unclaimed_activation"),
+            (Job::AnalyzeActivation(leaf_activation), "unclaimed_activation"),
+        ],
+        "each retirement is reported once, with its ground",
+    );
+}

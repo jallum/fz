@@ -244,6 +244,10 @@ pub struct World {
     /// Clash folds the fixpoint made and the execution context has not yet
     /// reported -- the same producer/drain split as the literal widenings.
     unreported_clash_folds: Vec<ClashReport>,
+    /// Which publisher rows have been withdrawn and re-added, and the
+    /// withdrawals that guard refused and the execution context has not yet
+    /// reported.
+    row_withdrawals: RowWithdrawals,
     /// Readiness steps the drain arbiter produced since the last flush
     /// (`drive::settle_quiescent`). `World` owns the mutation; the execution
     /// context observes it — the same split `warning_diagnostics` uses, and
@@ -255,12 +259,28 @@ pub struct World {
     telemetry_query_count: Cell<u64>,
 }
 
-/// A job on an orphaned generated function that concluded empty, and the
-/// owner whose lowering no longer mints that function.
-pub(crate) struct FunctionRetirement {
+/// Why a job concluded without running its body.
+pub(crate) enum RetirementGround {
+    /// The job is about a generated function whose owner's lowering no longer
+    /// mints it.
+    OrphanedLambda { function: FunctionId, owner: FunctionId },
+    /// The job analyzes an activation no caller claims.
+    UnclaimedActivation,
+}
+
+impl RetirementGround {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::OrphanedLambda { .. } => "orphaned_lambda",
+            Self::UnclaimedActivation => "unclaimed_activation",
+        }
+    }
+}
+
+/// A job that concluded without running its body, and the ground it lost.
+pub(crate) struct JobRetirement {
     pub(crate) job: Job,
-    pub(crate) function: FunctionId,
-    pub(crate) owner: FunctionId,
+    pub(crate) ground: RetirementGround,
 }
 
 pub(crate) struct JobCompletion {
@@ -275,6 +295,8 @@ pub(crate) struct JobCompletion {
     pub(crate) derivations: u64,
     /// The reads those derivations handed the work graph, counted per derivation.
     pub(crate) reads_handed: u64,
+    /// The job concluded without running: its ground fact was gone.
+    pub(crate) retired: bool,
 }
 
 impl std::ops::Deref for JobCompletion {
@@ -429,6 +451,7 @@ impl World {
             widened_literal_slots: HashSet::default(),
             unreported_literal_slots: Vec::new(),
             unreported_clash_folds: Vec::new(),
+            row_withdrawals: RowWithdrawals::default(),
             quiescence_steps: Vec::new(),
             work_graph: WorkGraph::new(),
             #[cfg(test)]
@@ -696,11 +719,14 @@ impl World {
         // Waiting completions extend: a blocked job's prior contributions
         // stand untouched (the scheduler likewise keeps its claims standing).
         // A wait-free conclusion normally replaces the contribution key set.
-        // Activation-input evidence from semantic analysis is cumulative caller
-        // evidence: a rerun can add/widen, but a temporarily unreachable callsite
-        // cannot lower and re-raise the same body input edge. Non-semantic
-        // publishers still use normal replacement so source/root changes can
-        // withdraw genuinely stale external contributions.
+        // Activation-input evidence from semantic analysis is cumulative
+        // under silence: a rerun can add or widen, but a callsite that is
+        // unresolved or no longer reached cannot lower and re-raise the same
+        // body input edge. It withdraws on knowledge: a resolved callsite that
+        // now names another activation, an activation nothing calls any more,
+        // and a rebased conclusion, which replaces. Non-semantic publishers
+        // use normal replacement so source/root changes can withdraw
+        // genuinely stale external contributions.
         let rebased = self.work_graph.rebased(&job);
         // The work graph is the single source of truth for each publisher's
         // prior output frontier (it tracks every job's facts under the identical
@@ -725,6 +751,14 @@ impl World {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        self.row_withdrawals
+            .reinstate_added(&job, &effects.activation_input_contributions);
+        let withdrawn = if waits.is_empty() {
+            self.row_withdrawals
+                .permitted(&job, effects.withdrawn_activations, &previous_activation_input_outputs)
+        } else {
+            HashSet::default()
+        };
         let ContributionReplace {
             output_keys: activation_input_outputs,
             changed_keys: activation_input_changed,
@@ -735,6 +769,7 @@ impl World {
                 previous_activation_input_outputs,
                 effects.activation_input_contributions,
                 rebased,
+                &withdrawn,
             )
         } else {
             self.extend_activation_input_contributions(&job, effects.activation_input_contributions)
@@ -812,6 +847,10 @@ impl World {
         if waits.is_empty() && !rebased {
             outputs.extend(preserved_analysis_claims(&job, &previous_output_keys));
         }
+        outputs.retain(|fact| match fact {
+            FactKey::Activation(key) | FactKey::ActivationInputs(key) => !withdrawn.contains(key),
+            _ => true,
+        });
         let outputs = dedupe_job_facts(outputs);
         changed.extend(activation_input_changed.iter().cloned().map(FactKey::ActivationInputs));
         let changed = dedupe_job_facts(changed);
@@ -834,8 +873,14 @@ impl World {
                 changed: changed.into_iter().map(DependencyKey::Fact).collect(),
             }])
             .collect::<Vec<_>>();
-        let derivation_count = derivations.len() as u64;
-        let reads_handed = derivations.iter().map(|derivation| derivation.reads.len() as u64).sum();
+        let (derivation_count, reads_handed) = if effects.retired {
+            (0, 0)
+        } else {
+            (
+                derivations.len() as u64,
+                derivations.iter().map(|derivation| derivation.reads.len() as u64).sum(),
+            )
+        };
         let step = self.work_graph.complete_ordered_with_external(
             &job,
             CompletionEffects { derivations, waits },
@@ -852,6 +897,7 @@ impl World {
             activation_input_refolds,
             derivations: derivation_count,
             reads_handed,
+            retired: effects.retired,
         }
     }
 
@@ -1011,6 +1057,7 @@ impl World {
         previous_output_keys: HashSet<ActivationKey>,
         contributions: Vec<(ActivationKey, Vec<Ty>)>,
         rebased: bool,
+        withdrawn: &HashSet<ActivationKey>,
     ) -> ContributionReplace<ActivationKey> {
         let next = self.normalize_contributions(contributions);
         let preserve_frontier = rebased || matches!(job, Job::AnalyzeActivation(_));
@@ -1020,6 +1067,8 @@ impl World {
                 job.clone(),
                 previous_output_keys,
                 next,
+                withdrawn,
+                rebased,
             )
         } else {
             self.activation_inputs
@@ -2982,6 +3031,10 @@ impl World {
         std::mem::take(&mut self.unreported_clash_folds)
     }
 
+    pub(crate) fn take_refused_withdrawals(&mut self) -> Vec<RefusedWithdrawal> {
+        self.row_withdrawals.take_refused()
+    }
+
     pub(crate) fn take_literal_widenings(&mut self) -> Vec<LiteralWidening> {
         std::mem::take(&mut self.unreported_literal_slots)
     }
@@ -3573,7 +3626,9 @@ impl World {
 /// the ordinary replacement retracts it. `Activation` is claimed by every
 /// caller reaching it, and each caller's claim is withdrawn only by that
 /// caller's own rebase — preserving one publisher's standing claim never
-/// re-publishes another's.
+/// re-publishes another's. A callee the publisher knows it no longer feeds
+/// (`JobEffects::withdrawn_activations`) is filtered from the conclusion's
+/// outputs by the caller of this function, not kept here.
 ///
 /// `CallSiteSummary`/`CallSiteTargets` are NOT here: every callsite the walk
 /// reaches publishes its edge, unresolved and all
@@ -4485,9 +4540,9 @@ impl<T: Telemetry> ExecutionContext<'_, T> {
         self.telemetry.raw_event2(name, &*self.world, key);
     }
 
-    pub(crate) fn emit_function_retired(&self, retirement: &FunctionRetirement) {
+    pub(crate) fn emit_job_retired(&self, retirement: &JobRetirement) {
         self.telemetry
-            .raw_event2(&["fz", "compiler2", "function", "retired"], &*self.world, retirement);
+            .raw_event2(&["fz", "compiler2", "job", "retired"], &*self.world, retirement);
     }
 
     fn emit_generated_function_defined(&self, function: &FunctionId, owner: &FunctionId) {
@@ -4924,4 +4979,67 @@ fn struct_value_ty(
         .map(|(name, ty)| (MapKey::Atom(name.clone()), ty))
         .collect::<Vec<_>>();
     types.struct_map(&module_name, &map_fields)
+}
+
+/// A withdrawal the guard refused: `publisher`'s row for `callee` was withdrawn
+/// once and added back, so it stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RefusedWithdrawal {
+    pub(crate) publisher: Job,
+    pub(crate) callee: ActivationKey,
+}
+
+/// The guard on withdrawing a publisher's activation-input rows.
+///
+/// A callsite's target set is replaced, not joined, so it can name a callee,
+/// drop it and name it again as its evidence moves. A (publisher, callee) pair
+/// is therefore withdrawn at most once for good: once a withdrawn row comes
+/// back, the pair is reinstated and every later withdrawal of it is refused.
+/// After that the pair behaves as the cumulative rule alone says, so the
+/// fixpoint's termination argument for cumulative rows covers it.
+#[derive(Default)]
+struct RowWithdrawals {
+    withdrawn: HashSet<(Job, ActivationKey)>,
+    reinstated: HashSet<(Job, ActivationKey)>,
+    refused: Vec<RefusedWithdrawal>,
+}
+
+impl RowWithdrawals {
+    /// A row added for a pair that was withdrawn reinstates the pair.
+    fn reinstate_added(&mut self, publisher: &Job, contributions: &[(ActivationKey, Vec<Ty>)]) {
+        for (callee, _) in contributions {
+            let pair = (publisher.clone(), callee.clone());
+            if self.withdrawn.remove(&pair) {
+                self.reinstated.insert(pair);
+            }
+        }
+    }
+
+    /// The callees whose rows `publisher` withdraws now, out of the ones its
+    /// conclusion proposes and its rows stand for.
+    fn permitted(
+        &mut self,
+        publisher: &Job,
+        proposed: Vec<ActivationKey>,
+        standing: &HashSet<ActivationKey>,
+    ) -> HashSet<ActivationKey> {
+        let mut permitted = HashSet::default();
+        for callee in proposed.into_iter().filter(|callee| standing.contains(callee)) {
+            let pair = (publisher.clone(), callee);
+            if self.reinstated.contains(&pair) {
+                self.refused.push(RefusedWithdrawal {
+                    publisher: pair.0,
+                    callee: pair.1,
+                });
+            } else {
+                self.withdrawn.insert(pair.clone());
+                permitted.insert(pair.1);
+            }
+        }
+        permitted
+    }
+
+    fn take_refused(&mut self) -> Vec<RefusedWithdrawal> {
+        std::mem::take(&mut self.refused)
+    }
 }

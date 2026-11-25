@@ -66,7 +66,8 @@ A generated function's `FunctionSource.body` is `FunctionBody::Generated { owner
 it holds no source text, its owner's `LowerFunction` publishes its
 `FunctionDefined`, and its source is never expanded. When a revision makes the
 owner stop minting a lambda, the lambda is orphaned (`World::is_orphaned`): each
-job on it concludes empty, reports `fz.compiler2.function.retired`, and reads
+job on it is retired: it concludes empty, reports `fz.compiler2.job.retired`
+with reason `orphaned_lambda`, and reads
 the owner's `LoweredBody` so it wakes if the owner mints the lambda again. A
 retired `AnalyzeActivation` also clears its activation slot, and a concluded
 read of a retired job's product does not hold its reader back.

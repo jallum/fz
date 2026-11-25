@@ -1655,12 +1655,12 @@ impl RevisionWatch {
             move |_, _, _, _, completion| seen.borrow_mut().push(completion.job.clone()),
         );
         let reported = Rc::clone(&retired);
-        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::FunctionRetirement, _>(
-            &["fz", "compiler2", "function", "retired"],
+        telemetry.attach_raw_event2::<crate::compiler2::World, crate::compiler2::JobRetirement, _>(
+            &["fz", "compiler2", "job", "retired"],
             move |_, _, _, _, retirement| {
-                reported
-                    .borrow_mut()
-                    .push((retirement.job.clone(), retirement.function, retirement.owner))
+                if let crate::compiler2::RetirementGround::OrphanedLambda { function, owner } = retirement.ground {
+                    reported.borrow_mut().push((retirement.job.clone(), function, owner))
+                }
             },
         );
         Self { applied, retired }

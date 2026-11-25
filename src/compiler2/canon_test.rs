@@ -647,7 +647,7 @@ fn correlated_input_rows_never_reach_the_widening_budget_on_the_lenses() {
 /// prepared together, ten calls past the input-row budget, the unnameable
 /// module list of an undefined `message/1`, and the schedule-stable programs.
 /// Each is compiled under fifo, lifo and every seed in `AGENDA_SEEDS`.
-const ORDER_FREE_PLANS: [u32; 7] = [1297, 1298, 571, 420, 183, 567, 1574];
+const ORDER_FREE_PLANS: [u32; 9] = [1297, 1298, 571, 420, 183, 567, 1574, 795, 796];
 
 /// The seeds of the pseudo-random pop orders the plans are compared under.
 const AGENDA_SEEDS: std::ops::RangeInclusive<u64> = 1..=8;
