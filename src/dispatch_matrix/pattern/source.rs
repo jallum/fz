@@ -341,8 +341,7 @@ fn earliest_row_that_already_matches<TypeHandle: Clone + PartialEq + Eq>(
 ) -> PatternBodyId {
     let index = patterns
         .rows
-        .iter()
-        .position(|row| row.body_id == body_id)
+        .binary_search_by_key(&body_id, |row| row.body_id)
         .expect("a reported body id names a row in these patterns");
     for prefix_end in 0..index {
         let candidate = patterns.rows[..=prefix_end].iter().chain([&patterns.rows[index]]);
