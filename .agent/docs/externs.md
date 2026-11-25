@@ -557,7 +557,7 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 - A guard may call such an extern: the failure makes the clause not match, and
   nothing is raised (see [`pattern-matching`](pattern-matching.md#guards)).
 
-Kernel's arithmetic externs (`+ - * / % div rem`, `negate`, over integer and
+Kernel's arithmetic externs (`+ - * / % div rem`, unary `-`, over integer and
 float operands) are declared this way, so a failed operation, an overflow or a
 zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
 names any exception: `raises: MyApp.DivisionByZero` raises that module's

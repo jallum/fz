@@ -86,7 +86,7 @@ fn rewrite_pipe(
     )?))
 }
 
-/// `-x` becomes `Kernel.negate(x)`, a typed clause family like every BINARY
+/// `-x` becomes `Kernel.-(x)`, a typed clause family like every BINARY
 /// operator.
 ///
 /// Lowered instead to one machine instruction, unary minus read a single lane,
@@ -108,7 +108,7 @@ fn rewrite_unary_minus(
     let builder = owner.builder();
     Ok(Some(remote_call(
         &builder,
-        "Kernel.negate",
+        "Kernel.-",
         node.meta.root(),
         &[operand.root()],
     )?))

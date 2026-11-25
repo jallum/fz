@@ -204,7 +204,7 @@ fn compiler2_quoted_surface_uses_lexer_authority_for_local_definition_names() {
 }
 
 #[test]
-fn compiler2_quoted_surface_admits_plus_as_a_unary_and_a_binary_operator_and_minus_only_as_binary() {
+fn compiler2_quoted_surface_admits_plus_and_minus_as_unary_and_binary_operators() {
     let tel = ConfiguredTelemetry::new();
     let read = |name: &str, source: &str| {
         let mut code = CodeMap::new();
@@ -217,8 +217,8 @@ fn compiler2_quoted_surface_admits_plus_as_a_unary_and_a_binary_operator_and_min
 
     read("unary_plus.fz", "def +(x), do: x\n").expect("`+` is definable with one parameter");
     read("binary_plus.fz", "def a + b, do: a\n").expect("`+` is definable with two parameters");
-    let error = read("unary_minus.fz", "def -(a), do: a\n").expect_err("`-` is definable only with two parameters");
-    assert!(error.to_string().contains("two parameters"), "{error}");
+    read("unary_minus.fz", "def -(x), do: x\n").expect("`-` is definable with one parameter");
+    read("binary_minus.fz", "def a - b, do: a\n").expect("`-` is definable with two parameters");
 }
 
 #[test]

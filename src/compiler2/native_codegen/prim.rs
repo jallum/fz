@@ -1659,7 +1659,7 @@ where
     // Neither lane is provable, so ask the value at runtime.
     //
     // An expression never gets here -- the front door rewrites `-x` to
-    // `Kernel.negate/1`, whose typed clauses dispatch (fz-5xp.38). A GUARD
+    // `Kernel.-/1`, whose typed clauses dispatch (fz-5xp.38). A GUARD
     // does: it is lowered inside the dispatch plan rather than as a call, so
     // `when -x > 0.0` on an operand the plan has not yet narrowed reached
     // `as_raw_i64` and aborted in `fz_unbox_int` (fz-5xp.47).
