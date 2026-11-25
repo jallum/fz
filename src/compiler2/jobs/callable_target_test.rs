@@ -390,10 +390,12 @@ fn a_closure_call_with_an_uninhabited_argument_mints_no_activation() {
 
 /// A call of n arguments can only run a callable that takes n, so a surface of
 /// another arity is no flow to that callable's construction: nothing requests
-/// a target for it, and the drive settles instead of waiting on one.
+/// a target for it, and the drive settles instead of waiting on one. The
+/// closures are held in a list, so they are constructed first-class and the
+/// calls do request targets.
 #[test]
 fn a_surface_of_another_arity_requests_no_construction_target() {
-    let drive = Drive::fixture(1881).program_entry();
+    let drive = Drive::fixture(2005).program_entry();
     let observed = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&observed);
     drive.telemetry().attach_raw_event2::<World, JobCompletion, _>(
@@ -409,7 +411,7 @@ fn a_surface_of_another_arity_requests_no_construction_target() {
     let keys = observed.borrow();
     assert!(
         !keys.is_empty(),
-        "the arity-3 call in the second clause requests the lambda's construction target"
+        "the calls of a closure held in a list request its construction target"
     );
     for key in keys.iter() {
         let producer = settled

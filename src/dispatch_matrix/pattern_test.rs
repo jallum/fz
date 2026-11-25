@@ -945,6 +945,35 @@ fn a_variable_repeated_across_parameters_asks_equality_with_the_earlier_paramete
     assert_eq!(equal_to_earlier_subject(&plan).len(), 1);
 }
 
+fn projecting_extern(property: ProjectedProperty) -> Arc<GuardExtern> {
+    use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
+    Arc::new(
+        GuardExtern::new(
+            ExternAbi::Fz,
+            "count",
+            &[ExternTy::Any],
+            ExternReturn::Scalar(ExternTy::I64),
+            false,
+        )
+        .expect("a counting extern is a guard extern")
+        .projecting(Some(property)),
+    )
+}
+
+/// `def size_is(x, n), do: count(x) == n` over an extern that projects `property`.
+fn size_is_helper(property: ProjectedProperty) -> Arc<PatternGuardDispatch<Ty>> {
+    let body = compare(BinOp::Eq, call("count", vec![var("x")]), var("n"));
+    let surface = Surface(vec![clause(2, None, body)]);
+    let two_names = PatternRow {
+        patterns: vec![sp(x()), sp(n())],
+        preconditions: Vec::new(),
+        guard: None,
+        body_id: 0,
+    };
+    let mut resolver = projection_resolver(property, None);
+    Arc::new(guard_dispatch_from_rows(&surface, vec![two_names], &mut resolver).expect("size_is reifies"))
+}
+
 /// `def int?(_ :: int), do: true; def int?(_), do: abort(1)`: a helper that
 /// answers for integers and raises for everything else.
 fn answers_or_raises_helper(int: Ty) -> Arc<PatternGuardDispatch<Ty>> {
@@ -958,6 +987,106 @@ fn answers_or_raises_helper(int: Ty) -> Arc<PatternGuardDispatch<Ty>> {
         Ok((name.name == "abort").then(|| GuardCallee::Extern(aborting_extern())))
     };
     Arc::new(guard_dispatch_from_rows(&surface, rows, &mut resolver).expect("int? reifies"))
+}
+
+fn projection_resolver(
+    property: ProjectedProperty,
+    size_is: Option<Arc<PatternGuardDispatch<Ty>>>,
+) -> impl FnMut(&Callee, usize) -> Result<Option<GuardCallee<Ty>>, SourcePatternError> {
+    move |callee, _arity| {
+        let Callee::Name(name) = callee else { return Ok(None) };
+        Ok(match name.name.as_str() {
+            "count" => Some(GuardCallee::Extern(projecting_extern(property))),
+            "size_is" => size_is.as_ref().map(|helper| GuardCallee::Helper(Arc::clone(helper))),
+            _ => None,
+        })
+    }
+}
+
+fn plan_with_projection(property: ProjectedProperty, guard: Expr) -> Plan {
+    let size_is = size_is_helper(property);
+    let row = PatternRow {
+        patterns: vec![sp(x())],
+        preconditions: Vec::new(),
+        guard: Some(sp(guard)),
+        body_id: 0,
+    };
+    let rows = SourcePatternRows::lexical(1, vec![row]);
+    pattern_dispatch_from_source_with_resolver(&rows, &mut projection_resolver(property, Some(size_is)))
+        .expect("the row compiles")
+}
+
+fn regions(plan: &Plan) -> Vec<Region<Ty>> {
+    tests(plan)
+        .into_iter()
+        .map(|predicate| predicate.region.clone())
+        .collect()
+}
+
+#[test]
+fn a_projection_compared_with_a_constant_is_the_question_it_projects_whichever_side_it_is_on() {
+    let cases = [
+        (ProjectedProperty::FunctionArity, Region::Arity(2)),
+        (ProjectedProperty::MapSize, Region::MapSize(2)),
+        (ProjectedProperty::ByteSize, Region::ByteSize(2)),
+        (ProjectedProperty::TupleSize, Region::TupleArity(2)),
+    ];
+    for (property, question) in cases {
+        for (side, guard) in [
+            ("left", compare(BinOp::Eq, call("count", vec![var("x")]), Expr::Int(2))),
+            ("right", compare(BinOp::Eq, Expr::Int(2), call("count", vec![var("x")]))),
+        ] {
+            let plan = plan_with_projection(property, guard);
+            assert_eq!(regions(&plan), vec![question.clone()], "{property:?} on the {side}");
+            assert!(
+                plan.guards.is_empty(),
+                "{property:?} on the {side}: nothing is left of the guard"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_projection_compared_any_other_way_stays_the_guard_it_was_written_as() {
+    let cases = [
+        (
+            "an ordering",
+            compare(BinOp::Gt, call("count", vec![var("x")]), Expr::Int(2)),
+        ),
+        (
+            "another subject's size",
+            compare(BinOp::Eq, call("count", vec![var("x")]), var("x")),
+        ),
+        (
+            "a negative size",
+            compare(BinOp::Eq, call("count", vec![var("x")]), Expr::Int(-1)),
+        ),
+        (
+            "a float",
+            compare(BinOp::Eq, call("count", vec![var("x")]), Expr::Float(2.0)),
+        ),
+    ];
+    for (shape, guard) in cases {
+        let plan = plan_with_projection(ProjectedProperty::MapSize, guard);
+        assert!(
+            regions(&plan)
+                .iter()
+                .all(|region| !matches!(region, Region::MapSize(_))),
+            "{shape}: no size question"
+        );
+        assert_eq!(plan.guards.len(), 1, "{shape}: the guard is kept");
+    }
+}
+
+#[test]
+fn a_helper_that_compares_a_projection_with_its_argument_asks_the_question_for_the_callers_constant() {
+    let plan = plan_with_projection(
+        ProjectedProperty::FunctionArity,
+        call("size_is", vec![var("x"), Expr::Int(3)]),
+    );
+
+    assert_eq!(regions(&plan), vec![Region::Arity(3)]);
+    assert!(plan.guards.is_empty());
 }
 
 #[test]

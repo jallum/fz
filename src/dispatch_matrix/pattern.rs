@@ -5,8 +5,8 @@ use super::{
     BitstringEndian, BitstringFieldKind, BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue,
     DispatchCompileError, DispatchGraph, DispatchMatrixBuilder, DispatchMatrixError, EdgeEvidence, GraphNodeId,
     GroundValue, GuardId, GuardLeaf, LiveEdges, OutcomeId, OutcomeMultiplicity, PinnedValueId, PlanInputs,
-    PreparedKeyId, ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId, compile_dispatch_matrix,
-    demand::DispatchDemand,
+    PreparedKeyId, ProjectedProperty, ProjectionKind, Region, RegionPredicate, RegionQuestion, SubjectId,
+    compile_dispatch_matrix, demand::DispatchDemand,
 };
 use crate::ast::{BitSize, BitType, Endian, Expr, Pattern, Spanned, Var};
 use crate::fast_hash::HashMap;
@@ -327,6 +327,9 @@ pub(crate) struct GuardExtern {
     pub(crate) symbol: String,
     pub(crate) params: Vec<ExternTy>,
     pub(crate) ret: ExternReturn,
+    /// The one property of its argument the declaration says this extern
+    /// reads and nothing else.
+    pub(crate) projects: Option<ProjectedProperty>,
 }
 
 impl GuardExtern {
@@ -385,7 +388,14 @@ impl GuardExtern {
             symbol: symbol.to_string(),
             params: params.to_vec(),
             ret,
+            projects: None,
         })
+    }
+
+    /// This extern, declared to read `property` of its argument.
+    pub(crate) fn projecting(mut self, property: Option<ProjectedProperty>) -> Self {
+        self.projects = property;
+        self
     }
 
     /// A call to this extern aborts the process, so in a guard it is the

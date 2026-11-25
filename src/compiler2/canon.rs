@@ -1583,6 +1583,9 @@ impl ProgramCanon<'_> {
             Region::List(list) => format!("list({list:?})"),
             Region::MapKind => "map_kind".to_string(),
             Region::MapKeyPresent { key } => format!("map_key({})", comparison(key)),
+            Region::Arity(size) => format!("arity({size})"),
+            Region::MapSize(size) => format!("map_size({size})"),
+            Region::ByteSize(size) => format!("byte_size({size})"),
             Region::Bitstring(shape) => format!("bitstring({})", bitstring_shape(shape)),
             Region::Guard(guard) => format!("guard(g{})", guard.0),
         }

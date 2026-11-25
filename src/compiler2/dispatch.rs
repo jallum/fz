@@ -169,6 +169,9 @@ where
             Region::List(ListRegion::Cons)
             | Region::Equal(_)
             | Region::MapKeyPresent { .. }
+            | Region::Arity(_)
+            | Region::MapSize(_)
+            | Region::ByteSize(_)
             | Region::Bitstring(_)
             | Region::Guard(_) => return None,
         };

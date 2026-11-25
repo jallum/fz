@@ -47,6 +47,9 @@ pub struct FunctionSurface {
     /// The kind an extern's `delivers:` tail declares, when calling it hands
     /// its first argument to the nearest handler.
     pub extern_delivers: Option<fz_runtime::failure::RaiseKind>,
+    /// The property an extern's `projects:` tail declares it reads of its one
+    /// argument and nothing else.
+    pub(crate) extern_projects: Option<crate::dispatch_matrix::ProjectedProperty>,
     pub attrs: Vec<Attribute>,
     pub span: Span,
 }

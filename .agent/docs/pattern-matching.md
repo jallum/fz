@@ -335,6 +335,39 @@ key test, a bitstring test, a `Guard` question, or anything that may raise (the
 `or` rule above) has no complement, and the whole `not` stays the one guard
 expression the evaluators run.
 
+### Projection questions
+
+A guard conjunct `P == n`, either way round, where `n` is a non-negative
+integer constant and `P` reads one property of a subject, is the question the
+property asks of that subject. `P` is a call to an extern marked `projects:`
+(see [externs](externs.md#a-call-that-reads-one-property-of-its-argument)), or a
+call to a helper whose one live clause for those arguments returns such a call
+-- `is_function(f, n)` returns `fz_function_arity(f) == n`, which rebases onto
+the caller's constant arity. The set of properties is `ProjectedProperty`:
+
+| Property | Question | Holds of |
+|---|---|---|
+| `arity` | `Region::Arity(n)` | a function that takes `n` arguments |
+| `tuple_size` | `Region::TupleArity(n)` | a tuple of `n` fields |
+| `map_size` | `Region::MapSize(n)` | a map or struct of `n` entries |
+| `byte_size` | `Region::ByteSize(n)` | a bitstring that `n` bytes hold, a partial last byte counted |
+
+Every other comparison stays the residue it was. The run-time test reads the
+property in place on all three paths: `Arity` is a `RuntimeTypePredicate` that
+admits callables of that argument count, and `MapSize` and `ByteSize` call the
+total runtime readers `fz_map_size_of` and `fz_bitstring_byte_size_of`, which
+answer -1 for a value of the wrong kind, so no size matches it.
+
+Reachability decides each question from the subject's type. `Arity(n)` has the
+type `arrow(none^n, any)` -- the functions of `n` arguments -- exactly, so a
+closure of known arity answers it and an arrow of another arity, or a type that
+is no function, misses. `MapSize` and `ByteSize` only refine: a type with no map
+(no bitstring) misses, and the match edge narrows to maps (bitstrings), but a map
+type never implies a size, so the test stays. A tuple size narrows the tuple
+exactly, as a pattern does. `Arity`, `MapSize` and `ByteSize` have no complement
+(a type test over the functions that are not of `n` arguments would admit every
+function), so `not` over them stays a guard.
+
 A call that stays a guard inside a larger expression still makes its call, so
 what it needs to answer at all is asked first (`ask_what_its_calls_need`): the
 questions every clause that can answer asks, of a variable argument. `byte_size/1`
@@ -343,8 +376,7 @@ answers in its `when is_bitstring(bits)` clause and raises in the other, so
 `kind(:a)` never reaches the body. A call is sure to be made at any depth of a
 conjunct, under `not` and inside a comparison or another call's arguments, but
 not under `and` or `or` within the conjunct, which may decide without their
-right-hand side. A residual that is an extern call on a callable
-(`is_function(f, 2)` leaves `fz_function_arity(f) == 2`) still reads the
+right-hand side. A residual that is an extern call on a callable still reads the
 callable whole, so the callable is constructed first-class.
 
 A reified guard helper is an ordinary function, so `guard_dispatch_from_rows`

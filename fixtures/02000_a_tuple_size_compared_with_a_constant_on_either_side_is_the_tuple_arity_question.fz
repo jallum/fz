@@ -1,0 +1,30 @@
+#---
+# purpose: "A guard `tuple_size(t) == n`, or `n == tuple_size(t)`, asks the value whether it is a tuple of n fields, as the pattern `{_, _}` does, and a value that is no tuple falls to the next clause"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 4
+# assert.metric.semantic.activations: 4
+# assert.metric.semantic.callsites: 5
+# assert.metric.call_edges.count: 5
+# oracle: self
+# oracle.stamp: cbec9b09374b0840
+#---
+defmodule Main do
+  def shape(t) when tuple_size(t) == 2, do: :pair
+  def shape(t) when 3 == tuple_size(t), do: :triple
+  def shape(t) when tuple_size(t) == 0, do: :unit
+  def shape(_), do: :other
+
+  def by_pattern({_, _}), do: :pair
+  def by_pattern({_, _, _}), do: :triple
+  def by_pattern({}), do: :unit
+  def by_pattern(_), do: :other
+
+  def main() do
+    values = [{1, 2}, {1, 2, 3}, {}, {1}, :atom, [1, 2], %{a: 1}, "ab"]
+    IO.inspect(Enum.map(values, &shape/1))
+    IO.inspect(Enum.map(values, &by_pattern/1))
+  end
+end
+
+Main.main()

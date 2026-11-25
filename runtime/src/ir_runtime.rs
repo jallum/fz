@@ -1013,6 +1013,17 @@ pub extern "C" fn fz_bitstring_byte_extent(ref_word: u64, bit_pos: u64) -> i64 {
     (bit_len - bit_pos).div_ceil(8) as i64
 }
 
+/// The number of bytes that hold a bitstring, a partial last byte counted; -1
+/// for any other value, so the question "do `n` bytes hold this value" is total
+/// over what it is handed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_bitstring_byte_size_of(_process: *mut Process, value_ref_word: u64) -> i64 {
+    if !is_bitstring_like(value_ref_word) {
+        return -1;
+    }
+    fz_bitstring_byte_extent(value_ref_word, 0)
+}
+
 /// The number of BITS in the bitstring starting `bit_pos` bits into
 /// `ref_word`'s bitstring: the whole bitstring at position zero, the rest of it
 /// from a cursor, as in Elixir's `bit_size`.
@@ -1759,6 +1770,16 @@ pub extern "C" fn fz_map_count(process: *mut Process, map_ref_word: u64) -> i64 
     let map = any_value_ref_from_word(map_ref_word, "fz_map_count map");
     let heap = &(unsafe { &*process }).heap;
     heap.map_view_count(heap.expect_map_layout(map, "fz_map_count")) as i64
+}
+
+/// The number of entries of a map or struct; -1 for any other value, so the
+/// question "does this value have `n` entries" is total over what it is handed.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_size_of(process: *mut Process, value_ref_word: u64) -> i64 {
+    let value = any_value_ref_from_word(value_ref_word, "fz_map_size_of value");
+    let heap = &(unsafe { &*process }).heap;
+    heap.map_layout(value)
+        .map_or(-1, |layout| heap.map_view_count(layout) as i64)
 }
 
 /// Whether `map`, in either layout, holds `key`.

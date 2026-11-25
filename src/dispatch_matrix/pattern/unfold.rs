@@ -29,8 +29,8 @@ use super::{
 };
 use crate::ast::{BinOp, Callee, Expr, Spanned, UnOp, Var};
 use crate::dispatch_matrix::{
-    ComparisonValue, GroundValue, ListRegion, ProjectionKind, Region, RegionPredicate, RegionQuestion, Subject,
-    SubjectId, SubjectSource,
+    ComparisonValue, GroundValue, ListRegion, ProjectedProperty, ProjectionKind, Region, RegionPredicate,
+    RegionQuestion, Subject, SubjectId, SubjectSource,
 };
 use crate::fast_hash::HashMap;
 
@@ -514,7 +514,114 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
         if let Some(unfolded) = self.unfold_call(conjunct, bound, resolver)? {
             return Ok(unfolded);
         }
+        if let Some(projected) = self.admit_projection(conjunct, bound, resolver)? {
+            return Ok(projected);
+        }
         self.admit_opaque(conjunct, bound, resolver, literals)
+    }
+
+    /// A conjunct that compares a projection with a constant, as the one
+    /// question it asks of the projected subject. `None` when it is not such a
+    /// comparison, and it stays a guard.
+    fn admit_projection<F: PatternResolver<TypeHandle>>(
+        &mut self,
+        conjunct: &Spanned<Expr>,
+        bound: &Bound,
+        resolver: &mut F,
+    ) -> Result<Option<Alternatives<TypeHandle>>, SourcePatternError> {
+        let Expr::BinOp(BinOp::Eq, lhs, rhs) = &conjunct.node else {
+            return Ok(None);
+        };
+        if !matches!((&lhs.node, &rhs.node), (Expr::Int(_), _) | (_, Expr::Int(_))) {
+            return Ok(None);
+        }
+        let comparison = guard_expr_from_ast(
+            &conjunct.node,
+            bound,
+            &self.pinned_by_name,
+            &mut self.prepared_keys,
+            resolver,
+        )?;
+        Ok(self
+            .projection_question(&comparison, resolver)?
+            .map(Alternatives::single))
+    }
+
+    /// The facts of `projection == constant`, either way round, where the
+    /// projection reads one property of one subject: that property of the
+    /// subject has that size, and whatever the projection needs to answer at all.
+    fn projection_question<F: PatternResolver<TypeHandle>>(
+        &mut self,
+        comparison: &PatternGuardExpr<TypeHandle>,
+        resolver: &mut F,
+    ) -> Result<Option<Conjunction<TypeHandle>>, SourcePatternError> {
+        let PatternGuardExpr::Binary {
+            op: PatternGuardBinOp::Eq,
+            lhs,
+            rhs,
+        } = comparison
+        else {
+            return Ok(None);
+        };
+        let (read, size) = match (&**lhs, &**rhs) {
+            (read, PatternGuardExpr::Const(GroundValue::Int(size)))
+            | (PatternGuardExpr::Const(GroundValue::Int(size)), read) => (read, *size),
+            _ => return Ok(None),
+        };
+        let Ok(size) = u32::try_from(size) else {
+            return Ok(None);
+        };
+        let Some((property, subject, mut facts)) = self.projection_read(read, resolver)? else {
+            return Ok(None);
+        };
+        facts.ask(property.question(subject, size));
+        Ok(Some(facts))
+    }
+
+    /// The property and the subject a call reads, and the facts the call needs
+    /// to answer. An extern the library declares `projects:` reads its one
+    /// argument; a helper reads what its one clause that can answer returns,
+    /// when that is such an extern's call.
+    fn projection_read<F: PatternResolver<TypeHandle>>(
+        &mut self,
+        call: &PatternGuardExpr<TypeHandle>,
+        resolver: &mut F,
+    ) -> Result<Option<(ProjectedProperty, SubjectId, Conjunction<TypeHandle>)>, SourcePatternError> {
+        match call {
+            PatternGuardExpr::Extern { extern_fn, args } => Ok(match (extern_fn.projects, args.as_slice()) {
+                (Some(property), [PatternGuardExpr::Subject(subject)]) => {
+                    Some((property, *subject, Conjunction::default()))
+                }
+                _ => None,
+            }),
+            PatternGuardExpr::Dispatch { inputs, dispatch, .. } => {
+                let Some(facts) = dispatch.facts.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(args) = inputs.iter().map(arg_of_expr).collect::<Option<Vec<_>>>() else {
+                    return Ok(None);
+                };
+                let Some(Resolved::Live(live)) = self.resolve(facts, &args, resolver)? else {
+                    return Ok(None);
+                };
+                let [way] = live.ways() else {
+                    return Ok(None);
+                };
+                let [PatternGuardExpr::Extern { extern_fn, args }] = way.residual.as_slice() else {
+                    return Ok(None);
+                };
+                let (Some(property), [PatternGuardExpr::Subject(subject)]) = (extern_fn.projects, args.as_slice())
+                else {
+                    return Ok(None);
+                };
+                let needs = Conjunction {
+                    residual: Vec::new(),
+                    ..way.clone()
+                };
+                Ok(Some((property, *subject, needs)))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// A conjunct that is `not` of facts whose every question has a
@@ -865,7 +972,10 @@ impl<TypeHandle: Clone + PartialEq + Eq> PatternDispatchProducer<TypeHandle> {
                 Some(Evaluated::Value(GroundValue::Bool(true))) => {}
                 Some(Evaluated::Value(_)) => return Ok(Some(Err(Refusal::False))),
                 Some(Evaluated::Fails) => return Ok(Some(Err(Refusal::Fails))),
-                None => rebased.residual.push(expr),
+                None => match self.projection_question(&expr, resolver)? {
+                    Some(asked) => rebased.absorb(asked),
+                    None => rebased.residual.push(expr),
+                },
             }
         }
         Ok(Some(Ok(rebased)))
@@ -1201,7 +1311,15 @@ fn decide_at_constant<TypeHandle, F: PatternResolver<TypeHandle>>(
     let verdict = match region {
         Region::Type(ty) => resolver.ground_has_type(value, ty)?,
         Region::Equal(ComparisonValue::Const(constant)) => constant == value,
-        Region::TupleArity(_) | Region::MapKind | Region::MapKeyPresent { .. } => false,
+        Region::TupleArity(_)
+        | Region::Arity(_)
+        | Region::MapSize(_)
+        | Region::MapKind
+        | Region::MapKeyPresent { .. } => false,
+        Region::ByteSize(size) => match value {
+            GroundValue::Binary(bytes) | GroundValue::Utf8Binary(bytes) => bytes.len() == *size as usize,
+            _ => false,
+        },
         Region::List(ListRegion::Empty | ListRegion::Cons) => false,
         Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_))
         | Region::Bitstring(_)
@@ -1210,6 +1328,16 @@ fn decide_at_constant<TypeHandle, F: PatternResolver<TypeHandle>>(
         }
     };
     Some(if verdict { Asked::Holds } else { Asked::Refused })
+}
+
+/// What an argument expression already built is to the facts: a subject or a
+/// constant, and nothing a guard computed.
+fn arg_of_expr<TypeHandle>(expr: &PatternGuardExpr<TypeHandle>) -> Option<Arg> {
+    match expr {
+        PatternGuardExpr::Subject(subject) => Some(Arg::Subject(*subject)),
+        PatternGuardExpr::Const(value) => Some(Arg::Const(value.clone())),
+        _ => None,
+    }
 }
 
 /// What a call argument is to the facts.

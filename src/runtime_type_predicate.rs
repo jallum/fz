@@ -332,6 +332,13 @@ impl RuntimeTypePredicate {
         predicate
     }
 
+    /// A test that asks how many arguments a callable takes and nothing else.
+    pub(crate) fn callable_arity(arity: usize) -> Self {
+        let mut predicate = Self::none();
+        predicate.callables = CallableShapes::of_arities(FiniteSet::lit(arity));
+        predicate
+    }
+
     /// The test every map passes, whether or not it names a module.
     pub(crate) fn map_kind() -> Self {
         let mut predicate = Self::none();

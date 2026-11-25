@@ -1,0 +1,33 @@
+#---
+# purpose: "A guard `is_function(f, n)` asks the callable how many arguments it takes: a closure of another arity falls to the next clause, as in Elixir, and a callable the type already answers is never constructed first-class"
+# kind: run
+# root: main/0
+# assert.metric.semantic.executables: 14
+# assert.metric.semantic.activations: 14
+# assert.metric.semantic.callsites: 24
+# assert.metric.call_edges.count: 24
+# oracle: self
+# oracle.stamp: a4f8dfbe8b23081a
+#---
+defmodule Main do
+  def apply2(f, a, b) when is_function(f, 2), do: f.(a, b)
+  def apply2(f, a, _) when is_function(f, 1), do: f.(a)
+  def apply2(f, _, _) when is_function(f), do: f.()
+  def apply2(_, a, b), do: {:not_callable, a, b}
+
+  def total(list, f) when is_function(f, 2), do: :lists.foldl(f, 0, list)
+  def total(_, _), do: :wrong_arity
+
+  def main() do
+    IO.inspect(apply2(fn a, b -> a + b end, 1, 2))
+    IO.inspect(apply2(fn a -> a * 10 end, 4, 5))
+    IO.inspect(apply2(fn -> :thunk end, 4, 5))
+    IO.inspect(apply2(:atom, 4, 5))
+    IO.inspect(apply2({1, 2}, 4, 5))
+    IO.inspect(total([1, 2, 3], fn x, acc -> x + acc end))
+    IO.inspect(total([1, 2, 3], fn x -> x end))
+    IO.inspect(total([1, 2, 3], :nope))
+  end
+end
+
+Main.main()

@@ -1451,6 +1451,9 @@ fn collect_region_atoms(world: &mut World, region: &Region<Ty>, names: &mut Exec
             key: ComparisonValue::Pinned(_) | ComparisonValue::Subject(_),
         }
         | Region::TupleArity(_)
+        | Region::Arity(_)
+        | Region::MapSize(_)
+        | Region::ByteSize(_)
         | Region::List(_)
         | Region::MapKind
         | Region::Bitstring(_)
