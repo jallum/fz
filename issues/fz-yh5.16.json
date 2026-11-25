@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Make Distiller Fast",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-11-25T11:31:12Z",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "A rarely taken runtime call costs the function nothing, and a call step moves no value twice",
   "type": "feature",
-  "updated_at": "2026-11-25T11:31:12Z"
+  "updated_at": "2026-11-25T11:31:13Z"
 }
