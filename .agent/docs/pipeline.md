@@ -1270,6 +1270,12 @@ Cargo or scan dependency archives. `FZ_AOT_RUNTIME_STATICLIB` may name an
 absolute, existing prebuilt archive for packaging outside that build tree. The
 caller owns target/profile ABI compatibility for an override.
 
+`build.rs` runs that Cargo build from the workspace under the same profile as
+the compiler, so `[profile.release.package.fz-runtime] codegen-units = 1` in the
+root `Cargo.toml` makes the runtime one codegen unit both in the archive and in
+the runtime linked into `fz2` itself (JIT and interpreter). Dev and test builds
+keep Cargo's default partition.
+
 Every JIT module, the native backend's (`JitBackend::new`) and the
 interpreter's variadic trampolines alike, comes from `jit_builder()`
 (`src/compiler2/native_codegen/clif.rs`). It places the module's code and data

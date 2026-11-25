@@ -79,3 +79,11 @@ debug = false
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# The runtime is one codegen unit in every artifact it ships in: the rlib
+# linked into fz2 (JIT and interpreter) and the staticlib that `build.rs`
+# builds for `fz2 build`, which runs under this same profile. With the default
+# partition, adding an unrelated runtime item reshuffles the units and flips
+# inlining on hot paths such as the message path and `forward_heap_value`.
+[profile.release.package.fz-runtime]
+codegen-units = 1
