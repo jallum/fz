@@ -1,16 +1,16 @@
 {
-  "assignee": "Binary Handling",
+  "assignee": "Make Distiller Fast",
   "blocked_by": [
     "fz-94a"
   ],
   "blocks": [],
   "created": "2026-11-25T11:43:11Z",
-  "description": "Follow-up to fz-94a (user: explain the unattributed part afterwards).\n\nAfter #897 lowered the ceilings, develop's distiller counts rose by +616 largest drive and requests, +360 derivations and +3,669 reads. #903's user-accepted cost explains +412 / +219 / +2,732. The remaining +204 / +141 / +937 has no attribution yet.\n\nDone when: each merge commit in aae3f942b..cd18bf4ab (#903, #904, #902, #897, #899, #900, #901) has been measured, with the five distiller figures recorded per commit in this description. The remainder is attributed to its commit and mechanism and taken to the user. If it isn't needed, a ticket to remove it is proposed.",
+  "description": "Follow-up to fz-94a (user: explain the unattributed part afterwards).\n\nAfter #897 lowered the ceilings, develop's distiller counts rose by +616 largest drive and requests, +360 derivations and +3,669 reads. #903's user-accepted cost explains +412 / +219 / +2,732. The remaining +204 / +141 / +937 has no attribution yet.\n\nDone when: each merge commit in aae3f942b..cd18bf4ab (#903, #904, #902, #897, #899, #900, #901) has been measured, with the five distiller figures recorded per commit in this description. The remainder is attributed to its commit and mechanism and taken to the user. If it isn't needed, a ticket to remove it is proposed.\n\nScope widened by the user (2026-11-25): \"attribute the raise and address it if necessary\". The remainder may be avoidable cost, for example a lost proof or extra derivations that no part of the change needs. If so, this ticket also removes it, and the ceilings are lowered to match. Lowering is free; any rise left over needs the user. An inherent cost goes to the user with its mechanism.\nOwner: Make Distiller Fast, dispatched by the user. It no longer waits for fz-94a: the per-commit measurement is independent of the ceiling fix.",
   "id": "fz-4hl",
   "labels": [],
   "priority": 2,
   "status": "open",
-  "title": "The distiller rise in the #897-#904 merge window is attributed per commit",
+  "title": "The distiller rise in the #897-#904 merge window is attributed per commit, and removed where it isn't needed",
   "type": "task",
-  "updated_at": "2026-11-25T11:43:12Z"
+  "updated_at": "2026-11-25T11:44:29Z"
 }
