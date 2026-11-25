@@ -1,0 +1,50 @@
+#---
+# purpose: "a clause whose pattern is a bitstring fails to match a value that is not a binary, whichever its first field is (a utf8 code point, a bare bits rest, no field at all, a binary rest, a byte, an empty field before a rest, a three-bit field before a bits rest), and the same clauses match a binary, an empty binary and a bitstring that does not end on a byte boundary"
+# oracle: self
+# oracle.stamp: b7dee87bdb0edade
+# args: 0
+#---
+defmodule Main do
+  def utf8_first(<<c::utf8, _::binary>>), do: {:utf8, c}
+  def utf8_first(_), do: :other
+
+  def bits_rest(<<_::bits>>), do: :bits
+  def bits_rest(_), do: :other
+
+  def empty(<<>>), do: :empty
+  def empty(_), do: :other
+
+  def binary_rest(<<x::binary>>), do: {:binary, x}
+  def binary_rest(_), do: :other
+
+  def byte_first(<<x::8, _::binary>>), do: {:byte, x}
+  def byte_first(_), do: :other
+
+  def empty_field_first(<<_::size(0), x::binary>>), do: {:binary, x}
+  def empty_field_first(_), do: :other
+
+  def bits_after_three(<<x::3, y::bits>>), do: {:bits, x, y}
+  def bits_after_three(_), do: :other
+
+  # Values the compiler cannot see through: each is read from a list at a
+  # position that is known only at run time.
+  def v(list, k), do: Enum.at(list, String.to_integer(hd(System.argv())) + k)
+
+  def main() do
+    values = [:atom, 7, [1, 2], {1}, 1.5, %{}, "hi", "", <<1::3>>, <<255, 1::1>>]
+
+    for k <- 0..(length(values) - 1) do
+      value = v(values, k)
+
+      IO.puts(
+        inspect(
+          {utf8_first(value), bits_rest(value), empty(value), binary_rest(value), byte_first(value),
+           empty_field_first(value), bits_after_three(value)},
+          limit: :infinity
+        )
+      )
+    end
+  end
+end
+
+Main.main()

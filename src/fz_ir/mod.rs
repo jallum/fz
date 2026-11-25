@@ -655,15 +655,13 @@ pub enum Prim {
     /// emits a single allocation call.
     ConstBitstring(Vec<u8>, u64),
     /// The bit length of a binary or bitstring: what a match's position is
-    /// compared against. A value that is not a binary answers a negative word,
-    /// which `IsNotBinary` recognizes, so one read of the value's kind both
-    /// tests it and resolves its length.
+    /// compared against. A value that is not a binary answers -1, which no
+    /// position is at or before, so one read of the value's kind both tests it
+    /// and resolves its length, and a bounds compare against it fails.
     BitstringBitLen(Var),
     /// The bit length of a value the lowering has proven a binary: one read of
     /// its header, with no test of its kind.
     BinaryBitLen(Var),
-    /// True when a `BitstringBitLen` result says its value is not a binary.
-    IsNotBinary(Var),
     /// The address of the first byte of a binary's bits, a raw integer.
     ///
     /// Native code only. The address names bytes the process's heap may move,
@@ -675,7 +673,9 @@ pub enum Prim {
     /// True when `field`, starting at bit `pos`, lies within the `bit_len` bits
     /// of the binary it is matched against. A `binary` or `bits` field without a
     /// size is the rest and fits only as the last field; an integer is at most
-    /// 64 bits wide.
+    /// 64 bits wide. The compare is signed, so the -1 that `BitstringBitLen`
+    /// answers for a value that is not a binary fits no sized field; a bare
+    /// `bits` rest asks nothing of the length.
     BitFieldFits {
         pos: Var,
         bit_len: Var,
@@ -858,7 +858,7 @@ impl Prim {
             Prim::BitstringBitLen(a) | Prim::BinaryBitLen(a) => {
                 used.insert(*a);
             }
-            Prim::BitstringBase(a) | Prim::IsNotBinary(a) => {
+            Prim::BitstringBase(a) => {
                 used.insert(*a);
             }
             Prim::BitReadByteInt { base, .. } => {
@@ -1690,7 +1690,6 @@ impl fmt::Display for Prim {
             Prim::BitstringBitLen(v) => write!(f, "bitstring_bit_len({})", v),
             Prim::BinaryBitLen(v) => write!(f, "binary_bit_len({})", v),
             Prim::BitstringBase(v) => write!(f, "bitstring_base({})", v),
-            Prim::IsNotBinary(v) => write!(f, "is_not_binary({})", v),
             Prim::BitReadByteInt {
                 base,
                 byte_offset,

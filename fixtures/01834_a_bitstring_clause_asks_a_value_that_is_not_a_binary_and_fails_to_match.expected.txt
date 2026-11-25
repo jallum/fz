@@ -1,0 +1,10 @@
+{:other, :other, :other, :other, :other, :other, :other}
+{:other, :other, :other, :other, :other, :other, :other}
+{:other, :other, :other, :other, :other, :other, :other}
+{:other, :other, :other, :other, :other, :other, :other}
+{:other, :other, :other, :other, :other, :other, :other}
+{:other, :other, :other, :other, :other, :other, :other}
+{{:utf8, 104}, :bits, :other, {:binary, "hi"}, {:byte, 104}, {:binary, "hi"}, {:bits, 3, <<67, 9::size(5)>>}}
+{:other, :bits, :empty, {:binary, ""}, :other, {:binary, ""}, :other}
+{:other, :bits, :other, :other, :other, :other, {:bits, 1, ""}}
+{:other, :bits, :other, :other, :other, :other, {:bits, 7, <<63::size(6)>>}}

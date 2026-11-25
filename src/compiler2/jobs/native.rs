@@ -3505,8 +3505,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     where
         F: FnMut(&mut Self, &mut NativeFnCtx, GraphNodeId, &mut DispatchState) -> Result<(), FatalError>,
     {
-        if matches!(predicate.region, Region::Bitstring(_)) {
-            self.read_bitstring_subject(ctx, plan, state, predicate.subject)?;
+        if let Region::Bitstring(shape) = &predicate.region {
+            let reads_bytes = self.reads_bytes_by_address(plan, state, shape);
+            self.read_bitstring_subject(ctx, plan, state, predicate.subject, reads_bytes)?;
         }
         let mut match_state = state.clone();
         let outcome = self.lower_dispatch_region(
@@ -4258,21 +4259,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         shape: &crate::dispatch_matrix::BitstringShape,
         state: &mut DispatchState,
     ) -> Result<RegionOutcome, FatalError> {
-        let (subject_var, cursor_position, bit_len) = self.read_bitstring_subject(ctx, plan, state, subject)?;
+        let reads_bytes = self.reads_bytes_by_address(plan, state, shape);
+        let (subject_var, cursor_position, facts) =
+            self.read_bitstring_subject(ctx, plan, state, subject, reads_bytes)?;
+        let bit_len = facts.bit_len;
         let fail_b = ctx.builder.block(vec![]);
         let int = self.world.types_mut().int();
-        if cursor_position.is_none() {
-            // The length reads as not-a-binary for a value that is not one.
-            let (not_binary, _) = ctx.emit_let(Prim::IsNotBinary(bit_len));
-            let read_b = ctx.builder.block(vec![]);
-            ctx.set_term(Term::If {
-                cond: not_binary,
-                then_b: fail_b,
-                else_b: read_b,
-                origin: BranchOrigin::ClauseDispatch,
-            });
-            ctx.current_block = read_b;
-        }
 
         let (mut pos, mut start) = match cursor_position {
             Some(position) => (position, FieldStart::PastCursor(Some(0))),
@@ -4282,7 +4274,6 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 (zero, FieldStart::Fixed(0))
             }
         };
-        let mut bases = BitstringBases::default();
         let field_count = shape.fields.len();
         for (index, field_subject) in shape.fields.iter().enumerate() {
             let extraction = plan.bitstring_extraction(*field_subject);
@@ -4295,6 +4286,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 unit: spec.unit,
                 is_last: extraction.is_last,
             };
+            if cursor_position.is_none() && index == 0 && Self::fit_ignores_length(&field) {
+                self.require_binary(ctx, pos, bit_len, fail_b);
+            }
             let (fits, utf8_end) = self.emit_bit_fits(ctx, subject_var, pos, bit_len, &field);
             let next_b = ctx.builder.block(vec![]);
             ctx.set_term(Term::If {
@@ -4315,12 +4309,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             } else {
                 Some(NativeBoundValue::Runtime(self.emit_bit_read(
                     ctx,
-                    &mut bases,
+                    facts.base,
                     subject_var,
                     pos,
                     start,
                     &field,
-                )))
+                )?))
             };
             // The last field has no successor unless the pattern must also end
             // there; a field that reads to the end of the binary ends at its end.
@@ -4366,31 +4360,70 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     }
 
     /// What a bitstring test needs of its subject: the binary, the position of
-    /// a cursor, and the binary's bit length, loaded the first time the state
-    /// is asked and kept in `state.bit_lens` for every later test of the same
-    /// binary. A cursor's source is a binary by construction and is read
-    /// without asking its kind; any other subject's read answers a negative
-    /// length when the subject is not a binary.
+    /// a cursor, and what the dispatch asks of the binary before any field. The
+    /// first test of a binary reads its length and, when a clause of the test
+    /// reads bytes by address, selects its base; every later test of the same
+    /// binary finds both in `state.binary_facts`. A cursor's source is a binary
+    /// by construction and is read without asking its kind; any other subject's
+    /// read answers a negative length when the subject is not a binary.
     fn read_bitstring_subject(
         &mut self,
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
         state: &mut DispatchState,
         subject: SubjectId,
-    ) -> Result<(Var, Option<Var>, Var), FatalError> {
+        reads_bytes: bool,
+    ) -> Result<(Var, Option<Var>, BinaryFacts), FatalError> {
         let (source, cursor_position) = self.dispatch_bit_source(ctx, plan, state, subject)?;
-        if let Some(&bit_len) = state.bit_lens.get(&source) {
-            return Ok((source, cursor_position, bit_len));
-        }
-        let prim = match cursor_position {
-            Some(_) => Prim::BinaryBitLen(source),
-            None => Prim::BitstringBitLen(source),
-        };
-        let (bit_len, _) = ctx.emit_let(prim);
         let int = self.world.types_mut().int();
-        ctx.value_types.insert(bit_len, int);
-        state.bit_lens.insert(source, bit_len);
-        Ok((source, cursor_position, bit_len))
+        let mut facts = match state.binary_facts.get(&source) {
+            Some(facts) => *facts,
+            None => {
+                let prim = match cursor_position {
+                    Some(_) => Prim::BinaryBitLen(source),
+                    None => Prim::BitstringBitLen(source),
+                };
+                let (bit_len, _) = ctx.emit_let(prim);
+                ctx.value_types.insert(bit_len, int);
+                BinaryFacts { bit_len, base: None }
+            }
+        };
+        if reads_bytes && facts.base.is_none() {
+            let (base, _) = ctx.emit_let(Prim::BitstringBase(source));
+            ctx.value_types.insert(base, int);
+            facts.base = Some(base);
+        }
+        state.binary_facts.insert(source, facts);
+        Ok((source, cursor_position, facts))
+    }
+
+    /// Whether some field of `shape` that the dispatch builds is a whole-byte
+    /// integer, which is read by a load from the binary's address.
+    fn reads_bytes_by_address(
+        &self,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &DispatchState,
+        shape: &crate::dispatch_matrix::BitstringShape,
+    ) -> bool {
+        use crate::dispatch_matrix::BitstringFieldSize;
+        shape.fields.iter().any(|field_subject| {
+            let spec = &plan.bitstring_extraction(*field_subject).spec;
+            let size = match &spec.size {
+                None => None,
+                Some(BitstringFieldSize::Literal(bits)) => Some(BitSizeIr::Literal(*bits)),
+                Some(_) => return false,
+            };
+            let field = BitMatchField {
+                ty: spec.runtime_kind(),
+                size,
+                endian: spec.endian,
+                signed: spec.signed,
+                unit: spec.unit,
+                is_last: false,
+            };
+            field.whole_byte_integer_width().is_some()
+                && (plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject))
+        })
     }
 
     /// The binary a bitstring region reads and the position it starts at: the
@@ -4421,25 +4454,32 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn emit_bit_read(
         &mut self,
         ctx: &mut NativeFnCtx,
-        bases: &mut BitstringBases,
+        base: Option<Var>,
         source: Var,
         pos: Var,
         start: FieldStart,
         field: &BitMatchField,
-    ) -> Var {
+    ) -> Result<Var, FatalError> {
+        let base_of_subject = || {
+            base.ok_or_else(|| {
+                incomplete_native_program(
+                    self.telemetry,
+                    self.root_id,
+                    "a bitstring field is read by address but its subject's base was not selected".to_string(),
+                )
+            })
+        };
         let prim = match (start, field.whole_byte_integer_width()) {
-            (FieldStart::Fixed(at), Some(bytes)) if at % 8 == 0 => {
-                let base = self.bitstring_base(ctx, bases, source);
-                Prim::BitReadByteInt {
-                    base,
-                    byte_offset: (at / 8) as u32,
-                    bytes,
-                }
-            }
-            (FieldStart::PastCursor(Some(offset)), Some(bytes)) if offset % 8 == 0 => {
-                let base = self.bitstring_base(ctx, bases, source);
-                Prim::BitReadByteIntAt { base, pos, bytes }
-            }
+            (FieldStart::Fixed(at), Some(bytes)) if at % 8 == 0 => Prim::BitReadByteInt {
+                base: base_of_subject()?,
+                byte_offset: (at / 8) as u32,
+                bytes,
+            },
+            (FieldStart::PastCursor(Some(offset)), Some(bytes)) if offset % 8 == 0 => Prim::BitReadByteIntAt {
+                base: base_of_subject()?,
+                pos,
+                bytes,
+            },
             _ => Prim::BitReadField {
                 source,
                 pos,
@@ -4451,7 +4491,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             let int = self.world.types_mut().int();
             ctx.value_types.insert(value, int);
         }
-        value
+        Ok(value)
     }
 
     /// Whether `field` fits at `pos`, and for a field whose width the binary's
@@ -4489,15 +4529,29 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         (fits, Some(end))
     }
 
-    /// The address of `source`'s first byte, resolved by the first read that
-    /// needs it and reused by the rest.
-    fn bitstring_base(&mut self, ctx: &mut NativeFnCtx, bases: &mut BitstringBases, source: Var) -> Var {
-        *bases.0.entry(source).or_insert_with(|| {
-            let (base, _) = ctx.emit_let(Prim::BitstringBase(source));
-            let int = self.world.types_mut().int();
-            ctx.value_types.insert(base, int);
-            base
-        })
+    /// Whether a field's fit asks nothing of the binary's length: a bare
+    /// `bits` rest, and a field the runtime reads. At the start of a subject
+    /// that may not be a binary, only `require_binary` keeps such a field from
+    /// fitting a value that is not one.
+    fn fit_ignores_length(field: &BitMatchField) -> bool {
+        matches!(field.ty, BitType::Utf8 | BitType::Utf16 | BitType::Utf32)
+            || (field.ty == BitType::Bits && field.size.is_none())
+    }
+
+    /// Leave for `miss` unless `pos` is within the binary. A value that is not
+    /// a binary has length -1, which no position is within.
+    fn require_binary(&mut self, ctx: &mut NativeFnCtx, pos: Var, bit_len: Var, miss: BlockId) {
+        let (within, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Ge, bit_len, pos));
+        let bool_ty = self.world.types_mut().bool();
+        ctx.value_types.insert(within, bool_ty);
+        let next_b = ctx.builder.block(vec![]);
+        ctx.set_term(Term::If {
+            cond: within,
+            then_b: next_b,
+            else_b: miss,
+            origin: BranchOrigin::ClauseDispatch,
+        });
+        ctx.current_block = next_b;
     }
 
     /// The position after a sized `field` that starts at `pos`.
@@ -5864,12 +5918,6 @@ impl DispatchAnswer {
     }
 }
 
-/// The address of each binary a run of straight-line lowering has resolved,
-/// by the variable that holds the binary. An address is raw: it is shared only
-/// by reads that no call or back edge separates.
-#[derive(Default)]
-struct BitstringBases(HashMap<Var, Var>);
-
 #[derive(Clone)]
 struct DispatchState {
     dispatch_inputs: Vec<NativeBoundValue>,
@@ -5879,11 +5927,24 @@ struct DispatchState {
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
-    /// The bit length of each binary a bitstring test has read, by the variable
-    /// that holds the binary. The read sits in the block where the test begins,
-    /// which dominates every clause that tests the same binary after it, so the
-    /// next clause reuses the length rather than loading it again.
-    bit_lens: HashMap<Var, Var>,
+    /// What the dispatch has learned of each binary a bitstring test has read,
+    /// by the variable that holds the binary. The reads sit in the block where
+    /// the first test begins, which dominates every clause that tests the same
+    /// binary after it, so the next clause reuses them rather than asking again.
+    binary_facts: HashMap<Var, BinaryFacts>,
+}
+
+/// What a bitstring test asks of its binary before any field: how many bits it
+/// has, which is -1 for a value that is not a binary, and, once a clause reads
+/// bytes by address, where those bytes start. The address names bytes the
+/// process's heap may move, and the heap moves only when the scheduler
+/// collects at the end of a quantum. A dispatch is `Goto` and `If` blocks with
+/// no call, so the address is good for every clause of one dispatch, whatever
+/// its guards and field reads allocate.
+#[derive(Clone, Copy)]
+struct BinaryFacts {
+    bit_len: Var,
+    base: Option<Var>,
 }
 
 impl DispatchState {
@@ -5894,7 +5955,7 @@ impl DispatchState {
             bindings,
             values: HashMap::default(),
             outcome_reads: Vec::new(),
-            bit_lens: HashMap::default(),
+            binary_facts: HashMap::default(),
         }
     }
 

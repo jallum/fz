@@ -748,22 +748,14 @@ pub(crate) fn bit_len_of_header(b: &mut FunctionBuilder<'_>, header: ir::Value) 
 }
 
 /// The bit length of a binary; `NOT_A_BINARY` for any other value. One test of
-/// the reference's kind decides whether it is a binary, and the length is read
-/// the same way from either form.
+/// the reference's kind against the set of kinds a binary is held in decides
+/// whether it is a binary, and the length is read the same way from either form.
 fn emit_binary_bit_len<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     source_ref: ir::Value,
 ) -> ir::Value {
     let kind = kind_field(body.b, source_ref);
-    let is_inline = body
-        .b
-        .ins()
-        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BITSTRING.tag() as i64);
-    let is_view = body
-        .b
-        .ins()
-        .icmp_imm_s(IntCC::Equal, kind, ValueKind::BINVIEW.tag() as i64);
-    let is_binary = body.b.ins().bor(is_inline, is_view);
+    let is_binary = kind_is_one_of(body.b, kind, ValueKind::is_binary_repr);
     let read_b = body.b.create_block();
     let miss_b = body.b.create_block();
     let join_b = body.b.create_block();
@@ -870,14 +862,6 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
             let source_ref = body.tagged_var(var_env, source.0);
             LowerOut::RawI64(emit_binary_base(body, source_ref))
         }
-        Prim::IsNotBinary(bit_len) => {
-            let bit_len = body.as_raw_i64(var_env, bit_len.0);
-            let missed = body.b.ins().icmp_imm_s(IntCC::Equal, bit_len, NOT_A_BINARY);
-            if body.cache.if_only_conds.contains(&dest_var.0) {
-                return Ok(LowerOut::Condition(missed));
-            }
-            LowerOut::Strict(strict_bool(body.b, missed))
-        }
         Prim::BitReadByteInt {
             base,
             byte_offset,
@@ -898,14 +882,14 @@ fn lower_bit_match_prim<M: cranelift_module::Module>(
                 MatchExtent::Never => body.b.ins().iconst(types::I8, 0),
                 MatchExtent::Rest if field.ty == BitType::Binary => {
                     let rest = body.b.ins().isub(bit_len, pos);
-                    let partial_bits = body.b.ins().band_imm_u(rest, 7);
-                    body.b.ins().icmp_imm_s(IntCC::Equal, partial_bits, 0)
+                    let negative_or_partial = body.b.ins().band_imm_u(rest, i64::MIN | 7);
+                    body.b.ins().icmp_imm_s(IntCC::Equal, negative_or_partial, 0)
                 }
                 MatchExtent::Rest | MatchExtent::Unsupported => body.b.ins().iconst(types::I8, 1),
                 MatchExtent::Bytes => panic!("BitFieldFits is asked of a utf8 field: its end is BitFieldEnd's"),
                 MatchExtent::Bits(total) => {
                     let end = body.b.ins().iadd(pos, total);
-                    let within = body.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, bit_len);
+                    let within = body.b.ins().icmp(IntCC::SignedLessThanOrEqual, end, bit_len);
                     let width_ok = match field.ty {
                         BitType::Integer => Some(body.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, total, 64)),
                         BitType::Float => {
@@ -1449,7 +1433,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         Prim::BitstringBitLen(..)
         | Prim::BinaryBitLen(..)
         | Prim::BitstringBase(..)
-        | Prim::IsNotBinary(..)
         | Prim::BitReadByteInt { .. }
         | Prim::BitReadByteIntAt { .. }
         | Prim::BitFieldFits { .. }
