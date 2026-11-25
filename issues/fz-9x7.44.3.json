@@ -13,11 +13,15 @@
     {
       "text": "Re-sequenced by the user 2026-11-20 (relayed by Callables; page S1/S2b updated, https://claude.ai/artifact/6jYdi5cw1d27CZC85xkJih): PARAMETERS ONLY. Results stay as they are until fz-9x7.44.1 (after S2), because today's getters return a scalar as a ref into the container's slot with no box (heap/ref_io.rs any_value_ref_from_storage -\u003e from_scalar_slot); a pair result before generated code can hold one would be boxed back. Parameters are safe: #807's stored_parts never boxes.",
       "timestamp": "2026-11-20T20:47:38Z"
+    },
+    {
+      "text": "Folded into fz-sc8.22.2 (user approved the .22.2 plan, 'approved, all three', relayed by Bugs and Cleanup 2026-11-24): the tail travels as (word, kind), parameters only, no box. Close as covered when fz-sc8.22.2 lands.",
+      "timestamp": "2026-11-25T00:35:28Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "An improper list's scalar tail is passed as a stored word and its kind",
   "type": "task",
-  "updated_at": "2026-11-25T00:35:27Z"
+  "updated_at": "2026-11-25T00:35:28Z"
 }
