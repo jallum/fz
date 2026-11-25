@@ -15,11 +15,15 @@
     {
       "text": "Commit 1 merged as #893 (e9842a96d): alias, import and require parse wherever an expression stands. Ticket stays open for commit 2 (in force inside a function body).",
       "timestamp": "2026-11-25T03:45:13Z"
+    },
+    {
+      "text": "Commit 2 (#899) is being amended: the user chose to fold in a gap the builder found. A macro that expands to a block containing import/alias/require does not carry that scope to later statements in a body, but Elixir does. Hold #899 until it is re-pushed.",
+      "timestamp": "2026-11-25T04:18:38Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "import, require and alias work inside a function body, as in Elixir",
   "type": "feature",
-  "updated_at": "2026-11-25T03:45:13Z"
+  "updated_at": "2026-11-25T04:18:38Z"
 }
