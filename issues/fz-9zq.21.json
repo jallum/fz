@@ -2,6 +2,7 @@
   "assignee": "fz-engine",
   "blocked_by": [],
   "blocks": [
+    "fz-9zq.23",
     "fz-yh5.12"
   ],
   "created": "2026-11-24T22:04:40Z",
@@ -13,5 +14,5 @@
   "status": "in_progress",
   "title": "A return whose growth nests a recursive type inside itself folds to one recursive type",
   "type": "bug",
-  "updated_at": "2026-11-24T22:04:48Z"
+  "updated_at": "2026-11-25T02:45:15Z"
 }

@@ -1,6 +1,7 @@
 {
   "assignee": "fz-engine",
   "blocked_by": [
+    "fz-9zq.21",
     "fz-9zq.22"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "A type that comes back beneath itself folds there, and only what is contained folds",
   "type": "task",
-  "updated_at": "2026-11-25T02:45:14Z"
+  "updated_at": "2026-11-25T02:45:15Z"
 }
