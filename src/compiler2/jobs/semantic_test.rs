@@ -959,7 +959,7 @@ fn a_cycle_is_compiled_as_one_activation_per_member_and_the_non_entry_member_nam
 fn two_entries_into_one_cycle_keep_their_activations_apart() {
     let mut settled = crate::compiler2::drive_harness::Drive::fixture(1348).settle();
 
-    let steps = executables_of(&mut settled, "reduce_step", 3);
+    let steps = executables_of(&mut settled, "reduce_step", 6);
     let entries: HashSet<_> = steps.iter().map(|step| step.activation.entry).collect();
 
     assert!(

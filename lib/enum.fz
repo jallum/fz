@@ -30,6 +30,8 @@ defmodule Enum do
 
   """
   @spec reduce(Enumerable.t(a), (a, a -> a)) :: a when a: var
+  def reduce([head | tail], reducer), do: reduce(tail, head, reducer)
+  def reduce([], _reducer), do: empty_error()
   def reduce(enumerable, reducer) do
     reduce_first_finish(
       Enumerable.reduce(enumerable, {:cont, :first}, fn (entry, state) ->
@@ -51,6 +53,7 @@ defmodule Enum do
 
   """
   @spec reduce(Enumerable.t(a), b, (a, b -> b)) :: b when a: var, b: var
+  def reduce(enumerable, acc, reducer) when is_list(enumerable), do: :lists.foldl(reducer, acc, enumerable)
   def reduce(enumerable, acc, reducer) do
     reduce_finish(
       Enumerable.reduce(enumerable, {:cont, acc}, fn (entry, inner_acc) ->

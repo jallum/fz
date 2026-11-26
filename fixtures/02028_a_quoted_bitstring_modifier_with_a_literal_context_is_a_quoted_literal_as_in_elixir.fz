@@ -1,12 +1,12 @@
 #---
 # purpose: Macro.quoted_literal?/1 answers for a bitstring whose modifier has a variable, an empty or an argument context as Elixir does, so the library's own guard `is_atom(ctx) or ctx == []` plans on all three paths
 # root: main/0
-# assert.metric.semantic.activations: 4
-# assert.metric.semantic.executables: 4
-# assert.metric.semantic.callsites: 10
-# assert.metric.call_edges.count: 10
+# assert.metric.semantic.activations: 6
+# assert.metric.semantic.executables: 6
+# assert.metric.semantic.callsites: 13
+# assert.metric.call_edges.count: 13
 # oracle: self
-# oracle.stamp: 19919928b780907d
+# oracle.stamp: 35fbca32bf24a063
 #---
 #
 # A modifier is quoted as `{name, meta, context}`. The context is an atom for a

@@ -516,15 +516,16 @@ evaluations now perform their local joins over recorded dependency edges. The
 evaluation that closes a recursive group joins the already-recorded member-local
 and external inputs once, then publishes the group's common idempotent answer.
 
-On `00181_enum_reduce_operator_ref`, `List.reduce_cont/3` first waits on
-`List.reduce_step/3`, which waits back on `List.reduce_cont/3`. The second
-reduce-cont evaluation closes and settles both executable-effect products at
-generation 1 under one group id. Each member already has one suspended request
-on the pull stack, so those requests resume as one cache hit per member without
-another producer evaluation. The old cone path instead left one cached
-`Enum.reduce/3` effects request; removing that hit and adding the two group
-member hits moves the fixture total from 18 to 19 while settlements,
-generations, backend output, and runtime output remain unchanged.
+On `01817_enum_reduce_over_a_range_takes_an_operator_function_reference_as_its_reducer`,
+`Range.reduce_cont/6` first waits on `Range.reduce_step/6`, which waits back on
+`Range.reduce_cont/6`. The second reduce-cont evaluation closes and settles both
+executable-effect products at generation 1 under one group id. Each member
+already has one suspended request on the pull stack, so those requests resume as
+one cache hit per member without another producer evaluation.
+`the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation`
+pins those hits by product identity. A reduce over a list does not reach this
+cycle: `Enum.reduce/3` folds a list with `:lists.foldl/3`, which recurses on
+itself.
 
 The additional 3/5/13 unexplained product evaluations are recursive effect
 members retried from an `ExecutableEffects(callee)` wait without an intervening

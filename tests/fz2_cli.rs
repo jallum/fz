@@ -53,7 +53,7 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00567_fz_f98_range_map_converges.fz",
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 125,
+        runtime_demand_walks: 132,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -1328,7 +1328,7 @@ def main(), do: Enum.reduce([1, 2, 3, 4, 5], 0, fn (x, acc) -> x + acc end)
             "runtime:Enum.fz".to_string(),
             "runtime:Enumerable.fz".to_string(),
             "runtime:Kernel.fz".to_string(),
-            "runtime:List.fz".to_string(),
+            "runtime::lists.fz".to_string(),
             "runtime:Exception.fz".to_string(),
             "runtime:ArithmeticError.fz".to_string(),
             "runtime:ErlangError.fz".to_string(),
@@ -2181,7 +2181,7 @@ end
 /// group just published without evaluating either producer again.
 #[test]
 fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_evaluation() {
-    let fixture = "fixtures/00181_enum_reduce_operator_ref.fz";
+    let fixture = "fixtures/01817_enum_reduce_over_a_range_takes_an_operator_function_reference_as_its_reducer.fz";
     let telemetry_path = unique_temp_path("fz2_quiesced", ".jsonl");
     let out = run_fz2(&[
         OsStr::new("--log-telemetry"),
@@ -2239,20 +2239,20 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What a program can raise is final only once every body of that program has been
             // analysed, so the bottom handler and the banner it calls settle here, with the
             // facts they read: the modules a value can name, and what each program raises.
-            ("Activation", 22),
-            ("ActivationAnalyzed", 26),
-            ("ActivationInputs", 23),
-            ("CallSiteSummary", 29),
-            ("CallSiteTargets", 29),
-            ("IncomingInputSlot", 28),
+            ("Activation", 28),
+            ("ActivationAnalyzed", 32),
+            ("ActivationInputs", 29),
+            ("CallSiteSummary", 37),
+            ("CallSiteTargets", 37),
+            ("IncomingInputSlot", 50),
             ("NameableModules", 1),
             // Each program settles what it can raise: the fixture's program, and the program of a
             // macro that raises.
             ("Raisable", 2),
-            ("ReturnType", 26),
-            ("RuntimeDemand", 14),
-            ("RuntimeDemandInput", 10),
-            ("RuntimeDemandInputs", 14),
+            ("ReturnType", 32),
+            ("RuntimeDemand", 20),
+            ("RuntimeDemandInput", 16),
+            ("RuntimeDemandInputs", 20),
         ]),
         "ordinary generic helper co-outputs publish every exact readiness transition without changing values"
     );
@@ -2362,17 +2362,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 521,
-            runtime_demand_evaluations: 49,
-            initial: 398,
-            content_caused: 123,
+            evaluations: 667,
+            runtime_demand_evaluations: 63,
+            initial: 518,
+            content_caused: 147,
             readiness_caused: 0,
-            concluded_caused: 0,
+            concluded_caused: 2,
             uncaused: 0,
-            changed_outputs: 470,
-            unchanged_outputs: 51,
-            already_pending: 8,
-            blocked_completions: 114,
+            changed_outputs: 604,
+            unchanged_outputs: 63,
+            already_pending: 7,
+            blocked_completions: 138,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2390,9 +2390,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 79),
-            ("changed_revision_wake", 300),
-            ("gate_expansion", 141),
+            ("blocked_waiter_expansion", 92),
+            ("changed_revision_wake", 385),
+            ("gate_expansion", 189),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2400,16 +2400,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            ("activation_published", 21),
-            ("blocked_waiter_expansion", 1),
-            ("changed_revision_wake", 8),
-            ("gate_expansion", 35),
+            ("activation_published", 25),
+            ("blocked_waiter_expansion", 19),
+            ("changed_revision_wake", 7),
+            ("gate_expansion", 49),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 44)]),
+        BTreeMap::from([("changed_revision_wake", 55)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2433,12 +2433,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (347, 4),
+        (442, 4),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        352,
+        447,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2463,25 +2463,25 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         effect_cache_hits,
         BTreeMap::from([
             (
-                effect_identity("List.reduce_cont/3", "fp[F] (list(int), int, a2) -> r0"),
+                effect_identity("Range.reduce_cont/6", "fp[F] (int, int, int, int, int, a5) -> r0"),
                 2,
             ),
             // `reduce_step` is a member of the cycle `reduce_cont` enters: its accumulator slot
             // is keyed `any` and its identity names the entering activation.
             (
                 serde_json::json!({
-                    "arrow": "fp[F] (list(int), any, a2) -> r0",
+                    "arrow": "fp[F] (int, int, int, any, any, a5) -> r0",
                     "cycle_entry": {
-                        "arrow": "fp[F] (list(int), int, a2) -> r0",
-                        "function_id": "List.reduce_cont/3",
+                        "arrow": "fp[F] (int, int, int, int, int, a5) -> r0",
+                        "function_id": "Range.reduce_cont/6",
                     },
-                    "function_id": "List.reduce_step/3",
+                    "function_id": "Range.reduce_step/6",
                     "kind": "executable_effects",
                     "need": "value",
                     "root_id": 0,
                 })
                 .to_string(),
-                1,
+                2,
             ),
         ]),
         "{fixture}: the reactive effect group must leave one cache-only suspended request per member"
@@ -2498,7 +2498,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (138, 138, 138, 0, 6, 0),
+        (164, 164, 164, 0, 7, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

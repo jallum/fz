@@ -138,12 +138,12 @@ const SEAM_FACTS: &[(&str, &str)] = &[];
 // A job gated on a fact its subject already carries never starts to
 // discover that fact missing, then wake once the fact lands
 // (`Job::missing_gates`).
-const EXPECTED_00181_NO_DUMP_JOB_STARTS: usize = 299;
+const EXPECTED_OPERATOR_REF_NO_DUMP_JOB_STARTS: usize = 450;
 const ENUM_REDUCE_OPERATOR_REF_SOURCE: &str = r#"
 def main() do
   {
-    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-    Enum.reduce([1, 2, 3], 0, &+/2)
+    Enum.reduce(1..3, 0, &Kernel.+/2),
+    Enum.reduce(1..3, 0, &+/2)
   }
 end
 "#;
@@ -3582,7 +3582,7 @@ fn compiler2_pull_root_backend_product_packages_and_runs_enum_reduce_operator_re
     let (_interp_root, no_dump_jobs) = product_no_dump_interp_job_telemetry(ENUM_REDUCE_OPERATOR_REF_SOURCE);
     let no_dump_job_fires = no_dump_jobs.total_stops();
     assert_eq!(
-        no_dump_job_fires, EXPECTED_00181_NO_DUMP_JOB_STARTS,
+        no_dump_job_fires, EXPECTED_OPERATOR_REF_NO_DUMP_JOB_STARTS,
         "product no-dump interp must retain only the ordinary arithmetic-wrapper work; got {no_dump_job_fires}"
     );
 
@@ -3899,7 +3899,10 @@ fn compiler2_transport_plan_retains_whole_callable_capture_independently_of_memb
     let mut world = World::new();
     world.submit_code(
         Some("opaque_fn_value_join.fz".to_string()),
-        include_str!("../../fixtures/00281_opaque_reducer_closure.fz").to_string(),
+        include_str!(
+            "../../fixtures/02062_a_reducer_function_value_chosen_at_runtime_drives_enum_reduce_over_a_range.fz"
+        )
+        .to_string(),
     );
     let root = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     let (driver, plan) = pull_backend_for_test(&tel, &mut world, root);
@@ -6515,10 +6518,10 @@ fn callable_owner_positions_break_sibling_ties_on_canonical_inputs() {
     );
 }
 
-/// `Enum.reduce/3` hands its reducer down to `List.reduce_cont/3`, which
-/// specializes on the accumulator. Two reduces over one reducer with seeds of
-/// different types (an integer and a float) reach two activations of
-/// `List.reduce_cont/3`, so ONE callable input reaches TWO activations of one
+/// `Enum.reduce/3` over a range hands its reducer down to `Range.reduce_cont/6`,
+/// which specializes on the accumulator. Two reduces over one reducer with seeds
+/// of different types (an integer and a float) reach two activations of
+/// `Range.reduce_cont/6`, so ONE callable input reaches TWO activations of one
 /// lambda. (One reduce reaches one: the recursion's steps share the entering
 /// activation's key.)
 ///
@@ -6538,7 +6541,7 @@ fn compiler2_transport_plan_carries_captures_when_one_layout_covers_several_acti
 def main() do
   send(self(), fn (x, acc) -> acc + x end)
   reducer = receive do f -> f end
-  {Enum.reduce([1, 2, 3], 0, reducer), Enum.reduce([1, 2, 3], 0.5, reducer)}
+  {Enum.reduce(1..3, 0, reducer), Enum.reduce(1..3, 0.5, reducer)}
 end
 "#;
 
@@ -6554,7 +6557,7 @@ end
                 position,
                 TransportPosition::ExecutableInput {
                     executable,
-                    semantic_index: 2,
+                    semantic_index: 5,
                 } if world.function_ref(executable.activation.function).is_named("reduce_cont")
             )
         })
@@ -6562,7 +6565,7 @@ end
         .collect::<Vec<_>>();
     assert!(
         reducer_inputs.len() > 1,
-        "the accumulator split should reach several List.reduce_cont/3 activations, got {reducer_inputs:?}"
+        "the accumulator split should reach several Range.reduce_cont/6 activations, got {reducer_inputs:?}"
     );
     for (position, layout) in &reducer_inputs {
         let ShapeDescr::Callable(callable) = shape_descr(&world, layout.structural) else {

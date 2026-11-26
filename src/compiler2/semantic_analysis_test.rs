@@ -606,15 +606,16 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
 
     let mut world = World::new();
     world.submit_code(
-        Some("repr_seam_enum_count_after_reduce2.fz".to_string()),
-        include_str!("../../fixtures/01599_repr_seam_enum_count_after_reduce2.fz").to_string(),
+        Some("enum_count_after_reduce_over_one_range.fz".to_string()),
+        include_str!("../../fixtures/02063_enum_count_remains_correct_after_enum_reduce_retains_the_same_range.fz")
+            .to_string(),
     );
     let root_id = world.submit_root(None, "main".to_string(), 0, ExecutableNeed::Value);
     drive_backend_product_to_settlement(
         &mut world,
         &tel,
         root_id,
-        "the retained list must keep reduce and count ground callable activations distinct",
+        "the one range reduced and then counted must keep reduce and count ground callable activations distinct",
     );
 
     let retained_specializations = callsites.all().into_iter().find(|record| {
@@ -635,7 +636,7 @@ fn compiler2_semantic_callsite_retains_reduce_and_count_specializations() {
 
     assert!(
         retained_specializations.is_some(),
-        "the retained-list fixture must publish separate grounded targets for one callable function instead of one unioned target: {:#?}",
+        "the reduce-then-count program must publish separate grounded targets for one callable function instead of one unioned target: {:#?}",
         callsites.all(),
     );
 }

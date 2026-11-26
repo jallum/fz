@@ -5738,7 +5738,7 @@ fn compiler2_unused_runtime_library_stays_cold() {
 }
 
 #[test]
-fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
+fn compiler2_enum_reduce_selects_range_protocol_impl_and_callable_reducer() {
     let tel = ConfiguredTelemetry::new();
     let outputs = OutputCapture::new();
     outputs.install(&tel);
@@ -5758,7 +5758,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
+        text: include_str!("../../fixtures2/00101_enum_reduce_range_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -5793,7 +5793,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
 
     let main_id = function_id(&functions, "main", 0);
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
-    let enumerable_list_id = module_id(&modules, "Enumerable.List");
+    let enumerable_range_id = module_id(&modules, "Enumerable.Range");
 
     let main_generated = generated_functions_owned_by(&functions, main_id);
     assert_eq!(
@@ -5811,15 +5811,15 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     );
     let bridge_reducer_id = enum_generated[0].function_id;
 
-    let list_impl_reduce = function_records
+    let range_impl_reduce = function_records
         .iter()
         .cloned()
         .into_iter()
         .find(|record| {
-            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_list_id
+            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_range_id
         })
-        .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
-    let list_impl_reduce_id = list_impl_reduce.function_id;
+        .unwrap_or_else(|| panic!("function.defined for the selected Range-backed protocol callback"));
+    let range_impl_reduce_id = range_impl_reduce.function_id;
 
     let main_lowered = outputs
         .take(Job::LowerFunction(main_id))
@@ -5845,9 +5845,9 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == enum_reduce_id
-                && summary_is_single_callee(&record.summary, SelectedCallee::Function(list_impl_reduce_id))
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(range_impl_reduce_id))
         }),
-        "Enum.reduce/3 should devirtualize Enumerable.reduce/3 to the List-backed protocol callback",
+        "Enum.reduce/3 should devirtualize Enumerable.reduce/3 to the Range-backed protocol callback",
     );
     assert!(
         callsites.iter().any(|record| {
@@ -5870,7 +5870,7 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
     for (function, label) in [
         (main_id, "main/0"),
         (enum_reduce_id, "Enum.reduce/3"),
-        (list_impl_reduce_id, "the selected List-backed protocol impl"),
+        (range_impl_reduce_id, "the selected Range-backed protocol impl"),
         (bridge_reducer_id, "the bridge reducer lambda"),
         (user_reducer_id, "the user reducer lambda"),
     ] {
@@ -5888,13 +5888,13 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
 
     let defined_modules = sorted_strings(modules.defined_names());
     assert!(
-        !defined_modules.contains(&"Map".to_string()) && !defined_modules.contains(&"Range".to_string()),
-        "list-backed Enum.reduce should not pull unrelated runtime implementation modules through definition",
+        !defined_modules.contains(&"Map".to_string()) && !defined_modules.contains(&"Enumerable.List".to_string()),
+        "range-backed Enum.reduce should not pull unrelated runtime implementation modules through definition",
     );
 
     let main_return = returns.last_for_function(root_id, main_id).return_ty;
     let enum_reduce_return = returns.last_for_function(root_id, enum_reduce_id).return_ty;
-    let list_impl_return = returns.last_for_function(root_id, list_impl_reduce_id).return_ty;
+    let range_impl_return = returns.last_for_function(root_id, range_impl_reduce_id).return_ty;
     let bridge_return = returns.last_for_function(root_id, bridge_reducer_id).return_ty;
     let user_reducer_return = returns.last_for_function(root_id, user_reducer_id).return_ty;
     assert!(
@@ -5904,9 +5904,9 @@ fn compiler2_enum_reduce_selects_list_protocol_impl_and_callable_reducer() {
         compiler.display_ty_for_test(enum_reduce_return),
     );
     assert!(
-        !compiler.types_equivalent_for_test(list_impl_return, main_return),
-        "the selected List-backed protocol callback should keep a distinct wrapper return from the reduced accumulator value, got impl={} main={}",
-        compiler.display_ty_for_test(list_impl_return),
+        !compiler.types_equivalent_for_test(range_impl_return, main_return),
+        "the selected Range-backed protocol callback should keep a distinct wrapper return from the reduced accumulator value, got impl={} main={}",
+        compiler.display_ty_for_test(range_impl_return),
         compiler.display_ty_for_test(main_return),
     );
     assert_eq!(
@@ -6009,24 +6009,24 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     let main_id = function_id(&functions, "main", 0);
     let enum_reduce_id = function_id_in_module(&functions, &modules, "Enum", "reduce", 3);
     let kernel_plus_id = function_id_in_module(&functions, &modules, "Kernel", "+", 2);
-    let enumerable_list_id = module_id(&modules, "Enumerable.List");
-    let list_impl_reduce = functions
+    let enumerable_range_id = module_id(&modules, "Enumerable.Range");
+    let range_impl_reduce = functions
         .all()
         .into_iter()
         .find(|record| {
-            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_list_id
+            record.function_ref.is_named("reduce") && record.arity == 3 && record.module_id == enumerable_range_id
         })
-        .unwrap_or_else(|| panic!("function.defined for the selected List-backed protocol callback"));
-    let list_impl_reduce_id = list_impl_reduce.function_id;
+        .unwrap_or_else(|| panic!("function.defined for the selected Range-backed protocol callback"));
+    let range_impl_reduce_id = range_impl_reduce.function_id;
 
     let callsites = callsites.all();
     assert!(
         callsites.iter().any(|record| {
             record.key.activation.root == root_id
                 && record.key.activation.function == enum_reduce_id
-                && summary_is_single_callee(&record.summary, SelectedCallee::Function(list_impl_reduce_id))
+                && summary_is_single_callee(&record.summary, SelectedCallee::Function(range_impl_reduce_id))
         }),
-        "Enum.reduce/3 should still devirtualize through the List-backed protocol callback for operator refs",
+        "Enum.reduce/3 should still devirtualize through the Range-backed protocol callback for operator refs",
     );
     assert!(
         callsites.iter().any(|record| {
@@ -6047,7 +6047,7 @@ fn compiler2_enum_reduce_operator_ref_activates_kernel_plus() {
     for (function, label) in [
         (main_id, "main/0"),
         (enum_reduce_id, "Enum.reduce/3"),
-        (list_impl_reduce_id, "the selected List-backed protocol impl"),
+        (range_impl_reduce_id, "the selected Range-backed protocol impl"),
         (kernel_plus_id, "Kernel.+/2"),
     ] {
         assert!(
@@ -6494,7 +6494,7 @@ fn compiler2_backend_program_keeps_direct_only_enum_reduce_out_of_callable_inven
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
+        text: include_str!("../../fixtures2/00101_enum_reduce_range_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -7079,7 +7079,7 @@ fn compiler2_native_program_keeps_direct_only_enum_reduce_out_of_callable_invent
     let mut compiler = Compiler2::new(tel);
     compiler.submit_code(CodeSubmission {
         name: Some("fixtures/enum_reduce_runtime_graph.fz".to_string()),
-        text: include_str!("../../fixtures2/00010_enum_reduce_main.fz").to_string(),
+        text: include_str!("../../fixtures2/00101_enum_reduce_range_main.fz").to_string(),
     });
     let root_id = compiler.submit_root(RootSubmission {
         module_name: None,
@@ -14144,7 +14144,7 @@ const SOURCE_ORDER_BLIND_ESCAPES: &[&str] = &[];
 /// walk only reports the kinds it saw; a row appearing or leaving is the
 /// census fixtures changing shape, which wants looking at either way.
 const SOURCE_ORDER_PLANS_ON_THE_CENSUS: &[(&str, usize, usize)] =
-    &[("case", 47, 23), ("entry", 111, 105), ("receive", 2, 0)];
+    &[("case", 63, 39), ("entry", 114, 107), ("receive", 2, 0)];
 
 /// The subjects at which seating `early` before `late` lets a value reach a
 /// body that never named it: the two arms put one and the same question there,
@@ -25650,20 +25650,14 @@ fn string_literal_argument_types_as_str_t() {
     assert_settles_to(&settled, "id", 1, str_ty, "str_t");
 }
 
-/// `Enum.reduce` and `Enumerable.List.reduce` settle to their own concrete
-/// return types: the public `Enum.reduce` settles to `int`, and the protocol
-/// impl `Enumerable.List.reduce` settles to `{:done, int}`.
+/// `Enum.reduce` over a list and the `:lists.foldl` it folds with settle to
+/// `int`.
 #[test]
 fn enum_reduce_runtime_graph_settles() {
     let mut settled = Drive::fixture(177).settle();
     let int_ty = settled.compiler_mut().types_mut_for_test().int();
     assert_settles_to_in_module(&settled, "Enum", "reduce", 3, int_ty, "int");
-    let done_ty = {
-        let done_atom = settled.compiler_mut().types_mut_for_test().atom_lit("done");
-        let int_ty = settled.compiler_mut().types_mut_for_test().int();
-        settled.compiler_mut().types_mut_for_test().tuple(&[done_atom, int_ty])
-    };
-    assert_settles_to_in_module(&settled, "Enumerable.List", "reduce", 3, done_ty, "{:done, int}");
+    assert_settles_to_in_module(&settled, ":lists", "foldl", 3, int_ty, "int");
 }
 
 /// Every arithmetic binary operator infers its return type from Kernel's
@@ -26183,12 +26177,12 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
         ("Stream.compose/2#lambda@0/2", 3),
         ("Stream.compose/2", 2),
         ("Enumerable.Stream.reduce/3", 2),
-        ("Enumerable.List.reduce/3", 4),
+        ("Enumerable.List.reduce/3", 2),
         ("Enumerable.Map.reduce/3", 2),
         ("Enumerable.Range.reduce/3", 1),
         // A call round a recursion cycle keeps the entering activation's key at the slots the cycle
         // supplies, so each reduce cycle's accumulator is keyed once per entry.
-        ("List.reduce_cont/3", 4),
+        ("List.reduce_cont/3", 3),
         ("Range.reduce_cont/6", 1),
     ];
     for (label, expected) in measured {
@@ -26196,7 +26190,7 @@ fn compiler2_a_stream_over_any_enumerable_keeps_its_activations_finite() {
     }
     assert_eq!(
         activations.values().map(BTreeSet::len).sum::<usize>(),
-        119,
+        120,
         "activations of the whole program"
     );
 }
@@ -26243,7 +26237,7 @@ fn seed_activations_and_reduce_wrapper_activations(source: &str) -> (usize, usiz
     (seeds, wrapper)
 }
 
-fn reduces_over_one_list_each_seeded_with_an_empty_list(accumulated: &[&str]) -> String {
+fn reduces_over_one_range_each_seeded_with_an_empty_list(accumulated: &[&str]) -> String {
     let sites = accumulated
         .iter()
         .enumerate()
@@ -26254,18 +26248,19 @@ fn reduces_over_one_list_each_seeded_with_an_empty_list(accumulated: &[&str]) ->
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "defmodule P do\n  def main() do\n    v = [1, 2, 3]\n{sites}    IO.inspect({{{results}}})\n  end\nend\nP.main()\n"
+        "defmodule P do\n  def main() do\n    v = 1..3\n{sites}    IO.inspect({{{results}}})\n  end\nend\nP.main()\n"
     )
 }
 
-/// Each `Enum.reduce` site has a reducer, and the reduce cycle supplies its
+/// Each `Enum.reduce` site over a range (a list folds directly and has no
+/// wrapper closure) has a reducer, and the reduce cycle supplies its
 /// accumulator: the seed and the list it builds are the states of one ascent,
 /// so the site's wrapper closure is compiled at the key its entry names. Two
 /// sites that share a seed type are two entries, so the wrapper closure has two
 /// activations and none is minted for a pairing no call site made.
 #[test]
 fn compiler2_two_reduces_sharing_a_seed_compile_the_two_calls_their_sites_enter() {
-    let source = reduces_over_one_list_each_seeded_with_an_empty_list(&["e", "{e, 6}"]);
+    let source = reduces_over_one_range_each_seeded_with_an_empty_list(&["e", "{e, 6}"]);
     assert_eq!(
         seed_activations_and_reduce_wrapper_activations(&source),
         (0, 2),
@@ -26278,7 +26273,7 @@ fn compiler2_two_reduces_sharing_a_seed_compile_the_two_calls_their_sites_enter(
 /// accumulator.
 #[test]
 fn compiler2_eight_reduces_sharing_a_seed_compile_one_wrapper_activation_each() {
-    let source = reduces_over_one_list_each_seeded_with_an_empty_list(&[
+    let source = reduces_over_one_range_each_seeded_with_an_empty_list(&[
         "e",
         "{e, 6}",
         "{e, 6, 7}",

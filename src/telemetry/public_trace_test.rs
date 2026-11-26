@@ -1324,7 +1324,7 @@ const SCENARIOS: [&str; 5] = [
 
 // (reachable executables, construction wrappers) per target fixture.
 // is unchanged.
-const POPULATION_BASELINES: [(u64, u64); 3] = [(48, 0), (190, 32), (185, 38)];
+const POPULATION_BASELINES: [(u64, u64); 3] = [(51, 0), (190, 32), (185, 38)];
 
 fn target_edit_sequence(fixture: &str) -> (String, [&'static str; 3]) {
     let fixture = std::fs::read_to_string(fixture).unwrap_or_else(|error| panic!("read fixture {fixture}: {error}"));
@@ -1536,7 +1536,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 runtime_demand.runtime_demand_evaluations,
                 // Executable facts are a pure function of their declared reads, so a reached leaf
                 // edit re-derives nothing it did not change and walks exactly the edited body.
-                [[109, 0, 0, 1, 4], [442, 0, 0, 1, 4], [466, 0, 0, 1, 4]][fixture_index][scenario],
+                [[116, 0, 0, 1, 4], [442, 0, 0, 1, 4], [466, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
@@ -1645,7 +1645,7 @@ const DERIVE_RECURSIVE_RATCHET: [(&str, u64, u64, u64, u64, u64); 7] = [
     // The ordering operators end in an `any`/`any` clause through `compare/2`; this
     // fixture's operands stay numeric, so no `compare/2` activation is minted and the
     // StaticCallees count covers only the numeric families' callee layers.
-    ("fixtures/00567_fz_f98_range_map_converges.fz", 21, 0, 65, 0, 35),
+    ("fixtures/00567_fz_f98_range_map_converges.fz", 22, 0, 66, 0, 37),
     ("fixtures/00571_enum_predicate_search.fz", 34, 0, 49, 0, 64),
     ("fixtures/00420_enum_take_drop_split.fz", 55, 0, 113, 0, 97),
     // 00607-00610 pin the shared-reach shape directly. Four callers (p1-p4)
@@ -1826,13 +1826,13 @@ const fn shifts(shift_wakes: u64, rebased_completions: u64) -> ShiftWork {
 const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
     AnalysisClaimRatchet {
         fixture: "fixtures/00567_fz_f98_range_map_converges.fz",
-        activations: lifecycle(55, 55, 0),
-        callsites: lifecycle(59, 59, 0),
-        shifts: shifts(4, 12),
-        analyze_evaluations: 153,
-        analyze_zero_change: 5,
+        activations: lifecycle(57, 57, 0),
+        callsites: lifecycle(61, 61, 0),
+        shifts: shifts(2, 8),
+        analyze_evaluations: 159,
+        analyze_zero_change: 6,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 718,
+        total_evaluations: 749,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",

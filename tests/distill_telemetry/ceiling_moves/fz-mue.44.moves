@@ -1,0 +1,5 @@
+# Enum.reduce over a list folds with :lists.foldl, whose reducer is specialized per accumulator type (fz-9zq.37 removes that share); on fz-mue.95 the protocol reducers' fixed point also forgoes develop's batched convergence (fz-t93.36 removes that): accepted by the user 2026-11-27
+largest drive requests +669
+total requests +669
+derivations +432
+reads handed +1496
