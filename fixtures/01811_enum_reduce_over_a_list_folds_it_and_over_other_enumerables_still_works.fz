@@ -1,0 +1,39 @@
+#---
+# purpose: "Enum.reduce/2 and /3 over lists seed and fold as in Elixir, and ranges and maps still reduce"
+# oracle: self
+# oracle.stamp: 8dc34f37d63d8f3d
+#---
+defmodule Main do
+  def empty_message(f) do
+    try do
+      f.()
+    rescue
+      e in Enum.EmptyError -> Exception.message(e)
+    end
+  end
+
+  def main() do
+    IO.inspect(Enum.reduce([], 10, fn x, acc -> x + acc end))
+    IO.inspect(Enum.reduce([5], 10, fn x, acc -> x + acc end))
+    IO.inspect(Enum.reduce([1, 2, 3, 4], 0, fn x, acc -> x + acc end))
+    IO.inspect(Enum.reduce([1, 2, 3], [], fn x, acc -> [x | acc] end))
+    IO.inspect(Enum.reduce(Enum.to_list(1..1000), 0, &+/2))
+    IO.inspect(Enum.reduce([{:a, 1}, {:b, 2}, {:c, 3}], 0, fn {_k, v}, acc -> acc + v end))
+    IO.inspect(Enum.reduce([{1, 2}, {3, 4}], {0, 0}, fn {a, b}, {sa, sb} -> {sa + a, sb + b} end))
+
+    IO.inspect(Enum.reduce([7], &+/2))
+    IO.inspect(Enum.reduce([1, 2, 3, 4], fn x, acc -> x * acc end))
+    IO.inspect(Enum.reduce([1, 2, 3], &-/2))
+    IO.inspect(Enum.reduce([[1], [2], [3]], fn x, acc -> acc ++ x end))
+    IO.inspect(Enum.reduce([{1, :a}, {2, :b}], fn {n, _}, {m, _} -> {n + m, :sum} end))
+    IO.puts(empty_message(fn -> Enum.reduce([], &+/2) end))
+    IO.puts(empty_message(fn -> Enum.reduce(1..0//1, &+/2) end))
+
+    IO.inspect(Enum.reduce(1..5, 0, &+/2))
+    IO.inspect(Enum.reduce(1..5, &*/2))
+    IO.inspect(Enum.reduce(%{a: 1, b: 2}, 0, fn {_k, v}, acc -> acc + v end))
+    IO.inspect(Enum.reduce(%{a: 1, b: 2}, [], fn {k, _v}, acc -> [k | acc] end) |> Enum.sort())
+  end
+end
+
+Main.main()

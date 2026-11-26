@@ -1,0 +1,9 @@
+#---
+# purpose: Enum.reduce over a range runs an operator function reference through the Enumerable protocol, so the reduce cycle's members are exercised
+#---
+def main() do
+  {
+    Enum.reduce(1..3, 0, &Kernel.+/2),
+    Enum.reduce(1..3, 0, &+/2)
+  }
+end

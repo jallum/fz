@@ -2,7 +2,7 @@
 # purpose: "Three Enum.reduce calls that share one named reducer, each seeded with a deeper tuple, compile: each entry into the reduce cycle keeps its own chain of activations"
 # root: main/0
 # oracle: self
-# oracle.stamp: f5d09386694dd956
+# oracle.stamp: e0c04a8c0c118806
 #---
 defmodule Pair do
   def push(x, acc), do: {x, acc}
@@ -10,9 +10,9 @@ end
 
 defmodule Main do
   def main() do
-    IO.inspect(Enum.reduce([1, 2, 3], :s, &Pair.push/2))
-    IO.inspect(Enum.reduce([1, 2, 3], {9, :s}, &Pair.push/2))
-    IO.inspect(Enum.reduce([4, 5], {9, {8, :s}}, &Pair.push/2))
+    IO.inspect(Enum.reduce(1..3, :s, &Pair.push/2))
+    IO.inspect(Enum.reduce(1..3, {9, :s}, &Pair.push/2))
+    IO.inspect(Enum.reduce(4..5, {9, {8, :s}}, &Pair.push/2))
   end
 end
 
