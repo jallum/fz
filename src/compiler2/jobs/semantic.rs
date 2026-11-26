@@ -19,7 +19,7 @@ use crate::source::Span;
 use super::super::SourceOwner;
 use super::super::body::{
     CallArg, CallSiteId, ControlDestination, DirectCallee, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
-    LoweredTail, MapBaseSite, ValueId,
+    LoweredTail, ValueId,
 };
 use super::super::contract::AppliedFunctionContract;
 use super::super::dispatch_reachability::{ReachedEdges, calculate_dispatch_reachability};
@@ -1188,12 +1188,6 @@ fn analyze_tail(
             }
             let pins = pinned_tys(values, &bindings.pinned);
             let reachability = calculate_dispatch_reachability(world.types_mut(), &dispatch.plan, &input_tys, &pins);
-            if let Some(site) = &dispatch.map_base
-                && reachability.outcome_inputs.is_empty()
-                && !world.types().is_empty(&input_tys[0])
-            {
-                return Err(emit_not_a_map(tel, world, site, &input_tys[0]));
-            }
             walks
                 .cases
                 .entry(entry_id)
@@ -2806,29 +2800,6 @@ fn activation_contract_return(
     let (_, applied_contract) =
         refine_function_call_surface(world, tel, function, input_types.to_vec(), caller_owner, violation_span)?;
     Ok(applied_contract_return(applied_contract))
-}
-
-/// A map update whose base can be no map at all, by the type the base has.
-fn emit_not_a_map(
-    tel: &impl crate::telemetry::Telemetry,
-    world: &World,
-    site: &MapBaseSite,
-    base_ty: &Ty,
-) -> FatalError {
-    let observed = world.types().display_for_diag(base_ty);
-    let (written, base) = match &site.base {
-        Some(name) => (name.as_str(), format!("`{name}`")),
-        None => ("base", "its base".to_string()),
-    };
-    emit_job_diagnostic(
-        tel,
-        Diagnostic::error(
-            codes::TYPE_NOT_A_MAP,
-            format!("`%{{{written} | ...}}` updates a map, but {base} is never one: {observed}"),
-            site.span,
-        )
-        .with_label("this update's base is not a map"),
-    )
 }
 
 fn emit_spec_violation(

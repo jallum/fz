@@ -32,8 +32,8 @@ use crate::source::{SourceMap, Span};
 use super::super::body::{
     BodyTables, CallArg, CallSiteId, ControlDestination, ControlDispatch, ControlEntryId, ControlEntryOrigin,
     DirectCallee, DispatchBindings, LoweredBitField, LoweredBitFieldSpec, LoweredBitSize, LoweredBody, LoweredClause,
-    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, MapBaseSite, OutcomeArgument, ReceiveAfter,
-    SubjectOriginRoot, SubjectOwner, SubjectPath, ValueId, step_used_values,
+    LoweredEntry, LoweredMapKey, LoweredStep, LoweredTail, OutcomeArgument, ReceiveAfter, SubjectOriginRoot,
+    SubjectOwner, SubjectPath, ValueId, step_used_values,
 };
 use super::super::code::SourceOwner;
 use super::super::drive::{FactKey, JobEffects, current_uses, emit_job_diagnostic};
@@ -157,8 +157,6 @@ struct ExprDispatch {
     /// Where a subject no arm claims goes, or `None` when the plan raises
     /// its last resort instead.
     miss_block: Option<ExprBlock>,
-    /// Set when this dispatch is a map update's test that its base is a map.
-    map_base: Option<MapBaseSite>,
 }
 
 #[derive(Debug)]
@@ -1872,11 +1870,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     };
                     lowered.push((lowered_key, self.lower_expr(value, env, steps)?));
                 }
-                let site = MapBaseSite {
-                    span: expr.span,
-                    base: written_base(base_expr),
-                };
-                self.lower_map_update(site, base, lowered, steps)
+                self.lower_map_update(expr.span, base, lowered, steps)
             }
             Expr::Struct { module, fields } => self.lower_struct_expr(expr.span, module, fields, env, steps),
             Expr::Bitstring(fields) => self.lower_bitstring_expr(expr.span, fields, env, steps),
@@ -2496,7 +2490,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![build],
                 miss_block: Some(miss_block),
-                map_base: None,
             }),
         });
         Ok(value)
@@ -2704,7 +2697,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
-                map_base: None,
             }),
         });
         Ok(value)
@@ -2776,7 +2768,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     block: arm_block,
                 }],
                 miss_block,
-                map_base: None,
             }),
         });
         Ok(ExprBlock {
@@ -2790,15 +2781,14 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     /// `case base do %{} -> ... end` is: the map arm updates and checks the
     /// keys, and any other base goes to [`Self::lower_update_failure_block`].
     /// A base whose type is a map takes the arm with no test, and a base that
-    /// can never be one is an error where the update is written.
+    /// can never be one takes the miss arm and raises when the update runs.
     fn lower_map_update(
         &mut self,
-        site: MapBaseSite,
+        span: Span,
         base: ValueId,
         entries: Vec<(LoweredMapKey, ValueId)>,
         steps: &mut Vec<ExprStep>,
     ) -> Result<ValueId, FatalError> {
-        let span = site.span;
         let keys: Vec<ValueId> = entries.iter().map(|(key, _)| key.value).collect();
         let updated = self.fresh_value();
         let ok = self.fresh_value();
@@ -2810,18 +2800,13 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         }];
         self.lower_update_key_check(span, ok, base, keys.clone(), &mut arm_steps)?;
         let miss_block = self.lower_update_failure_block(span, base, keys)?;
-        self.push_map_base_dispatch(
-            site,
-            MapBaseAccepts::Maps,
-            base,
-            ExprBlock {
-                span,
-                steps: arm_steps,
-                result: updated,
-            },
-            miss_block,
-            steps,
-        )
+        let arm = ExprBlock {
+            span,
+            steps: arm_steps,
+            result: updated,
+        };
+        let plan = self.compile_map_base_dispatch("map update", MapBaseAccepts::Maps, span)?;
+        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, steps))
     }
 
     /// `base.field` is a dispatch on whether `base` is a map, as `%{base | ...}`
@@ -2864,7 +2849,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             result: read,
         };
         let plan = self.compile_map_base_dispatch("field read", accepts, span)?;
-        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, None, steps))
+        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, steps))
     }
 
     /// `base[key]` is `Access.get(base, key, nil)`: a dispatch on whether
@@ -2900,20 +2885,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
             result: read,
         };
         let plan = self.compile_map_base_dispatch("index read", MapBaseAccepts::Maps, span)?;
-        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, None, steps))
-    }
-
-    fn push_map_base_dispatch(
-        &mut self,
-        site: MapBaseSite,
-        accepts: MapBaseAccepts,
-        base: ValueId,
-        arm: ExprBlock,
-        miss_block: ExprBlock,
-        steps: &mut Vec<ExprStep>,
-    ) -> Result<ValueId, FatalError> {
-        let plan = self.compile_map_base_dispatch("map update", accepts, site.span)?;
-        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, Some(site), steps))
+        Ok(self.push_dispatch_on_base(plan, base, arm, miss_block, steps))
     }
 
     fn push_dispatch_on_base(
@@ -2922,7 +2894,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         base: ValueId,
         arm: ExprBlock,
         miss_block: ExprBlock,
-        site: Option<MapBaseSite>,
         steps: &mut Vec<ExprStep>,
     ) -> ValueId {
         let value = self.fresh_value();
@@ -2937,7 +2908,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     block: arm,
                 }],
                 miss_block: Some(miss_block),
-                map_base: site,
             }),
         });
         value
@@ -3013,7 +2983,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                     },
                 }],
                 miss_block: Some(miss_block),
-                map_base: None,
             }),
         });
         Ok(())
@@ -3086,7 +3055,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                             block: success_block,
                         }],
                         miss_block,
-                        map_base: None,
                     }),
                 });
                 Ok(ExprBlock {
@@ -3145,7 +3113,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
-                map_base: None,
             }),
         });
         Ok(ExprBlock {
@@ -3265,7 +3232,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(reraise),
                 arm_blocks: Vec::new(),
                 miss_block: None,
-                map_base: None,
             }),
         });
         let handler = ExprBlock {
@@ -3342,7 +3308,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: Vec::new(),
                 miss_block: None,
-                map_base: None,
             }),
         });
         Ok(value)
@@ -3402,7 +3367,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks,
                 miss_block: None,
-                map_base: None,
             }),
         });
         let handler = ExprBlock {
@@ -4138,7 +4102,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         plan,
                         arm_blocks,
                         miss_block,
-                        map_base,
                     } = *dispatch;
                     unplaced.place_all(&mut lowered);
                     let branch_dest = self.plan_continuation(block, value, dest, Unplaced::default(), entries);
@@ -4175,9 +4138,7 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                         LoweredTail::Dispatch {
                             inputs,
                             bindings,
-                            dispatch: Box::new(
-                                ControlDispatch::new(plan, outcomes, miss_entry).testing_a_map_base(map_base),
-                            ),
+                            dispatch: Box::new(ControlDispatch::new(plan, outcomes, miss_entry)),
                         },
                     );
                 }
@@ -4341,7 +4302,6 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 plan: Rc::new(plan),
                 arm_blocks: vec![ExprOutcome { arguments, block }],
                 miss_block: None,
-                map_base: None,
             }),
         });
         Ok(decided)
@@ -5583,15 +5543,6 @@ const ACCESS_GET: LibraryFunction = LibraryFunction {
 enum MapBaseAccepts {
     Maps,
     MapsAndResources,
-}
-
-/// The name of the variable a map update or field read is written over, when
-/// it is written over one.
-fn written_base(base: &Spanned<Expr>) -> Option<String> {
-    match &base.node {
-        Expr::Var(var) => Some(var.name.clone()),
-        _ => None,
-    }
 }
 
 fn shared_arg(value: ValueId) -> CallArg {
