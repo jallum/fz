@@ -2902,29 +2902,15 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
     ) -> Result<ExprBlock, FatalError> {
         let key_list = self.fresh_value();
         let raised = self.fresh_value();
-        let callee = self.resolve_callee(&update_failure_callee(), 2, span, "map update failure")?;
+        let mut steps = vec![ExprStep::List {
+            value: key_list,
+            items: keys,
+            tail: None,
+        }];
+        self.push_library_call(&mut steps, raised, UPDATE_FAILURE, span, vec![base, key_list]);
         Ok(ExprBlock {
             span,
-            steps: vec![
-                ExprStep::List {
-                    value: key_list,
-                    items: keys,
-                    tail: None,
-                },
-                ExprStep::DirectCall {
-                    value: raised,
-                    callsite: self.fresh_callsite(span),
-                    callee: DirectCallee::Function(callee),
-                    args: [base, key_list]
-                        .into_iter()
-                        .map(|value| CallArg {
-                            value,
-                            ascription: None,
-                            ownership: crate::fz_ir::OwnershipMode::Share,
-                        })
-                        .collect(),
-                },
-            ],
+            steps,
             result: raised,
         })
     }
@@ -4234,6 +4220,37 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
         Ok(decided)
     }
 
+    /// A call of a library function named by its module's atom, so the module
+    /// is requested only when the semantic walk reaches the call: a miss arm
+    /// the types prove dead costs nothing. The atom names the module exactly,
+    /// so no alias in scope can redirect it.
+    fn push_library_call(
+        &mut self,
+        steps: &mut Vec<ExprStep>,
+        value: ValueId,
+        function: LibraryFunction,
+        span: Span,
+        args: Vec<ValueId>,
+    ) {
+        let module = self.push_const(steps, GroundValue::Atom(function.module_atom.to_string()));
+        steps.push(ExprStep::DirectCall {
+            value,
+            callsite: self.fresh_callsite(span),
+            callee: DirectCallee::ModuleValue {
+                module,
+                function: function.function.to_string(),
+            },
+            args: args
+                .into_iter()
+                .map(|value| CallArg {
+                    value,
+                    ascription: None,
+                    ownership: crate::fz_ir::OwnershipMode::Share,
+                })
+                .collect(),
+        });
+    }
+
     fn push_const(&mut self, steps: &mut Vec<ExprStep>, literal: GroundValue) -> ValueId {
         self.push_literal(steps, literal.into())
     }
@@ -5414,20 +5431,18 @@ fn expr_name(expr: &Expr) -> &'static str {
     }
 }
 
-/// The callable this call target names, unless a local of that name shadows it.
-///
-/// Which shapes name a callable is [`Callee`]'s question; the only thing added
-/// here is that a bound local wins over a same-spelled definition.
-/// `Map.update_failure/2`, named exactly so no alias in scope can
-/// redirect it.
-fn update_failure_callee() -> Callee {
-    Callee::Name(CallableName {
-        module: Some(crate::ast::ModuleTarget::Exact(ModuleName::from_segments(vec![
-            "Map".to_string(),
-        ]))),
-        name: "update_failure".to_string(),
-    })
+/// A function of a library module that a miss arm calls, named by its
+/// module's atom.
+struct LibraryFunction {
+    module_atom: &'static str,
+    function: &'static str,
 }
+
+/// `Map.update_failure/2`.
+const UPDATE_FAILURE: LibraryFunction = LibraryFunction {
+    module_atom: "Elixir.Map",
+    function: "update_failure",
+};
 
 /// The module expression and function name of a call on a module value:
 /// `m.f(a)`, where `m` is any expression that is not a module name.
