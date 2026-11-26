@@ -120,10 +120,10 @@ fn define_zero_capture_closures<M: cranelift_module::Module>(
     Ok(data_ids)
 }
 
-fn build_callable_boundary_signature(arg_count: usize) -> Signature {
+fn build_callable_boundary_signature(arg_reprs: &[ArgRepr]) -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
-    for _ in 0..arg_count {
-        sig.params.push(AbiParam::new(types::I64));
+    for repr in arg_reprs {
+        push_repr_param(&mut sig, *repr);
     }
     sig.params.push(AbiParam::new(types::I64)); // self
     sig.params.push(AbiParam::new(types::I64)); // cont
@@ -137,8 +137,7 @@ fn declare_callable_boundary_fns<M: cranelift_module::Module>(
 ) -> Result<HashMap<u32, FuncId>, CodegenError> {
     let mut callable_boundary_fn_ids = HashMap::default();
     for (&boundary_id, boundary) in &surface.callable_boundaries {
-        let arg_count = boundary.arg_reprs.len();
-        let sig = build_callable_boundary_signature(arg_count);
+        let sig = build_callable_boundary_signature(&boundary.arg_reprs);
         let name = format!("fz_callable_boundary_{}_b{}", boundary.target_fn.0, boundary_id);
         let func_id = m
             .declare_function(&name, Linkage::Local, &sig)
@@ -167,7 +166,8 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             .get(&boundary_id)
             .ok_or_else(|| CodegenError::new(format!("missing callable-boundary FuncId for boundary {boundary_id}")))?;
         let arg_reprs = boundary.arg_reprs.as_slice();
-        let sig = build_callable_boundary_signature(arg_reprs.len());
+        let sig = build_callable_boundary_signature(arg_reprs);
+        let word_count: usize = arg_reprs.iter().map(|repr| repr.abi_arity()).sum();
         let boundary_name = format!("callable_boundary_b{boundary_id}");
         emit_fn_body(m, fbctx, sig, callable_boundary_id, |m, b| {
             let entry_block = b.create_block();
@@ -175,8 +175,8 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
             b.switch_to_block(entry_block);
             b.seal_block(entry_block);
             let params = b.block_params(entry_block).to_vec();
-            let self_value = params[arg_reprs.len()];
-            let cont_value = params[arg_reprs.len() + 1];
+            let self_value = params[word_count];
+            let cont_value = params[word_count + 1];
             let mut shim_cache = CodegenCache::default();
             let mut cg = CodegenFn::new(
                 b,
@@ -194,8 +194,16 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
                 let binding = cg.closure_capture_as_binding(self_value, index, repr, CaptureCount::InHeader);
                 cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
             }
-            for (idx, repr) in arg_reprs.iter().copied().enumerate() {
-                let binding = CodegenValue::AnyRef(params[idx]);
+            let mut next = 0;
+            for repr in arg_reprs.iter().copied() {
+                let binding = match repr {
+                    ArgRepr::Stored => CodegenValue::Stored {
+                        word: params[next],
+                        kind: params[next + 1],
+                    },
+                    _ => CodegenValue::AnyRef(params[next]),
+                };
+                next += repr.abi_arity();
                 cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
             }
             direct_args.push(cont_value);
@@ -418,18 +426,19 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         // Strict halt-cont (kind=0). Dtor return is discarded;
         // ValueRef avoids RawInt/F64 unboxing.
         let halt_cl = cg.halt_cont_ref(locals, ArgRepr::ValueRef);
+        let [payload_word, payload_kind] = super::list_cell::stored_parts_of_ref(cg.b, payload_ref);
         let code = cg.closure_code_ref(closure);
         // Closure-target body sig: `(args..., self, cont) tail -> i64`.
         // Generic args are one-word ValueRefs.
         let mut closure_sig = Signature::new(CallConv::Tail);
-        closure_sig.params.push(AbiParam::new(types::I64)); // x ValueRef
+        push_repr_param(&mut closure_sig, ArgRepr::Stored); // x
         closure_sig.params.push(AbiParam::new(types::I64)); // self
         closure_sig.params.push(AbiParam::new(types::I64)); // cont
         closure_sig.returns.push(AbiParam::new(types::I64));
         let sig_ref = cg.b.func.import_signature(closure_sig);
         let inst =
             cg.b.ins()
-                .call_indirect(sig_ref, code, &[payload_ref, closure, halt_cl]);
+                .call_indirect(sig_ref, code, &[payload_word, payload_kind, closure, halt_cl]);
         let r = cg.b.inst_results(inst)[0];
         cg.b.ins().return_(&[r]);
     })
@@ -887,7 +896,7 @@ fn build_codegen_callable_boundaries<T: Types<Ty = Ty> + ClosureTypes>(
                 .copied()
                 .map(arg_repr_from_compiler2)
                 .collect(),
-            arg_reprs: vec![ArgRepr::ValueRef; boundary.call_arity],
+            arg_reprs: vec![ArgRepr::Stored; boundary.call_arity],
             task_halt_repr: boundary.task_halt_repr.map(arg_repr_from_compiler2),
         };
         if let Some(previous) = boundaries.insert(boundary_id, next.clone()) {

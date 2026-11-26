@@ -875,16 +875,16 @@ fn emit_call_closure<M: cranelift_module::Module>(
     let body_fp = body.closure_code_ref(cl_val);
     let mut sig = Signature::new(CallConv::Tail);
     for _ in args {
-        push_repr_param(&mut sig, ArgRepr::ValueRef);
+        push_repr_param(&mut sig, ArgRepr::Stored);
     }
     sig.params.push(AbiParam::new(types::I64)); // self
     sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(types::I64));
     let sig_ref = body.b.func.import_signature(sig);
-    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 2);
+    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(args.len() * 2 + 2);
     for arg in args {
         let binding = *var_env.get(&arg.0).expect("unbound callclosure arg");
-        body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::ValueRef);
+        body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::Stored);
     }
     indirect_args.push(cl_val);
     indirect_args.push(cf);
@@ -908,16 +908,16 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
     let body_fp = body.closure_code_ref(cl_val);
     let mut sig = Signature::new(CallConv::Tail);
     for _ in args {
-        push_repr_param(&mut sig, ArgRepr::ValueRef);
+        push_repr_param(&mut sig, ArgRepr::Stored);
     }
     sig.params.push(AbiParam::new(types::I64)); // self
     sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(types::I64));
     let sig_ref = body.b.func.import_signature(sig);
-    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 2);
+    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(args.len() * 2 + 2);
     for arg in args {
         let binding = *var_env.get(&arg.0).expect("unbound tailcallclosure arg");
-        body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::ValueRef);
+        body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::Stored);
     }
     indirect_args.push(cl_val);
     indirect_args.push(cont_param);
