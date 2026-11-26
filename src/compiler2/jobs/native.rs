@@ -3456,6 +3456,38 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         }
     }
 
+    /// The block of the first field not fitting and the state it arrives with.
+    /// `state` becomes the state of every other way to miss, which is past a
+    /// first field that fit and was read: what `matched` learned of it.
+    fn unfit_arrival(unfit: Unfit, state: &mut DispatchState, matched: &DispatchState) -> (BlockId, DispatchState) {
+        let mut arrival = state.clone();
+        arrival.fit_answers.insert(unfit.question, false);
+        state.fit_answers.insert(unfit.question, true);
+        state.field_reads.clone_from(&matched.field_reads);
+        (unfit.block, arrival)
+    }
+
+    /// The node an arrival holding `state` reaches from `target`: a test whose
+    /// first question the arrival has already answered no is passed over by
+    /// its miss edge, so it is not a way into the node that asks it.
+    fn first_unsettled(
+        &self,
+        plan: &PatternDispatchPlan<Ty>,
+        mut target: GraphNodeId,
+        state: &DispatchState,
+    ) -> GraphNodeId {
+        while let Some(DispatchNode::Test { predicate, on_miss, .. }) = plan.graph.node(target) {
+            let unfit = self
+                .first_fit_question(plan, state, predicate)
+                .is_some_and(|question| state.fit_answers.get(&question) == Some(&false));
+            if !unfit {
+                break;
+            }
+            target = on_miss.target;
+        }
+        target
+    }
+
     /// Follows an edge: into a join it jumps, otherwise the target is lowered
     /// where the edge stands.
     fn lower_dispatch_edge<L>(
@@ -3468,6 +3500,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     where
         L: FnMut(&mut Self, &mut NativeFnCtx, DispatchLeaf, &mut DispatchState) -> Result<(), FatalError>,
     {
+        let target = self.first_unsettled(walk.plan, target, state);
         let joined = walk
             .joins
             .arrive(&walk.plan.graph, target, state, || ctx.builder.block(vec![]));
@@ -3533,8 +3566,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 ctx.current_block = else_b;
                 self.lower_dispatch_edge(ctx, walk, on_miss.target, state)
             }
-            RegionOutcome::Matched { missed } => {
+            RegionOutcome::Matched { missed, unfit } => {
+                let unfit_arrival = unfit.map(|unfit| Self::unfit_arrival(unfit, state, &match_state));
                 self.lower_dispatch_edge(ctx, walk, on_match.target, &mut match_state)?;
+                if let Some((block, mut unfit_state)) = unfit_arrival {
+                    ctx.current_block = block;
+                    self.lower_dispatch_edge(ctx, walk, on_miss.target, &mut unfit_state)?;
+                }
                 ctx.current_block = missed;
                 self.lower_dispatch_edge(ctx, walk, on_miss.target, state)
             }
@@ -4256,6 +4294,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
         };
         let field_count = shape.fields.len();
+        let mut unfit = None;
         for (index, field_subject) in shape.fields.iter().enumerate() {
             let extraction = plan.bitstring_extraction(*field_subject);
             let spec = &extraction.spec;
@@ -4270,15 +4309,35 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             if cursor_position.is_none() && index == 0 && Self::fit_ignores_length(&field) {
                 self.require_binary(ctx, pos, bit_len, fail_b);
             }
-            let (fits, utf8_end) = self.emit_bit_fits(ctx, subject_var, pos, bit_len, &field);
-            let next_b = ctx.builder.block(vec![]);
-            ctx.set_term(Term::If {
-                cond: fits,
-                then_b: next_b,
-                else_b: fail_b,
-                origin: BranchOrigin::ClauseDispatch,
-            });
-            ctx.current_block = next_b;
+            let question = match (index, cursor_position) {
+                (0, Some(position)) => FitQuestion::of(subject_var, position, &extraction.spec),
+                _ => None,
+            };
+            let utf8_end = if question.is_some_and(|question| state.fit_answers.get(&question) == Some(&true)) {
+                None
+            } else {
+                let (fits, utf8_end) = self.emit_bit_fits(ctx, subject_var, pos, bit_len, &field);
+                let next_b = ctx.builder.block(vec![]);
+                let else_b = match question {
+                    Some(question) => {
+                        let block = ctx.builder.block(vec![]);
+                        unfit = Some(Unfit { block, question });
+                        block
+                    }
+                    None => fail_b,
+                };
+                ctx.set_term(Term::If {
+                    cond: fits,
+                    then_b: next_b,
+                    else_b,
+                    origin: BranchOrigin::ClauseDispatch,
+                });
+                ctx.current_block = next_b;
+                utf8_end
+            };
+            if let Some(question) = question {
+                state.fit_answers.insert(question, true);
+            }
             let consumed = plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject);
             let value = if !consumed {
                 None
@@ -4288,14 +4347,17 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     lanes: vec![subject_var, pos],
                 })
             } else {
-                Some(NativeBoundValue::Runtime(self.emit_bit_read(
-                    ctx,
-                    facts.base,
-                    subject_var,
-                    pos,
-                    start,
-                    &field,
-                )?))
+                let read = match question.and_then(|question| state.field_read(question, &field)) {
+                    Some(read) => read,
+                    None => {
+                        let read = self.emit_bit_read(ctx, facts.base, subject_var, pos, start, &field)?;
+                        if let Some(question) = question {
+                            state.field_reads.push(FieldRead::of(question, &field, read));
+                        }
+                        read
+                    }
+                };
+                Some(NativeBoundValue::Runtime(read))
             };
             // The last field has no successor unless the pattern must also end
             // there; a field that reads to the end of the binary ends at its end.
@@ -4331,7 +4393,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ctx.current_block = matched_b;
         }
 
-        Ok(RegionOutcome::Matched { missed: fail_b })
+        Ok(RegionOutcome::Matched { missed: fail_b, unfit })
     }
 
     /// Whether `field` is the rest of a binary: a `binary` or `bits` field with
@@ -4386,25 +4448,41 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         state: &DispatchState,
         shape: &crate::dispatch_matrix::BitstringShape,
     ) -> bool {
-        use crate::dispatch_matrix::BitstringFieldSize;
         shape.fields.iter().any(|field_subject| {
             let spec = &plan.bitstring_extraction(*field_subject).spec;
-            let size = match &spec.size {
-                None => None,
-                Some(BitstringFieldSize::Literal(bits)) => Some(BitSizeIr::Literal(*bits)),
-                Some(_) => return false,
-            };
-            let field = BitMatchField {
-                ty: spec.runtime_kind(),
-                size,
-                endian: spec.endian,
-                signed: spec.signed,
-                unit: spec.unit,
-                is_last: false,
-            };
-            field.whole_byte_integer_width().is_some()
-                && (plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject))
+            literal_bit_field(spec).is_some_and(|field| {
+                field.whole_byte_integer_width().is_some()
+                    && (plan.graph.asks(*field_subject) || state.outcome_reads.contains(field_subject))
+            })
         })
+    }
+
+    /// The question of whether the first field of `predicate`'s bitstring test
+    /// fits, when the subject is a cursor already in hand and the field's width
+    /// is a literal. Nothing is emitted to ask it.
+    fn first_fit_question(
+        &self,
+        plan: &PatternDispatchPlan<Ty>,
+        state: &DispatchState,
+        predicate: &crate::dispatch_matrix::RegionPredicate<Ty>,
+    ) -> Option<FitQuestion> {
+        let Region::Bitstring(shape) = &predicate.region else {
+            return None;
+        };
+        let first = plan.bitstring_extraction(*shape.fields.first()?);
+        let subject = plan.graph.subjects.get(predicate.subject.0 as usize)?;
+        let held = state.values.get(&predicate.subject).or_else(|| match subject.source {
+            crate::dispatch_matrix::SubjectSource::Input { ordinal } => state.dispatch_inputs.get(ordinal as usize),
+            _ => None,
+        })?;
+        let NativeBoundValue::Transport { shape: cursor, lanes } = held else {
+            return None;
+        };
+        let [source, position] = lanes.as_slice() else {
+            return None;
+        };
+        matches!(self.world.shape(*cursor), ShapeDescr::Cursor { .. }).then_some(())?;
+        FitQuestion::of(*source, *position, &first.spec)
     }
 
     /// The binary a bitstring region reads and the position it starts at: the
@@ -5909,10 +5987,11 @@ enum RegionOutcome {
     /// A yes or no, for the caller to branch on.
     Answer(DispatchAnswer),
     /// The question has already branched: control is in the block where it
-    /// matched, and every way it can miss leads to `missed`. What it extracted
-    /// is defined where it matched, so it needs no join to reach the matched
-    /// side.
-    Matched { missed: BlockId },
+    /// matched, and every way it can miss leads to `missed`, except that the
+    /// first field not fitting leads to `unfit` when the question of that fit
+    /// is one a later clause may ask again. What it extracted is defined where
+    /// it matched, so it needs no join to reach the matched side.
+    Matched { missed: BlockId, unfit: Option<Unfit> },
 }
 
 impl DispatchAnswer {
@@ -5956,6 +6035,86 @@ struct DispatchState {
     /// the first test begins, which dominates every clause that tests the same
     /// binary after it, so the next clause reuses them rather than asking again.
     binary_facts: HashMap<Var, BinaryFacts>,
+    /// The fit questions this arrival has already answered, whether the answer
+    /// was yes or no. Both answers are facts of the arrival: a later clause
+    /// that begins with the same question needs no test when the answer was
+    /// yes, and is not reached at all when it was no.
+    fit_answers: HashMap<FitQuestion, bool>,
+    /// The first field of a bitstring test, read where it fits, by the question
+    /// of its fitting: a later clause that begins with the same field takes
+    /// the value rather than reading it again.
+    field_reads: Vec<FieldRead>,
+}
+
+/// Whether a field of a known width fits where a cursor stands: the binary the
+/// cursor reads, the position it stands at, and the width in bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct FitQuestion {
+    source: Var,
+    position: Var,
+    bits: u64,
+}
+
+impl FitQuestion {
+    /// The question of `spec`'s field fitting at `position` of `source`, when
+    /// the field's width is known without running the program.
+    fn of(source: Var, position: Var, spec: &crate::dispatch_matrix::BitstringFieldShape) -> Option<Self> {
+        let bits = literal_bit_field(spec)?.static_bits()?;
+        Some(Self { source, position, bits })
+    }
+}
+
+/// `spec` as a field to match, when its size is absent or a literal.
+fn literal_bit_field(spec: &crate::dispatch_matrix::BitstringFieldShape) -> Option<BitMatchField> {
+    use crate::dispatch_matrix::BitstringFieldSize;
+    let size = match &spec.size {
+        None => None,
+        Some(BitstringFieldSize::Literal(bits)) => Some(BitSizeIr::Literal(*bits)),
+        Some(_) => return None,
+    };
+    Some(BitMatchField {
+        ty: spec.runtime_kind(),
+        size,
+        endian: spec.endian,
+        signed: spec.signed,
+        unit: spec.unit,
+        is_last: false,
+    })
+}
+
+/// A field read where it fits: what the bits are read as, and the variable
+/// that holds the value. The width is the question's; the size a pattern
+/// spells for it, or leaves to the type's default, does not change the value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FieldRead {
+    question: FitQuestion,
+    ty: BitType,
+    endian: crate::ast::Endian,
+    signed: bool,
+    var: Var,
+}
+
+impl FieldRead {
+    fn of(question: FitQuestion, field: &BitMatchField, var: Var) -> Self {
+        Self {
+            question,
+            ty: field.ty,
+            endian: field.endian,
+            signed: field.signed,
+            var,
+        }
+    }
+
+    fn is_of(&self, question: FitQuestion, field: &BitMatchField) -> bool {
+        self.question == question && self.ty == field.ty && self.endian == field.endian && self.signed == field.signed
+    }
+}
+
+/// The path out of a bitstring test when its first field does not fit,
+/// together with the question that failed.
+struct Unfit {
+    block: BlockId,
+    question: FitQuestion,
 }
 
 /// What a bitstring test asks of its binary before any field: how many bits it
@@ -5984,6 +6143,9 @@ impl ArrivalState for DispatchState {
                 .retain(|subject, value| other.values.get(subject) == Some(value));
             met.binary_facts
                 .retain(|binary, facts| other.binary_facts.get(binary) == Some(facts));
+            met.fit_answers
+                .retain(|question, answer| other.fit_answers.get(question) == Some(answer));
+            met.field_reads.retain(|read| other.field_reads.contains(read));
         }
         met
     }
@@ -5999,7 +6161,16 @@ impl DispatchState {
             values: HashMap::default(),
             outcome_reads: Vec::new(),
             binary_facts: HashMap::default(),
+            fit_answers: HashMap::default(),
+            field_reads: Vec::new(),
         }
+    }
+
+    fn field_read(&self, question: FitQuestion, field: &BitMatchField) -> Option<Var> {
+        self.field_reads
+            .iter()
+            .find(|read| read.is_of(question, field))
+            .map(|read| read.var)
     }
 
     fn proven(mut self, roots: Vec<Ty>) -> Self {

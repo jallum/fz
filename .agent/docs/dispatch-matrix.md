@@ -33,7 +33,7 @@ subsystem-specific cascades:
   a join records the arrival's state and jumps to the join's block, made on
   the first arrival; after the root, joins are emitted from the largest id
   down, each in its block with the meet of its arrivals' states. The meet
-  keeps a cached value (`DispatchState::values` and `bit_lens` in native,
+  keeps a cached value (`DispatchState::values` and `binary_facts` in native,
   `DispatchEmitState::values` in receive) only when every arrival holds the
   same one, which makes it dominate the join. Native's walkers
   (`lower_dispatch_graph`: entry dispatch, control dispatch, call dispatch,
@@ -44,6 +44,18 @@ subsystem-specific cascades:
   `compiler2_native_a_guarded_clause_chain_is_lowered_linearly` holds it. The
   atom collector of the backend and the reachable-bodies collector of
   redundant-row analysis iterate `DispatchGraph::reachable`.
+
+  A native arrival also carries what the dispatch has learned of a cursor's
+  first field: whether it fits (`DispatchState::fit_answers`, by
+  `FitQuestion`: binary, position, width) and the value read there
+  (`DispatchState::field_reads`). A bitstring test whose first field does not
+  fit leaves by its own block, so that arrival holds the answer no. An edge
+  passes over every test whose first question its arrival answered no
+  (`first_unsettled`), so a join is reached only by arrivals that agree and
+  keeps the answer yes and the read. A clause that begins where the clause
+  before it began asks no fit question and reads no byte again;
+  `compiler2_native_a_byte_scanner_reads_its_byte_once` and
+  `tests/binary_loop_price_test.rs` hold it.
 
 A plan is syntactic and lane-blind. `Pattern::Tuple` always pushes
 `tuple_arity`, and reachability prunes outcomes rather than questions, so the

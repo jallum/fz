@@ -1042,3 +1042,40 @@ fn a_dispatch_join_keeps_a_binarys_facts_only_when_every_arrival_holds_the_same(
 
     assert_eq!(met.binary_facts.keys().copied().collect::<Vec<_>>(), vec![kept]);
 }
+
+fn fit_question(position: u32) -> FitQuestion {
+    FitQuestion {
+        source: Var(1),
+        position: Var(position),
+        bits: 8,
+    }
+}
+
+/// What an arrival answered of a field's fit, and the value it read there, are
+/// facts of the block they happened in. A join keeps an answer only when every
+/// arrival gave the same one, and a read only when every arrival holds that
+/// very read: an arrival that was told no, or never read, leaves the join to
+/// ask and read again.
+#[test]
+fn a_dispatch_join_keeps_fit_answers_and_field_reads_only_when_every_arrival_holds_them() {
+    let (agreed, disputed, unasked) = (fit_question(2), fit_question(3), fit_question(4));
+    let read = |question, var| FieldRead {
+        question,
+        ty: BitType::Integer,
+        endian: crate::ast::Endian::Big,
+        signed: false,
+        var: Var(var),
+    };
+    let mut left = arrival_with_facts(&[]);
+    left.fit_answers
+        .extend([(agreed, true), (disputed, true), (unasked, false)]);
+    left.field_reads = vec![read(agreed, 10), read(disputed, 11)];
+    let mut right = arrival_with_facts(&[]);
+    right.fit_answers.extend([(agreed, true), (disputed, false)]);
+    right.field_reads = vec![read(agreed, 10), read(disputed, 12)];
+
+    let met = DispatchState::meet(vec![left, right]);
+
+    assert_eq!(met.fit_answers.into_iter().collect::<Vec<_>>(), vec![(agreed, true)]);
+    assert_eq!(met.field_reads, vec![read(agreed, 10)]);
+}
