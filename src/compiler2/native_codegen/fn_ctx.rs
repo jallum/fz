@@ -204,18 +204,20 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     /// Mark `value` shared: from here on it may have a second holder, so it is
     /// never written in place again. What the compiler knows of the value
-    /// decides the code: nothing for a value that holds no mark, a test and a
+    /// decides the code: nothing for a value that holds no mark, a value of
+    /// known kind (a scalar, or a read-only literal marked as one), a test and a
     /// store for a struct, tuple or binary, a test of the first cell and a
     /// spine walk for a list, and a branch on the reference's kind for a
-    /// value whose kind is known only when it runs. It is `Heap::share`,
+    /// value whose kind is known only when it runs. A static object's header is
+    /// marked already, so sharing one only reads it. It is `Heap::share`,
     /// written in place.
     pub(crate) fn share(&mut self, value: CodegenValue) {
         match value {
             CodegenValue::AnyRef(reference) => self.share_any(reference),
-            CodegenValue::Known { kind, .. } if !kind.is_scalar() => {
-                let reference = self.value_as_any_ref(value);
-                self.share_kind(reference, kind);
-            }
+            CodegenValue::Known {
+                kind: ValueKind::LIST, ..
+            } => {}
+            CodegenValue::Known { payload, kind } if kind.is_heap() => self.share_kind(payload, kind),
             CodegenValue::Known { .. }
             | CodegenValue::RawInt(_)
             | CodegenValue::RawF64(_)
@@ -435,17 +437,13 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     /// from what the compiler holds without reading the value.
     fn stored_form(&mut self, value: CodegenValue, addressed: Option<ShareClass>) -> Option<(ir::Value, ir::Value)> {
         let (raw, kind) = match value {
-            CodegenValue::RawInt(raw) => (raw, ValueKind::INT),
-            CodegenValue::RawF64(raw) => (raw, ValueKind::FLOAT),
-            CodegenValue::RawAtom(raw) => (raw, ValueKind::ATOM),
-            CodegenValue::Condition(flag) => (bool_to_fz(self.b, self.cache, flag), ValueKind::ATOM),
-            CodegenValue::Known { payload, kind } if kind.is_scalar() => (payload, kind),
-            CodegenValue::Known { kind, .. } => (self.b.ins().iconst(types::I64, 0), kind),
             CodegenValue::AnyRef(reference) => {
                 let share = addressed?;
                 self.share_as(value, share);
                 return Some(self.addressed_form(reference));
             }
+            CodegenValue::Condition(flag) => (bool_to_fz(self.b, self.cache, flag), ValueKind::ATOM),
+            _ => value_raw_kind_parts(self, value).expect("a value held outside a ref is a scalar or a static kind"),
         };
         Some((raw, self.b.ins().iconst(types::I8, kind.tag() as i64)))
     }
@@ -502,6 +500,12 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
     pub(crate) fn static_object_ref(&mut self, data_id: DataId, kind: ValueKind) -> ir::Value {
         let addr = data_addr(self.jmod, data_id, self.b);
         self.literal_ref_word_from_addr(addr, kind)
+    }
+
+    /// The read-only object the program emitted, as a value whose kind is
+    /// known: its payload is the literal-marked ref word.
+    pub(crate) fn static_object_value(&mut self, data_id: DataId, kind: ValueKind) -> CodegenValue {
+        CodegenValue::known(self.static_object_ref(data_id, kind), kind)
     }
 
     /// The tagged ref to the read-only object at `addr`, marked as a literal.
@@ -770,7 +774,9 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
 
     // -- ABI boxing / representation coercion (cache-free) --
 
-    pub(crate) fn box_known_non_heap(&mut self, raw: ir::Value, kind: ValueKind) -> ir::Value {
+    /// The ref word of a value whose kind is known. A scalar is boxed; a heap
+    /// kind's payload is already the ref word, literal bit included.
+    pub(crate) fn known_ref_word(&mut self, raw: ir::Value, kind: ValueKind) -> ir::Value {
         if kind == ValueKind::INT {
             return self.box_int_for_any(raw);
         }
@@ -793,12 +799,15 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             let word = AnyValueRef::empty_list().raw_word();
             return b.ins().iconst(types::I64, word as i64);
         }
+        if kind.is_heap() {
+            return raw;
+        }
         unreachable!("heap refs must stay as CodegenValue::AnyRef")
     }
 
     pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
         match (binding, to) {
-            (CodegenValue::Known { payload, kind }, ArgRepr::ValueRef) => self.box_known_non_heap(payload, kind),
+            (CodegenValue::Known { payload, kind }, ArgRepr::ValueRef) => self.known_ref_word(payload, kind),
             (
                 CodegenValue::Known {
                     payload,
@@ -1032,7 +1041,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                 let atom = bool_to_fz(self.b, self.cache, value);
                 self.box_atom_for_any(atom)
             }
-            CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
+            CodegenValue::Known { payload, kind } => self.known_ref_word(payload, kind),
         }
     }
 
@@ -1067,7 +1076,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                 };
                 self.box_int_for_any(raw)
             }
-            CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
+            CodegenValue::Known { payload, kind } => self.known_ref_word(payload, kind),
             CodegenValue::AnyRef(value) => value,
             CodegenValue::Condition(value) => {
                 let atom = bool_to_fz(self.b, self.cache, value);
@@ -1150,7 +1159,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
                     self.box_atom_for_any(atom)
                 }
                 CodegenValue::AnyRef(value) => value,
-                CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
+                CodegenValue::Known { payload, kind } => self.known_ref_word(payload, kind),
             };
             out.push(value_ref);
         } else {

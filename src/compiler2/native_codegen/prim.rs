@@ -209,7 +209,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
     schema_id: u32,
     name: StructName,
     fields: &[Var],
-) -> Result<Option<ir::Value>, CodegenError> {
+) -> Result<Option<CodegenValue>, CodegenError> {
     let Some(static_fields) = fields
         .iter()
         .map(|field| static_literal_field_for_var(body.cache, var_env, *field))
@@ -219,7 +219,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
     };
 
     let data_id = define_static_struct_literal(body, env, dest_var, schema_id, name, &static_fields)?;
-    Ok(Some(static_struct_ref_word(body, dest_var, data_id)))
+    Ok(Some(static_struct_value(body, dest_var, data_id)))
 }
 
 fn define_static_struct_literal<M: cranelift_module::Module>(
@@ -263,16 +263,15 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
     define_read_only_object(body.jmod, &name, buf, &addresses)
 }
 
-fn static_struct_ref_word<M: cranelift_module::Module>(
+fn static_struct_value<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     dest_var: Var,
     data_id: DataId,
-) -> ir::Value {
-    let ref_word = body.static_object_ref(data_id, ValueKind::STRUCT);
+) -> CodegenValue {
     body.cache
         .static_struct_refs
         .insert(dest_var.0, StaticStructRef { data_id });
-    ref_word
+    body.static_object_value(data_id, ValueKind::STRUCT)
 }
 
 /// A struct or tuple of `fields`: read-only program data when every field is
@@ -288,7 +287,7 @@ fn build_struct<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     fields: &[Var],
 ) -> Result<LowerOut, CodegenError> {
     if let Some(static_ref) = try_static_struct_literal(body, env, var_env, dest_var, schema_id, name, fields)? {
-        return Ok(LowerOut::ValueRefWord(static_ref));
+        return Ok(LowerOut::Strict(static_ref));
     }
     let object = body.alloc_struct(schema_id, name, fields.len());
     for (index, field) in fields.iter().enumerate() {
@@ -492,7 +491,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 .literal(body.jmod, bytes, *bit_len)?;
             match literal {
                 BitstringLiteral::Object(object) => {
-                    LowerOut::ValueRef(body.static_object_ref(object, ValueKind::BITSTRING))
+                    LowerOut::Strict(body.static_object_value(object, ValueKind::BITSTRING))
                 }
                 BitstringLiteral::Shared(shared) => {
                     let gv = body.jmod.declare_data_in_func(shared, body.b.func);
@@ -1583,6 +1582,10 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
             CodegenValue::Known {
                 kind: ValueKind::ATOM, ..
             } => KindEvidence::Unboxed(ValueKind::ATOM),
+            CodegenValue::Known {
+                kind: ValueKind::LIST, ..
+            } => KindEvidence::Opaque,
+            CodegenValue::Known { kind, .. } if kind.is_heap() => KindEvidence::Static(kind),
             CodegenValue::Known { .. } => KindEvidence::Opaque,
         }
     }
@@ -2741,7 +2744,10 @@ pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     fn_id: FnId,
 ) -> Result<LowerOut, CodegenError> {
     let cl_sid = settled_callable_boundary_id(env, fn_id)?;
-    Ok(LowerOut::ValueRef(static_closure_ref(body, env, cl_sid)?))
+    Ok(LowerOut::Strict(CodegenValue::known(
+        static_closure_ref(body, env, cl_sid)?,
+        ValueKind::CLOSURE,
+    )))
 }
 
 /// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure
