@@ -1,0 +1,18 @@
+#---
+# purpose: "a map update whose base the compiler knows is no map still compiles, and raises BadMapError when it runs, as in Elixir"
+# oracle: self
+# oracle.stamp: 24f9d061e64b4d8e
+#---
+#
+# The binary is known at the update, so the update can never find a map. That
+# is no compile error: the update takes its miss arm and raises when reached.
+defmodule Main do
+  def main() do
+    v = "bin"
+    %{v | a: 1}
+  rescue
+    e in BadMapError -> IO.puts(Exception.message(e))
+  end
+end
+
+Main.main()

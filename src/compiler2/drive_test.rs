@@ -9789,6 +9789,16 @@ fn a_read_of_a_value_that_is_never_a_map_compiles_and_raises_when_it_runs() {
     assert_eq!(defined("v[:a]"), ["ArgumentError", "ArithmeticError"]);
 }
 
+/// A map update of a base the types prove is no map is not a compile error
+/// either, even when the update sits in a function only called with such a
+/// value: it compiles, and its miss arm raises `BadMapError`.
+#[test]
+fn a_map_update_of_a_value_that_is_never_a_map_compiles_and_raises_when_it_runs() {
+    let program = "def f(m), do: %{m | a: 1}\ndef main(), do: f(1)\n";
+    let defined = defined_exceptions(&Drive::source("update_never_a_map.fz", program).settle());
+    assert_eq!(defined, ["BadMapError", "KeyError"]);
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
