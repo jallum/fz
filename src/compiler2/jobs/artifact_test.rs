@@ -70,6 +70,20 @@ fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {
     assert_eq!(carrier, vec![(int, AbiValueRepr::ValueRef)]);
 }
 
+#[test]
+fn an_empty_type_travels_as_no_scalar_lane() {
+    let mut world = World::new();
+    let none = world.types_mut().none();
+    let int = world.types_mut().int();
+    let float = world.types_mut().float();
+    let atom = world.types_mut().atom();
+
+    assert_eq!(AbiValueRepr::for_ty(&mut world, none), AbiValueRepr::ValueRef);
+    assert_eq!(AbiValueRepr::for_ty(&mut world, int), AbiValueRepr::RawInt);
+    assert_eq!(AbiValueRepr::for_ty(&mut world, float), AbiValueRepr::RawF64);
+    assert_eq!(AbiValueRepr::for_ty(&mut world, atom), AbiValueRepr::RawAtom);
+}
+
 fn fake_call_executable(world: &mut World, root: u32, function: u32, inputs: &[Ty]) -> ExecutableKey {
     let activation = ActivationKey::from_inputs(
         RootId::for_test(root),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler2::AbiValueRepr;
 use crate::compiler2::FunctionId;
 use crate::compiler2::artifact::BackendValueLayout;
 use crate::compiler2::identity::ExecutableNeed;

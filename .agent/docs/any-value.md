@@ -464,8 +464,11 @@ Condition // raw i1 from a comparison/type-test whose result is only branched on
 ```
 
 compiler2 picks each lane (`AbiValueRepr`) and codegen copies it with
-`arg_repr_from_compiler2`: float -> `RawF64`, integer -> `RawInt`,
-atom-subtype -> `RawAtom`, else `ValueRef`. `CodegenValue` adds `AnyRef` (an
+`arg_repr_from_compiler2`: the empty type `none` -> `ValueRef` (it is a
+subtype of every scalar but no value of it exists, so it never gets a raw
+lane), float -> `RawF64`, integer -> `RawInt`, atom-subtype -> `RawAtom`, else
+`ValueRef`. Entry captures and layout lanes choose through the same
+`AbiValueRepr::for_ty`. `CodegenValue` adds `AnyRef` (an
 `any` ref value) and `Known { payload, kind }` (a compile-time-constant scalar);
 both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
 always one machine word across a call boundary, never split into payload + kind.
