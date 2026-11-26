@@ -662,7 +662,11 @@ An update is Elixir's `put_map_exact`. It lowers to a dispatch on the pattern
 `%{}` over the base, the same plan `case base do %{} -> ... end` makes: the map
 arm is the update and its key check, and any other base goes to
 `Map.update_failure/2`, which raises `BadMapError` for it. A base whose type is a
-map folds the dispatch away and pays no kind test. A base whose type is no map
+map folds the dispatch away and pays no kind test, and its dead miss arm
+requests no module: the arm names `Map.update_failure/2` through the atom
+`Elixir.Map` (`push_library_call`, a `DirectCallee::ModuleValue`), which the
+semantic walk resolves only on reaching the call, so a program that only
+updates maps it knows are maps never loads `Map`. A base whose type is no map
 at all leaves the map arm unreachable, and that is the compile error
 `type/not-a-map` at the update (`emit_not_a_map`, raised where the semantic walk
 finds the dispatch's `map_update` site with no reachable outcome).

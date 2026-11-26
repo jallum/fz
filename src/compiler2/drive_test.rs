@@ -25000,6 +25000,29 @@ fn a_program_defines_only_the_exception_modules_it_can_raise() {
     );
 }
 
+/// A map update's failure arm calls `Map.update_failure/2`. When the types
+/// prove the base a map the arm is dead, and the module it calls is never
+/// requested, so a program that updates a map it knows is one defines no `Map`.
+#[test]
+fn a_map_update_of_a_proven_map_loads_no_module_for_its_dead_failure_arm() {
+    let proven = Drive::source("proven_update.fz", "def main(), do: %{%{a: 1} | a: 2}\n").settle();
+    assert!(
+        !proven.modules().defined_names().contains(&"Map".to_string()),
+        "a dead failure arm requested Map: {:?}",
+        proven.modules().defined_names()
+    );
+    let unproven = Drive::source(
+        "unproven_update.fz",
+        "defmodule P do\n  def pick([h | _]), do: h\n  def put(m), do: %{m | a: 2}\nend\n\
+         def main(), do: P.put(P.pick([%{a: 1}, 7]))\n",
+    )
+    .settle();
+    assert!(
+        unproven.modules().defined_names().contains(&"Map".to_string()),
+        "a live failure arm must still load Map"
+    );
+}
+
 /// A program that raises nothing has no handler to compile: the `try` its
 /// entry wraps `main/0` in is analysed as its body alone, and the module that
 /// words an uncaught failure is never defined.
