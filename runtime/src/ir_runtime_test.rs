@@ -603,6 +603,185 @@ fn a_comparison_takes_each_operand_as_word_and_kind_and_boxes_nothing() {
     });
 }
 
+/// What each comparison entry answers for a pair, and how many times the
+/// general comparator was asked to answer it.
+struct Answers {
+    ordering: i64,
+    equality: [u64; 4],
+    comparator_calls: usize,
+}
+
+fn answers_for(process: &mut Process, left: AnyValue, right: AnyValue) -> Answers {
+    let [lw, lk] = stored(left);
+    let [rw, rk] = stored(right);
+    crate::term::tests::COMPARISON_CALLS.with(|calls| calls.set(0));
+    let ordering = fz_value_cmp_ref(process, lw, lk, rw, rk);
+    let equality = [
+        fz_op_eq(process, lw, lk, rw, rk),
+        fz_op_neq(process, lw, lk, rw, rk),
+        fz_op_identical(process, lw, lk, rw, rk),
+        fz_op_not_identical(process, lw, lk, rw, rk),
+    ];
+    Answers {
+        ordering,
+        equality,
+        comparator_calls: crate::term::tests::COMPARISON_CALLS.with(|calls| calls.get()),
+    }
+}
+
+fn expected_equality(equal: bool) -> [u64; 4] {
+    [u64::from(equal), u64::from(!equal), u64::from(equal), u64::from(!equal)]
+}
+
+/// Intent: two integers, or two atoms, are answered from their stored words:
+/// the general comparator is never asked, and the answers are the integers'
+/// order and the atoms' name order.
+#[test]
+fn two_ints_or_two_atoms_are_answered_from_their_words_without_the_comparator() {
+    with_process(|process| {
+        let ints = [
+            i64::MIN,
+            i64::MIN + 1,
+            -1_000_000_007,
+            -1,
+            0,
+            1,
+            255,
+            i64::MAX - 1,
+            i64::MAX,
+        ];
+        for left in ints {
+            for right in ints {
+                let answers = answers_for(process, AnyValue::int(left), AnyValue::int(right));
+                assert_eq!(answers.ordering, left.cmp(&right) as i64, "{left} vs {right}");
+                assert_eq!(answers.equality, expected_equality(left == right), "{left} vs {right}");
+                assert_eq!(answers.comparator_calls, 0, "{left} vs {right}");
+            }
+        }
+
+        // Interned in reverse of name order, so id order is not name order;
+        // some share their first eight bytes, one holds a NUL, `true`,
+        // `false` and `nil` are the atoms every program has, and the last is
+        // interned while the process runs.
+        let names = [
+            "",
+            "a",
+            "a\0",
+            "a\0b",
+            "eight888",
+            "eight888a",
+            "eight888b",
+            "eight889",
+            "false",
+            "nil",
+            "true",
+            "zebra",
+        ];
+        let mut atoms: Vec<(&str, AnyValue)> = names
+            .iter()
+            .rev()
+            .map(|name| (*name, AnyValue::atom(process.node.intern_atom(name))))
+            .collect();
+        atoms.push((
+            "runtime-interned",
+            AnyValue::atom(process.node.intern_atom("runtime-interned")),
+        ));
+        for (left_name, left) in &atoms {
+            for (right_name, right) in &atoms {
+                let answers = answers_for(process, *left, *right);
+                assert_eq!(
+                    answers.ordering,
+                    left_name.cmp(right_name) as i64,
+                    "{left_name:?} vs {right_name:?}"
+                );
+                assert_eq!(
+                    answers.equality,
+                    expected_equality(left_name == right_name),
+                    "{left_name:?} vs {right_name:?}"
+                );
+                assert_eq!(answers.comparator_calls, 0, "{left_name:?} vs {right_name:?}");
+            }
+        }
+    });
+}
+
+/// Intent: a pair that is not two ints or two atoms is still the general
+/// comparator's, and answers as it did: a mixed int and float widens under
+/// `==` and not under `===`; kinds order by category.
+#[test]
+fn a_pair_of_unlike_kinds_is_still_answered_by_the_comparator() {
+    with_process(|process| {
+        let atom = AnyValue::atom(process.node.intern_atom("a"));
+        let cases = [
+            (AnyValue::int(1), AnyValue::float(1.0), [1, 0, 0, 1], 0),
+            (AnyValue::float(1.0), AnyValue::float(1.0), [1, 0, 1, 0], 0),
+            (AnyValue::int(2), AnyValue::float(1.5), [0, 1, 0, 1], 1),
+            (AnyValue::int(i64::MAX), atom, [0, 1, 0, 1], -1),
+            (atom, AnyValue::int(i64::MAX), [0, 1, 0, 1], 1),
+            (atom, AnyValue::float(1.0), [0, 1, 0, 1], 1),
+        ];
+        for (left, right, equality, ordering) in cases {
+            let answers = answers_for(process, left, right);
+            assert_eq!(answers.equality, equality, "{left:?} vs {right:?}");
+            assert_eq!(answers.ordering, ordering, "{left:?} vs {right:?}");
+            assert!(
+                answers.comparator_calls > 0,
+                "{left:?} vs {right:?} is the comparator's"
+            );
+        }
+    });
+}
+
+/// Intent: over random ints and random atoms, the answers from stored words
+/// are exactly the general comparator's.
+#[test]
+fn the_word_answers_agree_with_the_comparator_over_random_ints_and_atoms() {
+    with_process(|process| {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut values = Vec::new();
+        for _ in 0..60 {
+            let bits = next();
+            values.push(AnyValue::int(
+                (bits >> (next() % 64)) as i64 * if bits & 1 == 0 { 1 } else { -1 },
+            ));
+            // Two letters and a NUL over up to twelve bytes make names that
+            // share eight-byte prefixes, or end where another continues.
+            let name: String = (0..next() % 13)
+                .map(|_| ['a', 'b', '\0'][(next() % 3) as usize])
+                .collect();
+            values.push(AnyValue::atom(process.node.intern_atom(&name)));
+        }
+        let registry = process.heap.schemas_registry();
+        for left in &values {
+            for right in &values {
+                let answers = answers_for(process, *left, *right);
+                for mode in [NumericMode::Widening, NumericMode::Strict] {
+                    let schemas = registry.borrow();
+                    let comparator = TermComparator::new(&process.node, &schemas);
+                    assert_eq!(
+                        answers.ordering,
+                        comparator.compare(*left, *right, NumericMode::Widening) as i64
+                    );
+                    let equal = comparator.equal(*left, *right, mode);
+                    let index = if mode == NumericMode::Widening { 0 } else { 2 };
+                    assert_eq!(
+                        answers.equality[index],
+                        u64::from(equal),
+                        "{left:?} vs {right:?} at {index}"
+                    );
+                    assert_eq!(answers.equality[index + 1], u64::from(!equal));
+                }
+            }
+        }
+    });
+}
+
 #[test]
 fn inspect_takes_its_value_as_word_and_kind_and_boxes_nothing() {
     with_process(|process| {

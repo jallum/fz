@@ -610,6 +610,14 @@ pub struct Stored {
 
 impl Stored {
     #[inline(always)]
+    pub fn of_parts(word: u64, kind: ValueKind) -> Self {
+        Self {
+            word,
+            kind: u64::from(kind.tag()),
+        }
+    }
+
+    #[inline(always)]
     pub fn of(value: AnyValue) -> Self {
         Self {
             word: value.raw(),

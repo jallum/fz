@@ -145,6 +145,9 @@ value as a float. All of them are total, so each also keeps a trailing
 `any`/`any` clause: equality and identity call `fz_op_eq`, `fz_op_neq`,
 `fz_op_identical` or `fz_op_not_identical`, and an ordering calls
 `Kernel.compare/2`, whose `fz_value_cmp_ref` answers by the total term order.
+All five answer two integers or two atoms from the stored words they are given,
+without decoding either (`stored_scalar_order`/`stored_scalar_equal`,
+`runtime/src/term.rs`); any other pair is the `TermComparator`'s.
 Each of these takes both operands as `stored_value`, so a number of a kind the
 compiler cannot see crosses without a box.
 Each of the eight also carries a `binary`/`binary` clause, after its numeric

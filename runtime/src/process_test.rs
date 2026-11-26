@@ -21,6 +21,30 @@ fn node_compares_atoms_by_name_not_intern_id() {
     assert_eq!(node.cmp_atom_names(2, 2), std::cmp::Ordering::Equal);
 }
 
+/// Intent: two atoms order by name whether or not they are the same atom, so
+/// the answer for one id against itself needs no table read.
+#[test]
+fn node_orders_atom_ids_as_their_names_do() {
+    let node = Node::empty();
+    let names = ["", "a", "a\0", "a\0b", "eight888a", "eight888b", "é", "true", "zebra"];
+    let ids: Vec<u32> = names.iter().rev().map(|name| node.intern_atom(name)).collect();
+    let ids: Vec<u32> = ids.into_iter().rev().collect();
+    for (i, left) in names.iter().enumerate() {
+        for (j, right) in names.iter().enumerate() {
+            assert_eq!(
+                node.cmp_atom_ids(ids[i], ids[j]),
+                left.cmp(right),
+                "{left:?} vs {right:?}"
+            );
+        }
+    }
+    assert_eq!(
+        node.cmp_atom_ids(u32::MAX, u32::MAX),
+        std::cmp::Ordering::Equal,
+        "one atom is equal to itself without a lookup"
+    );
+}
+
 #[test]
 fn reading_an_atom_name_shares_the_table_entry() {
     let node = Node::new(vec!["alpha".into()]);

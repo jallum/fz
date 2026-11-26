@@ -4,9 +4,10 @@
 //! whose values are compared with the widening language operators.
 
 use crate::any_value::{
-    AnyValue, ListCons, ListTail, MAP_DESTINATION_FLAG, ValueKind, closure_capture_value, closure_captured_count,
-    closure_denotation, map_count, map_entries, map_entry, map_header_is_collision, map_header_is_trie, map_key,
-    map_node_child, map_node_child_count, map_node_entry_count, map_slot, struct_schema_id,
+    AnyValue, ListCons, ListTail, MAP_DESTINATION_FLAG, Stored, ValueKind, closure_capture_value,
+    closure_captured_count, closure_denotation, map_count, map_entries, map_entry, map_header_is_collision,
+    map_header_is_trie, map_key, map_node_child, map_node_child_count, map_node_entry_count, map_slot,
+    struct_schema_id,
 };
 use crate::bits::Bin;
 use crate::heap::{Schema, SchemaIdentity, SchemaRegistry, StructKey};
@@ -46,6 +47,34 @@ fn assert_language_value(value: AnyValue) {
     }
 }
 
+/// The order of two scalars of one kind from their stored words alone:
+/// integers as integers, atoms by name. Any other pair is `None`: a float,
+/// whose order the numeric mode decides, a heap value, or two kinds. The mode
+/// never matters for the pairs this answers, so no decode, registry or mode is
+/// needed to ask.
+#[inline(always)]
+pub(crate) fn stored_scalar_order(node: &Node, a: Stored, b: Stored) -> Option<Ordering> {
+    if a.kind != b.kind {
+        return None;
+    }
+    if a.kind == u64::from(ValueKind::INT.tag()) {
+        return Some((a.word as i64).cmp(&(b.word as i64)));
+    }
+    if a.kind == u64::from(ValueKind::ATOM.tag()) {
+        return Some(node.cmp_atom_ids(a.word as u32, b.word as u32));
+    }
+    None
+}
+
+/// Whether two scalars of one kind are equal, from their stored words alone:
+/// integers and atoms by word. `None` for any other pair, as
+/// [`stored_scalar_order`].
+#[inline(always)]
+pub(crate) fn stored_scalar_equal(a: Stored, b: Stored) -> Option<bool> {
+    let scalar = |kind: ValueKind| a.kind == u64::from(kind.tag()) && b.kind == a.kind;
+    (scalar(ValueKind::INT) || scalar(ValueKind::ATOM)).then_some(a.word == b.word)
+}
+
 pub struct TermComparator<'a> {
     node: &'a Node,
     schemas: &'a SchemaRegistry,
@@ -79,17 +108,13 @@ impl<'a> TermComparator<'a> {
 
     #[inline(always)]
     fn stored_key_order(&self, a: u64, a_kind: ValueKind, b: u64, b_kind: ValueKind) -> Ordering {
-        if a_kind == b_kind {
-            // A float and a map are told apart from what is not a language
-            // value before they are called equal.
-            if a == b && !matches!(a_kind, ValueKind::FLOAT | ValueKind::MAP | ValueKind::NULL) {
-                return Ordering::Equal;
-            }
-            match a_kind {
-                ValueKind::INT => return (a as i64).cmp(&(b as i64)),
-                ValueKind::ATOM => return self.node.cmp_atom_names(a as u32, b as u32),
-                _ => {}
-            }
+        // A float and a map are told apart from what is not a language
+        // value before they are called equal.
+        if a_kind == b_kind && a == b && !matches!(a_kind, ValueKind::FLOAT | ValueKind::MAP | ValueKind::NULL) {
+            return Ordering::Equal;
+        }
+        if let Some(order) = stored_scalar_order(self.node, Stored::of_parts(a, a_kind), Stored::of_parts(b, b_kind)) {
+            return order;
         }
         if a_kind.is_binary_repr() && b_kind.is_binary_repr() {
             return unsafe { Bin::of_stored(a, a_kind).cmp(&Bin::of_stored(b, b_kind)) };
@@ -111,7 +136,7 @@ impl<'a> TermComparator<'a> {
     }
 
     fn order(&self, a: AnyValue, b: AnyValue, mode: NumericMode) -> Ordering {
-        if let Some(order) = same_simple_kind_cmp(a, b) {
+        if let Some(order) = same_simple_kind_cmp(self.node, a, b) {
             return order;
         }
         let category = self.category(a);
@@ -507,33 +532,29 @@ fn is_bitstring(value: AnyValue) -> bool {
 }
 
 /// The order of two values of one simple kind, which needs neither the
-/// category lookup nor the mode: two integers, two atoms of one id, two
-/// bitstrings. A float is excluded because the mode decides how it orders.
-fn same_simple_kind_cmp(a: AnyValue, b: AnyValue) -> Option<Ordering> {
-    match (a, b) {
-        (AnyValue::Int(x), AnyValue::Int(y)) => Some(x.cmp(&y)),
-        (AnyValue::Atom(x), AnyValue::Atom(y)) if x == y => Some(Ordering::Equal),
+/// category lookup nor the mode: two scalars by their words, two bitstrings by
+/// their bits. A float is excluded because the mode decides how it orders.
+fn same_simple_kind_cmp(node: &Node, a: AnyValue, b: AnyValue) -> Option<Ordering> {
+    stored_scalar_order(node, Stored::of(a), Stored::of(b)).or_else(|| match (a, b) {
         (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
             Some(bin_of(a).cmp(&bin_of(b)))
         }
         _ => None,
-    }
+    })
 }
 
 /// Whether two values of one simple kind are equal, when their kinds settle
-/// it: integers and atoms by word, bitstrings by bits, identical float bits,
-/// pids and references by kind and word.
+/// it: scalars by word, bitstrings by bits, identical float bits, pids and
+/// references by kind and word.
 fn same_simple_kind_equal(a: AnyValue, b: AnyValue) -> Option<bool> {
-    match (a, b) {
-        (AnyValue::Int(x), AnyValue::Int(y)) => Some(x == y),
-        (AnyValue::Atom(x), AnyValue::Atom(y)) => Some(x == y),
+    stored_scalar_equal(Stored::of(a), Stored::of(b)).or_else(|| match (a, b) {
         (AnyValue::Float(x), AnyValue::Float(y)) if x == y => Some(true),
         (AnyValue::Opaque(x_kind, x), AnyValue::Opaque(y_kind, y)) => Some(x_kind == y_kind && x == y),
         (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
             Some(bin_of(a) == bin_of(b))
         }
         _ => None,
-    }
+    })
 }
 
 fn bin_of(value: AnyValue) -> Bin {
@@ -542,4 +563,4 @@ fn bin_of(value: AnyValue) -> Bin {
 
 #[cfg(test)]
 #[path = "term_test.rs"]
-mod tests;
+pub(crate) mod tests;

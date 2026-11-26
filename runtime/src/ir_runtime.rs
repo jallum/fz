@@ -41,7 +41,7 @@ use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 use crate::reuse_site::RuntimeReuseSite;
 use crate::sched::{ReceiveStep, reach_receive};
 use crate::scheduler_hooks::YIELD_PTR;
-use crate::term::{NumericMode, TermComparator};
+use crate::term::{NumericMode, TermComparator, stored_scalar_equal, stored_scalar_order};
 use crate::{write_output, write_warning};
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2390,14 +2390,20 @@ pub extern "C" fn fz_value_cmp_ref(process: *mut Process, a_word: u64, a_kind: u
     let a = Stored {
         word: a_word,
         kind: a_kind,
-    }
-    .value("fz_value_cmp_ref lhs");
+    };
     let b = Stored {
         word: b_word,
         kind: b_kind,
+    };
+    if let Some(order) = stored_scalar_order(unsafe { &(*process).node }, a, b) {
+        return order as i64;
     }
-    .value("fz_value_cmp_ref rhs");
-    compare_values(process, a, b, NumericMode::Widening) as i64
+    compare_values(
+        process,
+        a.value("fz_value_cmp_ref lhs"),
+        b.value("fz_value_cmp_ref rhs"),
+        NumericMode::Widening,
+    ) as i64
 }
 
 /// Exact mixed-number comparison of two unboxed lanes; no process or allocation.
@@ -2485,13 +2491,16 @@ macro_rules! ref_equality_export {
             let left = Stored {
                 word: left_word,
                 kind: left_kind,
-            }
-            .value("runtime equality lhs");
+            };
             let right = Stored {
                 word: right_word,
                 kind: right_kind,
+            };
+            if let Some(equal) = stored_scalar_equal(left, right) {
+                return u64::from(equal == $expected);
             }
-            .value("runtime equality rhs");
+            let left = left.value("runtime equality lhs");
+            let right = right.value("runtime equality rhs");
             u64::from(values_equal(process, left, right, $mode) == $expected)
         }
     };
@@ -2545,6 +2554,9 @@ pub extern "C" fn fz_value_cmp_raw_const(
     } else {
         (unboxed, dynamic)
     };
+    if let Some(order) = stored_scalar_order(unsafe { &(*process).node }, Stored::of(left), Stored::of(right)) {
+        return order as i64;
+    }
     compare_values(process, left, right, NumericMode::Widening) as i64
 }
 
