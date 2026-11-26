@@ -132,6 +132,9 @@ pub(crate) fn value_raw_kind_parts<M: Module>(
 /// value whose kind codegen knows gives its word and a constant kind; any
 /// other is read through its reference.
 pub(crate) fn stored_parts<M: Module>(body: &mut CodegenFn<'_, '_, M>, value: CodegenValue) -> [ir::Value; 2] {
+    if let CodegenValue::Stored { word, kind } = value {
+        return [word, kind];
+    }
     if let Some((word, kind)) = value_raw_kind_parts(body, value) {
         return [word, body.b.ins().iconst(types::I64, i64::from(kind.tag()))];
     }

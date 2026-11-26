@@ -629,11 +629,13 @@ fn a_symbol_without_a_row_is_a_call() {
 // two fresh processes, runs the runtime function in one and the row's
 // instructions in the other, and compares everything the run left behind.
 
-/// What a case hands the row: its head word and the address its list tail
+/// What a case hands the row: its head word and, for a row that takes the
+/// head's kind from a register, that kind, and the address its list tail
 /// holds (0 for the empty list), and the objects the row may change by sharing
 /// them.
 struct CellInputs {
     head: u64,
+    head_kind: u64,
     tail: u64,
     watched: Vec<*const u8>,
 }
@@ -643,14 +645,38 @@ struct CellCase {
     build: Box<dyn Fn(&mut Heap) -> CellInputs>,
 }
 
+/// How a row is handed the head's kind.
+#[derive(Clone, Copy)]
+enum HeadKindArg {
+    /// The head is a ref word, which holds its own kind.
+    InTheRef,
+    /// The kind is a constant of the call site.
+    Constant(ValueKind),
+    /// The kind is in a register, as a case gives it.
+    InARegister,
+}
+
 /// A row's proof: the runtime function it must agree with, and the heads and
-/// tails it is tried on. A head's word is its payload for a scalar lane and a
-/// ref word for the ref lane.
+/// tails it is tried on. A head's word is its stored word for a row that is
+/// handed a kind and a ref word for the ref row.
 struct CellProof {
     symbol: &'static str,
-    lane: HeadLane,
-    reference: fn(*mut Process, u64, u64, u64) -> u64,
+    head_kind: HeadKindArg,
+    /// The runtime function's answer for a process, the head's word and kind,
+    /// and the tail's word and kind.
+    reference: fn(*mut Process, u64, u64, u64, u64) -> u64,
     cases: Vec<CellCase>,
+}
+
+impl CellProof {
+    /// The kind the runtime function is handed for a case.
+    fn kind_for(&self, inputs: &CellInputs) -> u64 {
+        match self.head_kind {
+            HeadKindArg::InTheRef => 0,
+            HeadKindArg::Constant(kind) => u64::from(kind.tag()),
+            HeadKindArg::InARegister => inputs.head_kind,
+        }
+    }
 }
 
 fn case(name: &'static str, build: impl Fn(&mut Heap) -> CellInputs + 'static) -> CellCase {
@@ -667,6 +693,7 @@ fn scalar_cases(heads: &[(&'static str, u64)]) -> Vec<CellCase> {
     for &(name, head) in heads {
         cases.push(case(name, move |_| CellInputs {
             head,
+            head_kind: 0,
             tail: list_storage(AnyValueRef::empty_list()),
             watched: Vec::new(),
         }));
@@ -676,6 +703,7 @@ fn scalar_cases(heads: &[(&'static str, u64)]) -> Vec<CellCase> {
                 .expect("a one-cell tail");
             CellInputs {
                 head,
+                head_kind: 0,
                 tail: list_storage(tail),
                 watched: vec![list_address(tail)],
             }
@@ -711,6 +739,7 @@ fn ref_cases() -> Vec<CellCase> {
             let (head, watched) = make(heap);
             CellInputs {
                 head: head.raw_word(),
+                head_kind: 0,
                 tail: list_storage(AnyValueRef::empty_list()),
                 watched,
             }
@@ -721,6 +750,7 @@ fn ref_cases() -> Vec<CellCase> {
             watched.extend(cells);
             CellInputs {
                 head: head.raw_word(),
+                head_kind: 0,
                 tail: list_storage(tail),
                 watched,
             }
@@ -783,32 +813,44 @@ fn cell_proofs() -> Vec<CellProof> {
         ("nil", u64::from(NIL_ATOM_ID)),
         ("another", u64::from(OTHER_ATOM_ID)),
     ];
+    let stored = |head_kind, cases| CellProof {
+        symbol: "fz_list_cons_stored",
+        head_kind,
+        reference: |process, head, kind, tail, tail_kind| fz_list_cons_stored(process, head, kind, tail, tail_kind),
+        cases,
+    };
     vec![
-        CellProof {
-            symbol: "fz_list_cons_int",
-            lane: HeadLane::Int,
-            reference: |process, head, tail, kind| fz_list_cons_int(process, head as i64, tail, kind),
-            cases: scalar_cases(&ints),
-        },
-        CellProof {
-            symbol: "fz_list_cons_float",
-            lane: HeadLane::Float,
-            reference: |process, head, tail, kind| fz_list_cons_float(process, f64::from_bits(head), tail, kind),
-            cases: scalar_cases(&floats),
-        },
-        CellProof {
-            symbol: "fz_list_cons_atom",
-            lane: HeadLane::Atom,
-            reference: |process, head, tail, kind| fz_list_cons_atom(process, head, tail, kind),
-            cases: scalar_cases(&atoms),
-        },
+        stored(HeadKindArg::Constant(ValueKind::INT), scalar_cases(&ints)),
+        stored(HeadKindArg::Constant(ValueKind::FLOAT), scalar_cases(&floats)),
+        stored(HeadKindArg::Constant(ValueKind::ATOM), scalar_cases(&atoms)),
+        stored(HeadKindArg::InARegister, stored_cases()),
         CellProof {
             symbol: "fz_list_cons_any",
-            lane: HeadLane::Ref,
-            reference: |process, head, tail, kind| fz_list_cons_any(process, head, tail, kind),
+            head_kind: HeadKindArg::InTheRef,
+            reference: |process, head, _kind, tail, tail_kind| fz_list_cons_any(process, head, tail, tail_kind),
             cases: ref_cases(),
         },
     ]
+}
+
+/// The ref cases with each head spelled as the stored word and kind a value
+/// that travels as a pair holds.
+fn stored_cases() -> Vec<CellCase> {
+    ref_cases()
+        .into_iter()
+        .map(|CellCase { name, build }| {
+            case(name, move |heap| {
+                let inputs = build(heap);
+                let head = AnyValueRef::from_raw_word(inputs.head).expect("a head ref");
+                let pair = fz_runtime::any_value::Stored::of(AnyValue::from_ref(head).expect("a head value"));
+                CellInputs {
+                    head: pair.word,
+                    head_kind: pair.kind,
+                    ..inputs
+                }
+            })
+        })
+        .collect()
 }
 
 /// The kind a list tail travels with.
@@ -836,7 +878,11 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
     let mut ctx = module.make_context();
     let mut fbctx = FunctionBuilderContext::new();
     let mut sig = module.make_signature();
-    sig.params = vec![ir::AbiParam::new(types::I64); 2];
+    let words = match proof.head_kind {
+        HeadKindArg::InARegister => 3,
+        HeadKindArg::InTheRef | HeadKindArg::Constant(_) => 2,
+    };
+    sig.params = vec![ir::AbiParam::new(types::I64); words];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
     let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
@@ -854,12 +900,23 @@ fn compile_cell(proof: &CellProof) -> CompiledCell {
         };
         let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
         let process = body.process_arg();
-        let head = match proof.lane {
-            HeadLane::Float => body.b.ins().bitcast(types::F64, MemFlagsData::new(), params[0]),
-            _ => params[0],
-        };
         let list_kind = body.b.ins().iconst(types::I64, i64::from(ValueKind::LIST.tag()));
-        let cell = emit_cell(&mut body, proof.symbol, &[process, head, params[1], list_kind]);
+        let cell = match proof.head_kind {
+            HeadKindArg::InTheRef => emit_cell(&mut body, proof.symbol, &[process, params[0], params[1], list_kind]),
+            HeadKindArg::Constant(kind) => {
+                let kind = body.b.ins().iconst(types::I64, i64::from(kind.tag()));
+                emit_cell(
+                    &mut body,
+                    proof.symbol,
+                    &[process, params[0], kind, params[1], list_kind],
+                )
+            }
+            HeadKindArg::InARegister => emit_cell(
+                &mut body,
+                proof.symbol,
+                &[process, params[0], params[1], params[2], list_kind],
+            ),
+        };
         body.b.ins().return_(&[cell]);
         b.finalize(module.target_config());
     }
@@ -974,10 +1031,22 @@ fn every_allocation_row_leaves_the_heap_its_runtime_function_leaves() {
         for case in &proof.cases {
             for tip in [Tip::Roomy, Tip::Full] {
                 let expected = run_cell(case, tip, &schemas, |process, inputs| {
-                    (proof.reference)(process, inputs.head, inputs.tail, LIST_KIND_WORD)
+                    (proof.reference)(
+                        process,
+                        inputs.head,
+                        proof.kind_for(inputs),
+                        inputs.tail,
+                        LIST_KIND_WORD,
+                    )
                 });
                 let inline = run_cell(case, tip, &schemas, |process, inputs| unsafe {
-                    pinned_abi::call2(compiled.code, process, inputs.head, inputs.tail) as u64
+                    let answer = match proof.head_kind {
+                        HeadKindArg::InARegister => {
+                            pinned_abi::call3(compiled.code, process, inputs.head, inputs.head_kind, inputs.tail)
+                        }
+                        _ => pinned_abi::call2(compiled.code, process, inputs.head, inputs.tail),
+                    };
+                    answer as u64
                 });
                 runs += 1;
                 assert_eq!(
@@ -1002,22 +1071,33 @@ fn every_allocation_row_leaves_the_heap_its_runtime_function_leaves() {
 /// A list or struct head is shared, so the run must have marked something;
 /// the harness would pass vacuously if the proofs never shared anything.
 #[test]
-fn the_ref_row_is_tried_on_heads_that_must_be_shared() {
+fn the_rows_that_take_a_heap_head_are_tried_on_heads_that_must_be_shared() {
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    let proofs = cell_proofs();
-    let proof = proofs
+    for proof in cell_proofs()
         .iter()
-        .find(|proof| proof.symbol == "fz_list_cons_any")
-        .expect("the ref row");
-    let marked = |name: &str| {
-        let case = proof.cases.iter().find(|case| case.name == name).expect("a case");
+        .filter(|proof| matches!(proof.head_kind, HeadKindArg::InTheRef | HeadKindArg::InARegister))
+    {
+        let case = proof
+            .cases
+            .iter()
+            .find(|case| case.name == "an unshared list")
+            .expect("a case");
         let left = run_cell(case, Tip::Roomy, &schemas, |process, inputs| {
-            (proof.reference)(process, inputs.head, inputs.tail, LIST_KIND_WORD)
+            (proof.reference)(
+                process,
+                inputs.head,
+                proof.kind_for(inputs),
+                inputs.tail,
+                LIST_KIND_WORD,
+            )
         });
         let link = left.watched[0][1];
-        link & fz_runtime::any_value::LIST_LINK_ALIAS_MASK != 0
-    };
-    assert!(marked("an unshared list"), "a list head is shared by the cell");
+        assert!(
+            link & fz_runtime::any_value::LIST_LINK_ALIAS_MASK != 0,
+            "`{}`: a list head is shared by the cell",
+            proof.symbol
+        );
+    }
 }
 
 // Struct and closure rows are proved the same way, on the words the code

@@ -123,7 +123,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let mut param_cursor = 0;
             for p in &blk.params {
                 let repr = block_param_repr(native_body, p);
-                var_env.insert(p.0, take_param_binding(body.b, &params, &mut param_cursor, repr));
+                var_env.insert(p.0, take_param_binding(&params, &mut param_cursor, repr));
             }
         }
 
@@ -159,7 +159,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                                 } else {
                                     ArgRepr::ValueRef
                                 };
-                                CodegenValue::from_abi_value(out.value(), repr)
+                                CodegenValue::from_abi_values(&[out.value()], repr)
                             }
                         };
                         var_env.insert(v.0, binding);

@@ -36,9 +36,9 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_bs_build, fz_bs_field_end, fz_bs_field_spec, fz_bs_read_int_ref,
-    fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int,
-    fz_map_dest_begin, fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put,
-    fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
+    fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_stored, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref,
+    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
     fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
     fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
     fz_value_eq_ref, fz_value_eq_widening_ref,
@@ -111,12 +111,14 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
 /// may not be: the entry places a terminator cell for a tail that is not a
 /// list.
 macro_rules! list_cons_entry {
-    ($body:expr, $tail:expr, $item:ident, $args:expr) => {{
+    (@word $arg:ident) => { _ };
+    ($body:expr, $tail:expr, $item:ident, [$($arg:ident),+ $(,)?]) => {{
+        let args = [$($arg),+];
         if $tail.is_list() {
-            emit_cell($body, stringify!($item), &$args)
+            emit_cell($body, stringify!($item), &args)
         } else {
-            let item: unsafe extern "C" fn(_, _, _, _) -> _ = $item;
-            let call = $body.call_runtime(stringify!($item), item, &$args);
+            let item: unsafe extern "C" fn($(list_cons_entry!(@word $arg)),+) -> _ = $item;
+            let call = $body.call_runtime(stringify!($item), item, &args);
             $body.sole_result(call)
         }
     }};
@@ -132,29 +134,39 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     let [tail_word, tail_kind] = body.list_tail_words(tail);
     let head_value = binding_for_var(var_env, head.0);
     let process = body.process_arg();
-    match cons_head_kind(head_kind, head_value) {
-        Some(ValueKind::INT) => {
-            let head_raw = body.value_raw_int(head_value);
-            list_cons_entry!(body, tail, fz_list_cons_int, [process, head_raw, tail_word, tail_kind])
-        }
-        Some(ValueKind::FLOAT) => {
-            let head_raw = body.value_raw_float(head_value);
-            list_cons_entry!(
-                body,
-                tail,
-                fz_list_cons_float,
-                [process, head_raw, tail_word, tail_kind]
-            )
-        }
-        Some(ValueKind::ATOM) => {
-            let head_raw = body.value_raw_atom(head_value);
-            list_cons_entry!(body, tail, fz_list_cons_atom, [process, head_raw, tail_word, tail_kind])
-        }
-        _ => {
-            let head_ref = body.value_as_any_ref(head_value);
-            list_cons_entry!(body, tail, fz_list_cons_any, [process, head_ref, tail_word, tail_kind])
-        }
+    if let Some([head_word, head_kind]) = cons_head_words(body, head_kind, head_value) {
+        return list_cons_entry!(
+            body,
+            tail,
+            fz_list_cons_stored,
+            [process, head_word, head_kind, tail_word, tail_kind]
+        );
     }
+    let head_ref = body.value_as_any_ref(head_value);
+    list_cons_entry!(body, tail, fz_list_cons_any, [process, head_ref, tail_word, tail_kind])
+}
+
+/// The head as the stored word and kind a cell holds it in, when the head is a
+/// number the call site holds unboxed or a value that already travels as a
+/// stored pair. `None` is a head that is one ref word.
+fn cons_head_words<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    head_kind: Option<ValueKind>,
+    head_value: CodegenValue,
+) -> Option<[ir::Value; 2]> {
+    let scalar_kind = cons_head_kind(head_kind, head_value);
+    let word = match scalar_kind {
+        Some(ValueKind::INT) => body.value_raw_int(head_value),
+        Some(ValueKind::FLOAT) => {
+            let float = body.value_raw_float(head_value);
+            body.b.ins().bitcast(types::I64, MemFlagsData::new(), float)
+        }
+        Some(ValueKind::ATOM) => body.value_raw_atom(head_value),
+        _ if matches!(head_value, CodegenValue::Stored { .. }) => return Some(body.value_stored_words(head_value)),
+        _ => return None,
+    };
+    let kind = scalar_kind.expect("a scalar head has its kind");
+    Some([word, body.b.ins().iconst(types::I64, i64::from(kind.tag()))])
 }
 
 /// The scalar kind a cons head can be stored in unboxed: the kind the caller
@@ -1318,32 +1330,14 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             lower_extern_generic(body, var_env, decl, eid, args, dest_var)
         }
         Prim::IsEmptyList(c) => {
-            // Empty list is the null-address List ref.
-            let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
-                let tag = body.ref_tag(value);
-                let empty_list_v = body.empty_list_ref();
-                let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
-                let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
-                body.b.ins().band(is_list, is_empty_word)
-            } else {
-                held_outside_a_ref_is_empty_list(body, binding_for_var(var_env, c.0))
-            };
+            let cmp = emit_is_empty_list_flag(body, binding_for_var(var_env, c.0));
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
         Prim::IsListCons(c) => {
-            let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
-                let tag = body.ref_tag(value);
-                let empty_list_v = body.empty_list_ref();
-                let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
-                let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
-                let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
-                body.b.ins().band(is_list, not_empty)
-            } else {
-                body.b.ins().iconst(types::I8, 0)
-            };
+            let cmp = emit_is_list_cons_flag(body, binding_for_var(var_env, c.0));
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
@@ -1488,6 +1482,7 @@ fn lane_repr(lane: FrameLane) -> ArgRepr {
         FrameLane::Int => ArgRepr::RawInt,
         FrameLane::Float => ArgRepr::RawF64,
         FrameLane::Atom => ArgRepr::RawAtom,
+        FrameLane::Stored => ArgRepr::Stored,
     }
 }
 
@@ -1569,7 +1564,7 @@ impl<'fb, M: cranelift_module::Module> RuntimeTestEmitter<'fb> for PrimTestEmitt
 
     fn kind_evidence(&self, value: CodegenValue) -> KindEvidence {
         match value {
-            CodegenValue::AnyRef(_) => KindEvidence::Tagged,
+            CodegenValue::AnyRef(_) | CodegenValue::Stored { .. } => KindEvidence::Tagged,
             CodegenValue::RawInt(_) => KindEvidence::Unboxed(ValueKind::INT),
             CodegenValue::RawF64(_) => KindEvidence::Unboxed(ValueKind::FLOAT),
             CodegenValue::RawAtom(_) | CodegenValue::Condition(_) => KindEvidence::Unboxed(ValueKind::ATOM),
@@ -1716,9 +1711,29 @@ fn emit_is_empty_list_flag<M: cranelift_module::Module>(
         let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
         let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
         body.b.ins().band(is_list, is_empty_word)
+    } else if let CodegenValue::Stored { word, kind } = value {
+        let (is_list, is_empty) = stored_list_flags(body, word, kind);
+        body.b.ins().band(is_list, is_empty)
     } else {
         held_outside_a_ref_is_empty_list(body, value)
     }
+}
+
+/// Whether a stored pair names a list, and whether the list is the empty one:
+/// the empty list is the one list whose payload is the null address.
+fn stored_list_flags<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    word: ir::Value,
+    kind: ir::Value,
+) -> (ir::Value, ir::Value) {
+    let is_list = body
+        .b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, kind, ValueKind::LIST.tag() as i64);
+    let empty_payload = fz_runtime::any_value::AnyValueRef::empty_list().raw_word()
+        & fz_runtime::any_value::AnyValueRefPacking::current().payload_mask();
+    let is_empty = body.b.ins().icmp_imm_s(IntCC::Equal, word, empty_payload as i64);
+    (is_list, is_empty)
 }
 
 /// Whether a value codegen holds outside a ref is the empty list. Such a value
@@ -1741,6 +1756,10 @@ fn emit_is_list_cons_flag<M: cranelift_module::Module>(
         let is_list = body.b.ins().icmp_imm_s(IntCC::Equal, tag, ValueKind::LIST.tag() as i64);
         let is_empty_word = body.b.ins().icmp(IntCC::Equal, value_ref, empty_list_v);
         let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty_word, 0);
+        body.b.ins().band(is_list, not_empty)
+    } else if let CodegenValue::Stored { word, kind } = value {
+        let (is_list, is_empty) = stored_list_flags(body, word, kind);
+        let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty, 0);
         body.b.ins().band(is_list, not_empty)
     } else {
         body.b.ins().iconst(types::I8, 0)
@@ -2815,12 +2834,14 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     let cl_ptr = body.alloc_closure(boundary.denotation, arity_v, nc_v, hk_v, body_addr);
     for (i, cv) in captured.iter().enumerate() {
         let repr = boundary.capture_reprs[i];
-        if repr == ArgRepr::ValueRef {
+        if matches!(repr, ArgRepr::ValueRef | ArgRepr::Stored) {
             body.store_closure_capture_value(cl_ptr, i, binding_for_var(var_env, cv.0));
             continue;
         }
         match closure_capture_for_var_as(body, var_env, cv.0, repr) {
-            ClosureCapture::RefWord(_) => unreachable!("a raw-lane capture is never a reference word"),
+            ClosureCapture::RefWord(_) | ClosureCapture::Stored { .. } => {
+                unreachable!("a raw-lane capture is neither a reference word nor a stored pair")
+            }
             ClosureCapture::RawInt(value) => body.store_closure_capture_i64(cl_ptr, i, value),
             ClosureCapture::RawF64(value) => body.store_closure_capture_f64(cl_ptr, i, value),
             ClosureCapture::RawAtom(value) => body.store_closure_capture_atom(cl_ptr, i, value),

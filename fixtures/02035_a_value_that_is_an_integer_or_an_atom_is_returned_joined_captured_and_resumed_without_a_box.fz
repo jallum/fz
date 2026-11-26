@@ -1,0 +1,55 @@
+#---
+# purpose: a value that is an integer or an atom is returned, joined at an `if`, captured by a closure and held across a call without a box, and the answers are Elixir's
+# kind: run
+# oracle: 02035_a_value_that_is_an_integer_or_an_atom_is_returned_joined_captured_and_resumed_without_a_box.oracle.exs
+# oracle.stamp: 3d99e2682531e347
+#---
+#
+# A value whose type admits an integer beside an atom travels as two words, its
+# stored word and its kind, through a return, a join, a closure capture and a
+# continuation frame. The program prints what each shape answers, then takes
+# 1,000 steps through all four and checks that none boxed a scalar.
+defmodule P do
+  def either(n, flag) do
+    if flag, do: n, else: :none
+  end
+
+  def joined(n, flag) do
+    value = if flag, do: either(n, flag), else: :none
+    value
+  end
+
+  def holder(n, flag) do
+    value = either(n, flag)
+    fn -> value end
+  end
+
+  def across(n, flag) do
+    first = either(n, flag)
+    second = either(n + 1, flag)
+    {first, second}
+  end
+
+  def steps(i, count) do
+    if i == count do
+      :done
+    else
+      flag = rem(i, 2) == 0
+      _ = either(i, flag)
+      _ = joined(i, flag)
+      _ = holder(i, flag).()
+      _ = across(i, flag)
+      steps(i + 1, count)
+    end
+  end
+end
+
+dbg({P.either(7, true), P.either(7, false)})
+dbg({P.joined(7, true), P.joined(7, false)})
+dbg({P.holder(7, true).(), P.holder(7, false).()})
+dbg({P.across(7, true), P.across(7, false)})
+
+before = System.alloc_stats()
+_ = P.steps(0, 1000)
+after_steps = System.alloc_stats()
+after_steps[:scalar_box_allocs] - before[:scalar_box_allocs] == 0 || raise("an integer or atom value is carried as a word and its kind, so no step boxes a scalar")

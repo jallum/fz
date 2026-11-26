@@ -37,6 +37,7 @@
 //! Production codegen consumes the cached AST-free `PatternDispatchPlan`
 //! attached to `Term::ReceiveMatched`; it does not rebuild source clauses.
 
+use super::value::CodegenValue;
 use crate::dispatch_matrix::joins::{ArrivalState, DispatchJoins, DispatchLeaf};
 use crate::dispatch_matrix::pattern::{
     GuardExtern, OutcomeRoots, PatternDispatchPlan, PatternGuardBinOp, PatternGuardDispatch, PatternGuardExpr,
@@ -236,7 +237,7 @@ pub(crate) fn emit_receive_dispatch_body<M: cranelift_module::Module>(
         b.switch_to_block(entry);
         b.seal_block(entry);
         let process = b.block_params(entry)[0];
-        let msg = ReceiveValue::Stored {
+        let msg = CodegenValue::Stored {
             word: b.block_params(entry)[1],
             kind: b.block_params(entry)[2],
         };
@@ -301,7 +302,7 @@ fn load_pinned_from_frame<M: cranelift_module::Module>(
     frame: ir::Value,
     total: usize,
     index: usize,
-) -> ReceiveValue {
+) -> CodegenValue {
     let from_end = body.b.ins().iconst(types::I64, (total - index) as i64);
     let value_ref = runtime_call1!(body, fz_receive_pinned_ref, [frame, from_end]);
     receive_value_from_ref_word(body.b, value_ref)
@@ -373,20 +374,9 @@ pub(crate) fn emit_receive_projector_body<M: cranelift_module::Module>(
     defined
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum ReceiveValue {
-    AnyRef(ir::Value),
-    /// A value of any kind as the word and kind a container stores for it,
-    /// both `I64`. The message a matcher is shown arrives this way, so a number
-    /// is read without a box and named by reference only where a helper asks.
-    Stored {
-        word: ir::Value,
-        kind: ir::Value,
-    },
-    Int(ir::Value),
-    Float(ir::Value),
-    Atom(ir::Value),
-}
+/// A matcher is shown stored, boxed or raw values; a compile-time-known value or
+/// a branch condition is never one of its inputs.
+const NOT_RECEIVABLE: &str = "a matcher never reads a known or condition value";
 
 struct DispatchCtx<'a> {
     /// The running receiver's `Process*` (dispatch fn's first param). Field
@@ -400,20 +390,20 @@ struct DispatchCtx<'a> {
     /// The subjects the winning outcome reads, beyond what the decision asks.
     /// A bitstring field outside both is checked for fit and never built.
     outcome_reads: Vec<SubjectId>,
-    bindings: crate::compiler2::DispatchBindings<ReceiveValue>,
+    bindings: crate::compiler2::DispatchBindings<CodegenValue>,
     /// What the dispatch writes to `out_ptr` on a win, or the projector reads
     /// from it: each clause's roots, in the order they sit in the buffer.
     roots: Vec<Vec<SubjectId>>,
     out_ptr: ir::Value,
     dispatch: &'a ReceiveDispatchPlan,
-    inputs: Vec<ReceiveValue>,
+    inputs: Vec<CodegenValue>,
     /// The module's literal table, where a binary literal's bytes are read in place.
     bitstring_literals: &'a RefCell<BitstringLiterals>,
 }
 
 #[derive(Default, Clone)]
 struct DispatchEmitState {
-    values: HashMap<SubjectId, ReceiveValue>,
+    values: HashMap<SubjectId, CodegenValue>,
 }
 
 /// A join keeps the values every arrival holds. A value held on every arrival
@@ -433,88 +423,94 @@ impl ArrivalState for DispatchEmitState {
 fn emit_receive_value_ref<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::AnyRef(value_ref) => Ok(value_ref),
-        ReceiveValue::Int(raw) => {
+        CodegenValue::AnyRef(value_ref) => Ok(value_ref),
+        CodegenValue::RawInt(raw) => {
             let call = runtime_call!(body, fz_box_int_for_any, [ctx.process, raw]);
             Ok(body.sole_result(call))
         }
-        ReceiveValue::Float(raw) => {
+        CodegenValue::RawF64(raw) => {
             let call = runtime_call!(body, fz_box_float_for_any, [ctx.process, raw]);
             Ok(body.sole_result(call))
         }
-        ReceiveValue::Atom(raw) => Ok(immediate_ref_word(body.b, raw, ValueKind::ATOM)),
-        ReceiveValue::Stored { word, kind } => Ok(runtime_call1!(body, fz_stored_ref, [ctx.process, word, kind])),
+        CodegenValue::RawAtom(raw) => Ok(immediate_ref_word(body.b, raw, ValueKind::ATOM)),
+        CodegenValue::Stored { word, kind } => Ok(runtime_call1!(body, fz_stored_ref, [ctx.process, word, kind])),
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
 /// The word a container stores for `value` and its kind, as two `I64`s.
-fn receive_value_stored_parts(b: &mut FunctionBuilder<'_>, value: ReceiveValue) -> [ir::Value; 2] {
+fn receive_value_stored_parts(b: &mut FunctionBuilder<'_>, value: CodegenValue) -> [ir::Value; 2] {
     let (word, kind) = match value {
-        ReceiveValue::AnyRef(reference) => return super::list_cell::stored_parts_of_ref(b, reference),
-        ReceiveValue::Stored { word, kind } => return [word, kind],
-        ReceiveValue::Int(word) => (word, ValueKind::INT),
-        ReceiveValue::Atom(word) => (word, ValueKind::ATOM),
-        ReceiveValue::Float(float) => (
+        CodegenValue::AnyRef(reference) => return super::list_cell::stored_parts_of_ref(b, reference),
+        CodegenValue::Stored { word, kind } => return [word, kind],
+        CodegenValue::RawInt(word) => (word, ValueKind::INT),
+        CodegenValue::RawAtom(word) => (word, ValueKind::ATOM),
+        CodegenValue::RawF64(float) => (
             b.ins().bitcast(types::I64, MemFlagsData::new(), float),
             ValueKind::FLOAT,
         ),
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     };
     [word, b.ins().iconst(types::I64, i64::from(kind.tag()))]
 }
 
-fn receive_value_from_ref_word(_b: &mut FunctionBuilder<'_>, value_ref: ir::Value) -> ReceiveValue {
-    ReceiveValue::AnyRef(value_ref)
+fn receive_value_from_ref_word(_b: &mut FunctionBuilder<'_>, value_ref: ir::Value) -> CodegenValue {
+    CodegenValue::AnyRef(value_ref)
 }
 
 fn receive_value_tag<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_type_of, [value_ref])),
-        ReceiveValue::Stored { kind, .. } => Ok(body.b.ins().ireduce(types::I8, kind)),
-        ReceiveValue::Int(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::INT.tag() as i64)),
-        ReceiveValue::Float(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64)),
-        ReceiveValue::Atom(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64)),
+        CodegenValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_type_of, [value_ref])),
+        CodegenValue::Stored { kind, .. } => Ok(body.b.ins().ireduce(types::I8, kind)),
+        CodegenValue::RawInt(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::INT.tag() as i64)),
+        CodegenValue::RawF64(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64)),
+        CodegenValue::RawAtom(_) => Ok(body.b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64)),
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
 fn receive_value_int<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::Int(raw) => Ok(raw),
-        ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_int, [value_ref])),
-        ReceiveValue::Stored { word, .. } => Ok(word),
-        ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Err(CodegenError::new("expected int receive value")),
+        CodegenValue::RawInt(raw) => Ok(raw),
+        CodegenValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_int, [value_ref])),
+        CodegenValue::Stored { word, .. } => Ok(word),
+        CodegenValue::RawF64(_) | CodegenValue::RawAtom(_) => Err(CodegenError::new("expected int receive value")),
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
 fn receive_value_float<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::Float(raw) => Ok(raw),
-        ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_float, [value_ref])),
-        ReceiveValue::Stored { word, .. } => Ok(body.b.ins().bitcast(types::F64, MemFlagsData::new(), word)),
-        ReceiveValue::Int(_) | ReceiveValue::Atom(_) => Err(CodegenError::new("expected float receive value")),
+        CodegenValue::RawF64(raw) => Ok(raw),
+        CodegenValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_float, [value_ref])),
+        CodegenValue::Stored { word, .. } => Ok(body.b.ins().bitcast(types::F64, MemFlagsData::new(), word)),
+        CodegenValue::RawInt(_) | CodegenValue::RawAtom(_) => Err(CodegenError::new("expected float receive value")),
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
 fn receive_value_atom<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::Atom(raw) => Ok(raw),
-        ReceiveValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_atom, [value_ref])),
-        ReceiveValue::Stored { word, .. } => Ok(word),
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) => Err(CodegenError::new("expected atom receive value")),
+        CodegenValue::RawAtom(raw) => Ok(raw),
+        CodegenValue::AnyRef(value_ref) => Ok(runtime_call1!(body, fz_unbox_atom, [value_ref])),
+        CodegenValue::Stored { word, .. } => Ok(word),
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => Err(CodegenError::new("expected atom receive value")),
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
@@ -523,16 +519,16 @@ fn stored_slot_offset(idx: usize) -> i32 {
     (idx * size_of::<Stored>()) as i32
 }
 
-fn load_receive_stored(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize) -> ReceiveValue {
+fn load_receive_stored(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize) -> CodegenValue {
     let offset = stored_slot_offset(idx);
     let word = b.ins().load(types::I64, MemFlagsData::trusted(), base, offset);
     let kind = b.ins().load(types::I64, MemFlagsData::trusted(), base, offset + 8);
-    ReceiveValue::Stored { word, kind }
+    CodegenValue::Stored { word, kind }
 }
 
 /// Writes `value` into slot `idx` of a `[Stored; n]` buffer as its word and
 /// kind; a number is stored without a box.
-fn store_receive_stored(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize, value: ReceiveValue) {
+fn store_receive_stored(b: &mut FunctionBuilder<'_>, base: ir::Value, idx: usize, value: CodegenValue) {
     let [word, kind] = receive_value_stored_parts(b, value);
     let offset = stored_slot_offset(idx);
     b.ins().store(MemFlagsData::trusted(), word, base, offset);
@@ -687,7 +683,7 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
     ctx: &DispatchCtx<'_>,
     subject: SubjectId,
     state: &mut DispatchEmitState,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     if let Some(v) = state.values.get(&subject).copied() {
         return Ok(v);
     }
@@ -746,7 +742,7 @@ fn resolve_dispatch_subject<M: cranelift_module::Module>(
     Ok(v)
 }
 
-fn load_pinned_dispatch_value(ctx: &DispatchCtx<'_>, pinned: PinnedValueId) -> Result<ReceiveValue, CodegenError> {
+fn load_pinned_dispatch_value(ctx: &DispatchCtx<'_>, pinned: PinnedValueId) -> Result<CodegenValue, CodegenError> {
     ctx.bindings.pinned.get(pinned.0 as usize).copied().ok_or_else(|| {
         CodegenError::new(format!(
             "dispatch pinned operand {:?} is missing from its owning plan",
@@ -855,7 +851,7 @@ fn emit_region_test<M: cranelift_module::Module>(
 /// match edge, and which edge is the only live one when the value's lane
 /// decided the question without a branch.
 struct RegionTest {
-    true_values: Vec<(SubjectId, ReceiveValue)>,
+    true_values: Vec<(SubjectId, CodegenValue)>,
     settled: Option<bool>,
 }
 
@@ -923,7 +919,7 @@ fn emit_test_edges<M: cranelift_module::Module>(
 fn emit_runtime_type_predicate_region_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    value: ReceiveValue,
+    value: CodegenValue,
     predicate: &RuntimeTypePredicate,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -943,7 +939,7 @@ struct ReceiveTestEmitter<'a, 'b, 'f, 'c, M: cranelift_module::Module> {
 }
 
 impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmitter<'_, '_, 'f, '_, M> {
-    type Value = ReceiveValue;
+    type Value = CodegenValue;
 
     fn builder(&mut self) -> &mut FunctionBuilder<'f> {
         self.body.b
@@ -961,84 +957,85 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         self.ctx.named_schema_ids
     }
 
-    fn kind_evidence(&self, value: ReceiveValue) -> KindEvidence {
+    fn kind_evidence(&self, value: CodegenValue) -> KindEvidence {
         match value {
-            ReceiveValue::AnyRef(_) | ReceiveValue::Stored { .. } => KindEvidence::Tagged,
-            ReceiveValue::Int(_) => KindEvidence::Unboxed(ValueKind::INT),
-            ReceiveValue::Float(_) => KindEvidence::Unboxed(ValueKind::FLOAT),
-            ReceiveValue::Atom(_) => KindEvidence::Unboxed(ValueKind::ATOM),
+            CodegenValue::AnyRef(_) | CodegenValue::Stored { .. } => KindEvidence::Tagged,
+            CodegenValue::RawInt(_) => KindEvidence::Unboxed(ValueKind::INT),
+            CodegenValue::RawF64(_) => KindEvidence::Unboxed(ValueKind::FLOAT),
+            CodegenValue::RawAtom(_) => KindEvidence::Unboxed(ValueKind::ATOM),
+            CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
         }
     }
 
-    fn kind_flag(&mut self, value: ReceiveValue, kind: ValueKind) -> Result<ir::Value, CodegenError> {
+    fn kind_flag(&mut self, value: CodegenValue, kind: ValueKind) -> Result<ir::Value, CodegenError> {
         emit_receive_value_kind_flag(self.body, value, kind)
     }
 
-    fn kind_in(&mut self, value: ReceiveValue, kinds: &[ValueKind]) -> Result<ir::Value, CodegenError> {
+    fn kind_in(&mut self, value: CodegenValue, kinds: &[ValueKind]) -> Result<ir::Value, CodegenError> {
         let tag = receive_value_tag(self.body, value)?;
         let tag = self.body.b.ins().uextend(types::I64, tag);
         let member = kind_is_one_of(self.body.b, tag, |kind| kinds.contains(&kind));
         Ok(self.body.b.ins().ireduce(types::I8, member))
     }
 
-    fn bitstring_bit_len(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn bitstring_bit_len(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let value_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         Ok(emit_proven_binary_bit_len(self.body.b, value_ref))
     }
 
-    fn raw_int(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn raw_int(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         receive_value_int(self.body, value)
     }
 
-    fn raw_float_bits(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn raw_float_bits(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let raw = receive_value_float(self.body, value)?;
         Ok(self.body.b.ins().bitcast(types::I64, MemFlagsData::new(), raw))
     }
 
-    fn raw_atom(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn raw_atom(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         receive_value_atom(self.body, value)
     }
 
-    fn empty_list_flag(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn empty_list_flag(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         emit_receive_is_empty_list_flag(self.body, value)
     }
 
-    fn cons_flag(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn cons_flag(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         emit_receive_is_list_cons_flag(self.body, value)
     }
 
-    fn schema_id(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn schema_id(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let struct_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         let raw = runtime_call1!(self.body, fz_struct_schema_id_ref, [struct_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
     }
 
-    fn struct_is_named(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn struct_is_named(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let struct_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         Ok(runtime_condition!(self.body, fz_struct_is_named_ref, [struct_ref]))
     }
 
-    fn map_named_schema(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn map_named_schema(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let map_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         let raw = runtime_call1!(self.body, fz_map_named_schema_ref, [self.ctx.process, map_ref]);
         Ok(self.body.b.ins().uextend(types::I64, raw))
     }
 
-    fn tuple_field(&mut self, value: ReceiveValue, index: usize) -> Result<ReceiveValue, CodegenError> {
+    fn tuple_field(&mut self, value: CodegenValue, index: usize) -> Result<CodegenValue, CodegenError> {
         emit_struct_get_field_value(self.body, self.ctx, value, index as u32)
     }
 
-    fn list_head(&mut self, value: ReceiveValue) -> Result<ReceiveValue, CodegenError> {
+    fn list_head(&mut self, value: CodegenValue) -> Result<CodegenValue, CodegenError> {
         let list_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         let head_ref = runtime_call1!(self.body, fz_list_head_ref, [list_ref]);
         Ok(receive_value_from_ref_word(self.body.b, head_ref))
     }
 
-    fn closure_code(&mut self, _value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn closure_code(&mut self, _value: CodegenValue) -> Result<ir::Value, CodegenError> {
         Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
     }
 
-    fn closure_arity(&mut self, value: ReceiveValue) -> Result<ir::Value, CodegenError> {
+    fn closure_arity(&mut self, value: CodegenValue) -> Result<ir::Value, CodegenError> {
         let closure_ref = emit_receive_value_ref(self.body, self.ctx, value)?;
         Ok(runtime_call1!(
             self.body,
@@ -1047,7 +1044,7 @@ impl<'f, M: cranelift_module::Module> RuntimeTestEmitter<'f> for ReceiveTestEmit
         ))
     }
 
-    fn closure_capture(&mut self, _value: ReceiveValue, _index: usize) -> Result<ReceiveValue, CodegenError> {
+    fn closure_capture(&mut self, _value: CodegenValue, _index: usize) -> Result<CodegenValue, CodegenError> {
         Err(CodegenError::new(RECEIVE_NAMES_NO_CALLABLE))
     }
 
@@ -1068,25 +1065,26 @@ const RECEIVE_NAMES_NO_CALLABLE: &str =
 
 fn emit_receive_value_kind_flag<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
     kind: ValueKind,
 ) -> Result<ir::Value, CodegenError> {
     let kind_word = match value {
-        ReceiveValue::AnyRef(value_ref) => kind_field(body.b, value_ref),
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) | ReceiveValue::Stored { .. } => {
+        CodegenValue::AnyRef(value_ref) => kind_field(body.b, value_ref),
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) | CodegenValue::RawAtom(_) | CodegenValue::Stored { .. } => {
             let tag = receive_value_tag(body, value)?;
             body.b.ins().uextend(types::I64, tag)
         }
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     };
     Ok(body.b.ins().icmp_imm_s(IntCC::Equal, kind_word, kind.tag() as i64))
 }
 
 fn emit_receive_is_empty_list_flag<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     Ok(match value {
-        ReceiveValue::AnyRef(value_ref) => {
+        CodegenValue::AnyRef(value_ref) => {
             let tag = receive_value_tag(body, value)?;
             let tag64 = body.b.ins().uextend(types::I64, tag);
             let empty = body
@@ -1100,11 +1098,14 @@ fn emit_receive_is_empty_list_flag<M: cranelift_module::Module>(
             let is_empty = body.b.ins().icmp(IntCC::Equal, value_ref, empty);
             body.b.ins().band(is_list, is_empty)
         }
-        ReceiveValue::Stored { word, kind } => {
+        CodegenValue::Stored { word, kind } => {
             let (is_list, is_empty) = stored_list_flags(body.b, word, kind);
             body.b.ins().band(is_list, is_empty)
         }
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => body.b.ins().iconst(types::I8, 0),
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) | CodegenValue::RawAtom(_) => {
+            body.b.ins().iconst(types::I8, 0)
+        }
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     })
 }
 
@@ -1118,10 +1119,10 @@ fn stored_list_flags(b: &mut FunctionBuilder<'_>, word: ir::Value, kind: ir::Val
 
 fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     Ok(match value {
-        ReceiveValue::AnyRef(value_ref) => {
+        CodegenValue::AnyRef(value_ref) => {
             let tag = receive_value_tag(body, value)?;
             let tag64 = body.b.ins().uextend(types::I64, tag);
             let empty = body
@@ -1136,12 +1137,15 @@ fn emit_receive_is_list_cons_flag<M: cranelift_module::Module>(
             let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty, 0);
             body.b.ins().band(is_list, not_empty)
         }
-        ReceiveValue::Stored { word, kind } => {
+        CodegenValue::Stored { word, kind } => {
             let (is_list, is_empty) = stored_list_flags(body.b, word, kind);
             let not_empty = body.b.ins().icmp_imm_s(IntCC::Equal, is_empty, 0);
             body.b.ins().band(is_list, not_empty)
         }
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => body.b.ins().iconst(types::I8, 0),
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) | CodegenValue::RawAtom(_) => {
+            body.b.ins().iconst(types::I8, 0)
+        }
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     })
 }
 
@@ -1174,7 +1178,7 @@ fn apply_edge_evidence_to_receive_state<M: cranelift_module::Module>(
 fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    val: ReceiveValue,
+    val: CodegenValue,
     value: &GroundValue,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -1183,7 +1187,7 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
         return Ok(false);
     };
     match val {
-        ReceiveValue::Int(raw) => {
+        CodegenValue::RawInt(raw) => {
             let DispatchConstValue::Int(want) = want else {
                 body.b.ins().jump(next_b, &[]);
                 return Ok(true);
@@ -1191,7 +1195,7 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
             let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ReceiveValue::Float(raw) => {
+        CodegenValue::RawF64(raw) => {
             let DispatchConstValue::Float(want) = want else {
                 body.b.ins().jump(next_b, &[]);
                 return Ok(true);
@@ -1201,7 +1205,7 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
             let ok = body.b.ins().icmp(IntCC::Equal, raw_bits, want_bits);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ReceiveValue::Atom(raw) => {
+        CodegenValue::RawAtom(raw) => {
             let DispatchConstValue::Atom(want) = want else {
                 body.b.ins().jump(next_b, &[]);
                 return Ok(true);
@@ -1209,17 +1213,18 @@ fn emit_dispatch_side_tag_const_test<M: cranelift_module::Module>(
             let ok = body.b.ins().icmp_imm_s(IntCC::Equal, raw, want as i64);
             body.b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ReceiveValue::AnyRef(value_ref) => {
-            emit_any_ref_const_test(body, ReceiveValue::AnyRef(value_ref), want, match_b, next_b)?;
+        CodegenValue::AnyRef(value_ref) => {
+            emit_any_ref_const_test(body, CodegenValue::AnyRef(value_ref), want, match_b, next_b)?;
         }
-        stored @ ReceiveValue::Stored { .. } => emit_any_ref_const_test(body, stored, want, match_b, next_b)?,
+        stored @ CodegenValue::Stored { .. } => emit_any_ref_const_test(body, stored, want, match_b, next_b)?,
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
     Ok(true)
 }
 
 fn emit_any_ref_const_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
     want: DispatchConstValue,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -1295,21 +1300,21 @@ impl DispatchConstValue {
     }
 }
 
-fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: DispatchConstValue) -> ReceiveValue {
+fn dispatch_const_receive_value(b: &mut FunctionBuilder<'_>, value: DispatchConstValue) -> CodegenValue {
     match value {
-        DispatchConstValue::Int(raw) => ReceiveValue::Int(b.ins().iconst(types::I64, raw)),
+        DispatchConstValue::Int(raw) => CodegenValue::RawInt(b.ins().iconst(types::I64, raw)),
         DispatchConstValue::Float(raw) => {
             let bits = b.ins().iconst(types::I64, raw as i64);
-            ReceiveValue::Float(b.ins().bitcast(types::F64, MemFlagsData::new(), bits))
+            CodegenValue::RawF64(b.ins().bitcast(types::F64, MemFlagsData::new(), bits))
         }
-        DispatchConstValue::Atom(raw) => ReceiveValue::Atom(b.ins().iconst(types::I64, raw as i64)),
+        DispatchConstValue::Atom(raw) => CodegenValue::RawAtom(b.ins().iconst(types::I64, raw as i64)),
     }
 }
 
 fn emit_dispatch_const_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    val: ReceiveValue,
+    val: CodegenValue,
     value: &GroundValue,
     match_b: ir::Block,
     next_b: ir::Block,
@@ -1340,9 +1345,9 @@ fn emit_dispatch_const_test<M: cranelift_module::Module>(
 fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    map: ReceiveValue,
+    map: CodegenValue,
     key: &ComparisonValue,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     let key = match key {
         ComparisonValue::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
         ComparisonValue::Const(key) => emit_dispatch_const_key(body, ctx, key)?,
@@ -1354,9 +1359,10 @@ fn emit_dispatch_map_get_value<M: cranelift_module::Module>(
     };
     let map_ref = emit_receive_value_ref(body, ctx, map)?;
     let scan = match key {
-        ReceiveValue::Int(word) => Some((word, ValueKind::INT)),
-        ReceiveValue::Atom(word) => Some((word, ValueKind::ATOM)),
-        ReceiveValue::AnyRef(_) | ReceiveValue::Float(_) | ReceiveValue::Stored { .. } => None,
+        CodegenValue::RawInt(word) => Some((word, ValueKind::INT)),
+        CodegenValue::RawAtom(word) => Some((word, ValueKind::ATOM)),
+        CodegenValue::AnyRef(_) | CodegenValue::RawF64(_) | CodegenValue::Stored { .. } => None,
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
     .map(|(word, kind)| WordKeyFind::emit(body.b, ctx.process, map_ref, word, kind));
     let [key_word, key_kind] = receive_value_stored_parts(body.b, key);
@@ -1374,7 +1380,7 @@ fn emit_dispatch_const_key<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     key: &GroundValue,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     if let Some(id) = ctx.dispatch.prepared_key_id(key) {
         return ctx.bindings.prepared.get(id.0 as usize).copied().ok_or_else(|| {
             CodegenError::new(format!(
@@ -1428,13 +1434,13 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
         body.b.seal_block(next_b);
         if ctx.dispatch.graph.asks(*field_subject) || ctx.outcome_reads.contains(field_subject) {
             let extracted = if field.kind.reads_as_integer() {
-                ReceiveValue::Int(runtime_call1!(
+                CodegenValue::RawInt(runtime_call1!(
                     body,
                     fz_bs_read_int_ref,
                     [value_ref, pos, field_spec, size_value]
                 ))
             } else {
-                ReceiveValue::AnyRef(runtime_call1!(
+                CodegenValue::AnyRef(runtime_call1!(
                     body,
                     fz_bs_read_binary_ref,
                     [ctx.process, value_ref, pos, field_spec, size_value]
@@ -1457,18 +1463,18 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
 fn emit_struct_get_field<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    struct_value: ReceiveValue,
+    struct_value: CodegenValue,
     field_index: u32,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     emit_struct_get_field_value(body, ctx, struct_value, field_index)
 }
 
 fn emit_struct_get_field_value<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    struct_value: ReceiveValue,
+    struct_value: CodegenValue,
     field_index: u32,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     let field_offset = body.b.ins().iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
     let struct_ref = emit_receive_value_ref(body, ctx, struct_value)?;
     let out_ref = runtime_call1!(body, fz_struct_get_field_ref, [ctx.process, struct_ref, field_offset]);
@@ -1477,7 +1483,7 @@ fn emit_struct_get_field_value<M: cranelift_module::Module>(
 
 fn emit_bitstring_like_guard<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    val: ReceiveValue,
+    val: CodegenValue,
     miss: ir::Block,
 ) -> Result<(), CodegenError> {
     let tag8 = receive_value_tag(body, val)?;
@@ -1526,7 +1532,7 @@ fn emit_dispatch_bit_size<M: cranelift_module::Module>(
             Ok((1, strict_int_i32(body, value)?))
         }
         Some(BitstringFieldSize::PinnedByteSize(pinned)) => {
-            let ReceiveValue::AnyRef(binary) = load_pinned_dispatch_value(ctx, *pinned)? else {
+            let CodegenValue::AnyRef(binary) = load_pinned_dispatch_value(ctx, *pinned)? else {
                 // A scalar is no binary, so the segment gets a size no subject can hold.
                 return Ok((1, body.b.ins().iconst(types::I32, i64::from(u32::MAX))));
             };
@@ -1546,7 +1552,7 @@ fn emit_dispatch_bit_size<M: cranelift_module::Module>(
 
 fn strict_int_i32<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    v: ReceiveValue,
+    v: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     let raw = receive_value_int(body, v)?;
     Ok(body.b.ins().ireduce(types::I32, raw))
@@ -1558,7 +1564,7 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
     expr: &ReceiveGuardExpr,
     fail: ir::Block,
     state: &mut DispatchEmitState,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     Ok(match expr {
         PatternGuardExpr::Const(c) => {
             let Some(value) = dispatch_const_value(ctx.fz_module, c)? else {
@@ -1571,7 +1577,7 @@ fn emit_dispatch_guard_expr<M: cranelift_module::Module>(
         }
         PatternGuardExpr::EmptyList => {
             let word = AnyValueRef::empty_list().raw_word() as i64;
-            ReceiveValue::AnyRef(body.b.ins().iconst(types::I64, word))
+            CodegenValue::AnyRef(body.b.ins().iconst(types::I64, word))
         }
         PatternGuardExpr::Subject(subject) => resolve_dispatch_subject(body, ctx, *subject, state)?,
         PatternGuardExpr::Pinned(pinned) => load_pinned_dispatch_value(ctx, *pinned)?,
@@ -1644,7 +1650,7 @@ fn leave_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, 
 
 /// A guard expression that fails the guard. The rest of the expression is
 /// lowered in the unreachable block, so it is handed a value to work on.
-fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, fail: ir::Block) -> ReceiveValue {
+fn fail_guard<M: cranelift_module::Module>(body: &mut DispatchBody<'_, '_, M>, fail: ir::Block) -> CodegenValue {
     leave_guard(body, fail);
     bool_const_value(body.b, false)
 }
@@ -1663,9 +1669,9 @@ fn emit_guard_extern<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     extern_fn: &GuardExtern,
-    values: Vec<ReceiveValue>,
+    values: Vec<CodegenValue>,
     fail: ir::Block,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     let mut sig = body.module.make_signature();
     let mut call_args = Vec::with_capacity(values.len() + 1);
     if extern_fn.abi.takes_process() {
@@ -1741,17 +1747,17 @@ fn emit_guard_extern<M: cranelift_module::Module>(
         None => raw,
     };
     match lane {
-        ExternTy::I64 => Ok(ReceiveValue::Int(raw)),
+        ExternTy::I64 => Ok(CodegenValue::RawInt(raw)),
         ExternTy::Opaque(kind) => {
             if kind == ValueKind::PID {
-                return Ok(ReceiveValue::AnyRef(immediate_ref_word(body.b, raw, kind)));
+                return Ok(CodegenValue::AnyRef(immediate_ref_word(body.b, raw, kind)));
             }
             let kind = body.b.ins().iconst(types::I64, kind.tag() as i64);
             let call = runtime_call!(body, fz_box_opaque_for_any, [ctx.process, raw, kind]);
-            Ok(ReceiveValue::AnyRef(body.sole_result(call)))
+            Ok(CodegenValue::AnyRef(body.sole_result(call)))
         }
-        ExternTy::F64 => Ok(ReceiveValue::Float(raw)),
-        ExternTy::Any => Ok(ReceiveValue::AnyRef(raw)),
+        ExternTy::F64 => Ok(CodegenValue::RawF64(raw)),
+        ExternTy::Any => Ok(CodegenValue::AnyRef(raw)),
         ExternTy::Bool => {
             let truthy = body.b.ins().icmp_imm_s(IntCC::NotEqual, raw, 0);
             Ok(emit_bool_value(body.b, truthy))
@@ -1790,9 +1796,9 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
     parent: &DispatchCtx<'_>,
     dispatch: &ReceiveGuardDispatch,
     prepared_keys: &[crate::dispatch_matrix::PreparedKeyId],
-    inputs: Vec<ReceiveValue>,
+    inputs: Vec<CodegenValue>,
     fail: ir::Block,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     let ctx = DispatchCtx {
         process: parent.process,
         fz_module: parent.fz_module,
@@ -1828,7 +1834,7 @@ fn emit_guard_dispatch<M: cranelift_module::Module>(
 /// jumps to the join, and the value it carries.
 struct GuardArrival {
     stub: ir::Block,
-    value: ReceiveValue,
+    value: CodegenValue,
 }
 
 /// Joins the values the bodies of a guard dispatch produced, in the lane they
@@ -1840,11 +1846,11 @@ fn join_guard_arrivals<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     arrivals: Vec<GuardArrival>,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     let shared = shared_raw_lane(&arrivals);
     let done = body.b.create_block();
     let lane_type = match shared {
-        Some(ReceiveValue::Float(_)) => types::F64,
+        Some(CodegenValue::RawF64(_)) => types::F64,
         _ => types::I64,
     };
     body.b.append_block_param(done, lane_type);
@@ -1852,7 +1858,9 @@ fn join_guard_arrivals<M: cranelift_module::Module>(
         body.b.switch_to_block(stub);
         body.b.seal_block(stub);
         let word = match value {
-            ReceiveValue::Int(raw) | ReceiveValue::Float(raw) | ReceiveValue::Atom(raw) if shared.is_some() => raw,
+            CodegenValue::RawInt(raw) | CodegenValue::RawF64(raw) | CodegenValue::RawAtom(raw) if shared.is_some() => {
+                raw
+            }
             other => emit_receive_value_ref(body, ctx, other)?,
         };
         body.b.ins().jump(done, &[ir::BlockArg::Value(word)]);
@@ -1864,20 +1872,20 @@ fn join_guard_arrivals<M: cranelift_module::Module>(
     body.b.seal_block(done);
     let joined = body.b.block_params(done)[0];
     Ok(match shared {
-        Some(ReceiveValue::Int(_)) => ReceiveValue::Int(joined),
-        Some(ReceiveValue::Float(_)) => ReceiveValue::Float(joined),
-        Some(ReceiveValue::Atom(_)) => ReceiveValue::Atom(joined),
-        _ => ReceiveValue::AnyRef(joined),
+        Some(CodegenValue::RawInt(_)) => CodegenValue::RawInt(joined),
+        Some(CodegenValue::RawF64(_)) => CodegenValue::RawF64(joined),
+        Some(CodegenValue::RawAtom(_)) => CodegenValue::RawAtom(joined),
+        _ => CodegenValue::AnyRef(joined),
     })
 }
 
 /// A value of the raw lane every arrival carries, when they all carry the same
 /// one. Its payload is a stand-in: only the lane is read.
-fn shared_raw_lane(arrivals: &[GuardArrival]) -> Option<ReceiveValue> {
+fn shared_raw_lane(arrivals: &[GuardArrival]) -> Option<CodegenValue> {
     let first = arrivals.first()?.value;
     let raw = matches!(
         first,
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_)
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) | CodegenValue::RawAtom(_)
     );
     let same = arrivals
         .iter()
@@ -1928,7 +1936,7 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
     rhs: &ReceiveGuardExpr,
     fail: ir::Block,
     state: &mut DispatchEmitState,
-) -> Result<ReceiveValue, CodegenError> {
+) -> Result<CodegenValue, CodegenError> {
     let lhs_value = emit_dispatch_guard_expr(body, ctx, lhs, fail, state)?;
     let lhs_truthy = emit_guard_boolean(body, ctx, lhs_value, fail)?;
     let rhs_b = body.b.create_block();
@@ -1962,12 +1970,12 @@ fn emit_short_circuit_guard<M: cranelift_module::Module>(
 
     body.b.switch_to_block(done_b);
     body.b.seal_block(done_b);
-    Ok(ReceiveValue::AnyRef(body.b.block_params(done_b)[0]))
+    Ok(CodegenValue::AnyRef(body.b.block_params(done_b)[0]))
 }
 
-fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> ReceiveValue {
+fn bool_const_value(b: &mut FunctionBuilder<'_>, value: bool) -> CodegenValue {
     let raw = if value { TRUE_ATOM_ID } else { FALSE_ATOM_ID };
-    ReceiveValue::Atom(b.ins().iconst(types::I64, raw as i64))
+    CodegenValue::RawAtom(b.ins().iconst(types::I64, raw as i64))
 }
 
 /// `<`, `<=`, `>` and `>=`. Two integers compare as machine words; anything
@@ -1977,12 +1985,12 @@ fn emit_ordering_cmp_value<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     cc: IntCC,
-    lhs: ReceiveValue,
-    rhs: ReceiveValue,
-) -> Result<ReceiveValue, CodegenError> {
+    lhs: CodegenValue,
+    rhs: CodegenValue,
+) -> Result<CodegenValue, CodegenError> {
     let cmp = match (&lhs, &rhs) {
-        (ReceiveValue::Int(l), ReceiveValue::Int(r)) => body.b.ins().icmp(cc, *l, *r),
-        (ReceiveValue::AnyRef(left), ReceiveValue::AnyRef(right)) => {
+        (CodegenValue::RawInt(l), CodegenValue::RawInt(r)) => body.b.ins().icmp(cc, *l, *r),
+        (CodegenValue::AnyRef(left), CodegenValue::AnyRef(right)) => {
             let which = binary_ordering(cc);
             emit_comparison_of_refs(body, ctx.process, which, *left, *right, |body| {
                 emit_runtime_ordering(body, ctx, cc, lhs, rhs)
@@ -2010,8 +2018,8 @@ fn emit_runtime_ordering<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     cc: IntCC,
-    lhs: ReceiveValue,
-    rhs: ReceiveValue,
+    lhs: CodegenValue,
+    rhs: CodegenValue,
 ) -> ir::Value {
     let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
     let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
@@ -2023,11 +2031,11 @@ fn emit_runtime_ordering<M: cranelift_module::Module>(
     body.b.ins().icmp_imm_s(cc, ordering, 0)
 }
 
-fn emit_bool_value(b: &mut FunctionBuilder<'_>, cmp: ir::Value) -> ReceiveValue {
+fn emit_bool_value(b: &mut FunctionBuilder<'_>, cmp: ir::Value) -> CodegenValue {
     emit_bool_value_from_truthy(b, cmp, false)
 }
 
-fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, invert: bool) -> ReceiveValue {
+fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, invert: bool) -> CodegenValue {
     let t = b.ins().iconst(types::I64, TRUE_ATOM_ID as i64);
     let f = b.ins().iconst(types::I64, FALSE_ATOM_ID as i64);
     let raw = if invert {
@@ -2035,7 +2043,7 @@ fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, i
     } else {
         b.ins().select(truthy, t, f)
     };
-    ReceiveValue::Atom(raw)
+    CodegenValue::RawAtom(raw)
 }
 
 /// An operand of `and`, `or` or `not` in a guard: whether it is `true`. An
@@ -2044,7 +2052,7 @@ fn emit_bool_value_from_truthy(b: &mut FunctionBuilder<'_>, truthy: ir::Value, i
 fn emit_guard_boolean<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    v: ReceiveValue,
+    v: CodegenValue,
     fail: ir::Block,
 ) -> Result<ir::Value, CodegenError> {
     let true_value = bool_const_value(body.b, true);
@@ -2061,18 +2069,18 @@ fn emit_guard_boolean<M: cranelift_module::Module>(
 
 fn emit_truthy_cmp<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    v: ReceiveValue,
+    v: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match v {
-        ReceiveValue::AnyRef(value_ref) => Ok(runtime_condition!(body, fz_truthy_ref, [value_ref])),
-        ReceiveValue::Atom(raw) => {
+        CodegenValue::AnyRef(value_ref) => Ok(runtime_condition!(body, fz_truthy_ref, [value_ref])),
+        CodegenValue::RawAtom(raw) => {
             let is_false = body.b.ins().icmp_imm_s(IntCC::Equal, raw, FALSE_ATOM_ID as i64);
             let is_nil = body.b.ins().icmp_imm_s(IntCC::Equal, raw, NIL_ATOM_ID as i64);
             let false_or_nil = body.b.ins().bor(is_false, is_nil);
             Ok(body.b.ins().bxor_imm_u(false_or_nil, 1))
         }
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) => Ok(body.b.ins().iconst(types::I8, 1)),
-        ReceiveValue::Stored { word, kind } => {
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => Ok(body.b.ins().iconst(types::I8, 1)),
+        CodegenValue::Stored { word, kind } => {
             let not_atom = body
                 .b
                 .ins()
@@ -2083,6 +2091,7 @@ fn emit_truthy_cmp<M: cranelift_module::Module>(
             let truthy_atom = body.b.ins().bxor_imm_u(false_or_nil, 1);
             Ok(body.b.ins().bor(not_atom, truthy_atom))
         }
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
@@ -2100,14 +2109,14 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     equality: Equality,
-    lhs: ReceiveValue,
-    rhs: ReceiveValue,
+    lhs: CodegenValue,
+    rhs: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match (lhs, rhs) {
-        (ReceiveValue::Int(a), ReceiveValue::Int(bv)) | (ReceiveValue::Atom(a), ReceiveValue::Atom(bv)) => {
+        (CodegenValue::RawInt(a), CodegenValue::RawInt(bv)) | (CodegenValue::RawAtom(a), CodegenValue::RawAtom(bv)) => {
             return Ok(body.b.ins().icmp(IntCC::Equal, a, bv));
         }
-        (ReceiveValue::Float(a), ReceiveValue::Float(bv)) => {
+        (CodegenValue::RawF64(a), CodegenValue::RawF64(bv)) => {
             return Ok(match equality {
                 Equality::Loose => body.b.ins().fcmp(FloatCC::Equal, a, bv),
                 Equality::Strict => {
@@ -2119,7 +2128,7 @@ fn emit_typed_eq_cmp<M: cranelift_module::Module>(
         }
         _ => {}
     }
-    if let (ReceiveValue::AnyRef(left), ReceiveValue::AnyRef(right)) = (lhs, rhs) {
+    if let (CodegenValue::AnyRef(left), CodegenValue::AnyRef(right)) = (lhs, rhs) {
         return Ok(emit_comparison_of_refs(
             body,
             ctx.process,
@@ -2137,8 +2146,8 @@ fn emit_runtime_eq<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
     equality: Equality,
-    lhs: ReceiveValue,
-    rhs: ReceiveValue,
+    lhs: CodegenValue,
+    rhs: CodegenValue,
 ) -> ir::Value {
     let [lhs_word, lhs_kind] = receive_value_stored_parts(body.b, lhs);
     let [rhs_word, rhs_kind] = receive_value_stored_parts(body.b, rhs);
@@ -2160,8 +2169,8 @@ fn emit_runtime_eq<M: cranelift_module::Module>(
 fn emit_typed_eq_branch<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    lhs: ReceiveValue,
-    rhs: ReceiveValue,
+    lhs: CodegenValue,
+    rhs: CodegenValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -2172,10 +2181,10 @@ fn emit_typed_eq_branch<M: cranelift_module::Module>(
 
 fn emit_not_dispatch_map_miss<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
-    value: ReceiveValue,
+    value: CodegenValue,
 ) -> Result<ir::Value, CodegenError> {
     match value {
-        ReceiveValue::AnyRef(_) => {
+        CodegenValue::AnyRef(_) => {
             let tag = receive_value_tag(body, value)?;
             let tag64 = body.b.ins().uextend(types::I64, tag);
             Ok(body
@@ -2183,13 +2192,16 @@ fn emit_not_dispatch_map_miss<M: cranelift_module::Module>(
                 .ins()
                 .icmp_imm_s(IntCC::NotEqual, tag64, ValueKind::NULL.tag() as i64))
         }
-        ReceiveValue::Stored { kind, .. } => {
+        CodegenValue::Stored { kind, .. } => {
             Ok(body
                 .b
                 .ins()
                 .icmp_imm_s(IntCC::NotEqual, kind, ValueKind::NULL.tag() as i64))
         }
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => Ok(body.b.ins().iconst(types::I8, 1)),
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) | CodegenValue::RawAtom(_) => {
+            Ok(body.b.ins().iconst(types::I8, 1))
+        }
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
@@ -2209,7 +2221,7 @@ fn emit_branch_on_size<M: cranelift_module::Module>(
 fn emit_map_kind_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    val: ReceiveValue,
+    val: CodegenValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
@@ -2251,21 +2263,22 @@ fn emit_binary_literal_test<M: cranelift_module::Module>(
 /// Verify `val` is the canonical empty list (`[]`). The empty list is a
 /// single interned sentinel ref (`ValueKind::LIST` with raw word `0`), so
 /// this compares directly instead of routing through a runtime predicate.
-fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: ReceiveValue, match_b: ir::Block, next_b: ir::Block) {
+fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: CodegenValue, match_b: ir::Block, next_b: ir::Block) {
     match val {
-        ReceiveValue::AnyRef(value_ref) => {
+        CodegenValue::AnyRef(value_ref) => {
             let empty = b.ins().iconst(types::I64, AnyValueRef::empty_list().raw_word() as i64);
             let ok = b.ins().icmp(IntCC::Equal, value_ref, empty);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ReceiveValue::Stored { word, kind } => {
+        CodegenValue::Stored { word, kind } => {
             let (is_list, is_empty) = stored_list_flags(b, word, kind);
             let ok = b.ins().band(is_list, is_empty);
             b.ins().brif(ok, match_b, &[], next_b, &[]);
         }
-        ReceiveValue::Int(_) | ReceiveValue::Float(_) | ReceiveValue::Atom(_) => {
+        CodegenValue::RawInt(_) | CodegenValue::RawF64(_) | CodegenValue::RawAtom(_) => {
             b.ins().jump(next_b, &[]);
         }
+        CodegenValue::Known { .. } | CodegenValue::Condition(_) => unreachable!("{NOT_RECEIVABLE}"),
     }
 }
 
@@ -2275,7 +2288,7 @@ fn emit_list_empty_test(b: &mut FunctionBuilder<'_>, val: ReceiveValue, match_b:
 fn emit_list_cons_test<M: cranelift_module::Module>(
     body: &mut DispatchBody<'_, '_, M>,
     ctx: &DispatchCtx<'_>,
-    val: ReceiveValue,
+    val: CodegenValue,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {

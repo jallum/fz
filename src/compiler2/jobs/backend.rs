@@ -21,10 +21,10 @@ use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::process::AtomName;
 
 use super::super::artifact::{
-    AbiReadyCallEdge, AbiReadyExecutable, AbiValueRepr, BackendBody, BackendCallArg, BackendClause,
-    BackendConstructionCapture, BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry,
-    BackendEntryCapture, BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout,
-    BackendStep, BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
+    AbiReadyCallEdge, AbiReadyExecutable, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
+    BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
+    BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
@@ -38,6 +38,7 @@ use super::super::transport::{
 };
 use super::super::types::Ty;
 use super::super::world::World;
+use super::artifact::abi_lane_contract;
 use fz_engine::FactUse;
 use fz_engine::FatalError;
 use fz_engine::SemanticOrd;
@@ -508,7 +509,7 @@ fn backend_call_edge(
 }
 
 fn backend_entry_captures(
-    world: &World,
+    world: &mut World,
     abi: &AbiReadyExecutable,
     values: &[ValueId],
     positions: &[TransportPosition],
@@ -538,19 +539,7 @@ fn backend_entry_captures(
                 .layout_physical_lanes(layout)
                 .into_iter()
                 .filter(|physical| !ignored || physical.source == PhysicalLaneSource::Carrier)
-                .map(|physical| {
-                    let ty = world.lane(physical.lane).ty;
-                    let repr = if physical.source == PhysicalLaneSource::Carrier {
-                        AbiValueRepr::ValueRef
-                    } else if world.types().is_integer(&ty) {
-                        AbiValueRepr::RawInt
-                    } else if world.types().is_atom_type(&ty) {
-                        AbiValueRepr::RawAtom
-                    } else {
-                        AbiValueRepr::ValueRef
-                    };
-                    (world.lane(physical.lane).ty, repr)
-                })
+                .map(|physical| abi_lane_contract(world, physical))
                 .collect::<Vec<_>>();
             Ok(BackendEntryCapture {
                 value: *value,

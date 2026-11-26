@@ -7,7 +7,7 @@ use crate::types::Types;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
-use fz_runtime::any_value::{AnyValue, AnyValueRef, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};
+use fz_runtime::any_value::{AnyValue, AnyValueRef, AnyValueRefPacking, FALSE_ATOM_ID, TRUE_ATOM_ID, ValueKind};
 
 /// Output of `lower_prim`. Generic values leave primitives as high-bit
 /// `AnyValueRef` words; typed fast paths can stay raw when the typer proves
@@ -62,6 +62,12 @@ pub(crate) enum ClosureCapture {
     RawInt(ir::Value),
     RawF64(ir::Value),
     RawAtom(ir::Value),
+    /// A word and the kind it is read as, held as the slot's raw word and
+    /// kind byte.
+    Stored {
+        word: ir::Value,
+        kind: ir::Value,
+    },
 }
 
 pub(crate) fn closure_capture_for_var<M: Module>(
@@ -80,6 +86,7 @@ pub(crate) fn closure_capture_for_var<M: Module>(
         }
         CodegenValue::RawF64(value) => ClosureCapture::RawF64(value),
         CodegenValue::RawAtom(value) => ClosureCapture::RawAtom(value),
+        CodegenValue::Stored { word, kind } => ClosureCapture::Stored { word, kind },
         CodegenValue::Known { payload, kind } if kind == ValueKind::INT => ClosureCapture::RawInt(payload),
         CodegenValue::Known { payload, kind } if kind == ValueKind::FLOAT => {
             let raw = body.b.ins().bitcast(types::F64, MemFlagsData::new(), payload);
@@ -105,6 +112,10 @@ pub(crate) fn closure_capture_for_var_as<M: Module>(
         ArgRepr::RawF64 => ClosureCapture::RawF64(body.coerce_binding_to(binding, repr)),
         ArgRepr::RawAtom => ClosureCapture::RawAtom(body.coerce_binding_to(binding, repr)),
         ArgRepr::ValueRef => ClosureCapture::RefWord(body.tagged_var(var_env, v)),
+        ArgRepr::Stored => {
+            let [word, kind] = stored_parts(body, binding);
+            ClosureCapture::Stored { word, kind }
+        }
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -160,6 +171,16 @@ pub(crate) fn expected_runtime_value_kind<T: Types<Ty = Ty>>(
     }
 }
 
+/// The ref word a stored pair spells when its kind is a heap kind: the kind
+/// over the word. A scalar kind spells no ref; only a branch on the kind may
+/// read the result.
+pub(crate) fn heap_ref_of_stored(b: &mut FunctionBuilder<'_>, word: ir::Value, kind: ir::Value) -> ir::Value {
+    let kind_bits = b
+        .ins()
+        .ishl_imm_u(kind, i64::from(AnyValueRefPacking::current().tag_shift()));
+    b.ins().bor(kind_bits, word)
+}
+
 pub(crate) fn known_list_ref_for_var(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
@@ -175,6 +196,13 @@ pub(crate) fn known_list_ref_for_var(
         cache.known_list_refs.insert(key, value);
         return value;
     }
+    if let Some(CodegenValue::Stored { word, kind }) = var_env.get(&v).copied() {
+        // The value is known to be a list, so its stored word is the list's
+        // payload and its kind names the list: the kind over the word is the ref.
+        let list_ref = heap_ref_of_stored(b, word, kind);
+        cache.known_list_refs.insert(key, list_ref);
+        return list_ref;
+    }
     let Some(CodegenValue::Known {
         kind: ValueKind::LIST, ..
     }) = var_env.get(&v).copied()
@@ -186,10 +214,22 @@ pub(crate) fn known_list_ref_for_var(
     list_ref
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) enum CodegenValue {
     AnyRef(ir::Value),
-    Known { payload: ir::Value, kind: ValueKind },
+    /// A value whose kind the compiler knows: the word a container stores for
+    /// it, and the kind as a constant.
+    Known {
+        payload: ir::Value,
+        kind: ValueKind,
+    },
+    /// A value whose kind is read when it runs: the word a container stores
+    /// for it, and its kind as an `I64`. It is `Known` with the kind in a
+    /// register.
+    Stored {
+        word: ir::Value,
+        kind: ir::Value,
+    },
     RawInt(ir::Value),
     RawF64(ir::Value),
     RawAtom(ir::Value),
@@ -197,13 +237,18 @@ pub(crate) enum CodegenValue {
 }
 
 impl CodegenValue {
-    pub(crate) fn from_abi_value(value: ir::Value, repr: ArgRepr) -> Self {
+    /// The binding the leading words of `values` spell in `repr`.
+    pub(crate) fn from_abi_values(values: &[ir::Value], repr: ArgRepr) -> Self {
         match repr {
-            ArgRepr::ValueRef => Self::AnyRef(value),
-            ArgRepr::RawInt => Self::RawInt(value),
-            ArgRepr::RawF64 => Self::RawF64(value),
-            ArgRepr::RawAtom => Self::RawAtom(value),
-            ArgRepr::Condition => Self::Condition(value),
+            ArgRepr::ValueRef => Self::AnyRef(values[0]),
+            ArgRepr::RawInt => Self::RawInt(values[0]),
+            ArgRepr::RawF64 => Self::RawF64(values[0]),
+            ArgRepr::RawAtom => Self::RawAtom(values[0]),
+            ArgRepr::Stored => Self::Stored {
+                word: values[0],
+                kind: values[1],
+            },
+            ArgRepr::Condition => Self::Condition(values[0]),
         }
     }
 
@@ -223,6 +268,7 @@ impl CodegenValue {
             | Self::RawAtom(value)
             | Self::Condition(value)
             | Self::Known { payload: value, .. } => value,
+            Self::Stored { .. } => panic!("a stored value is two words, not one"),
         }
     }
 
@@ -232,6 +278,7 @@ impl CodegenValue {
             Self::RawInt(_) => ArgRepr::RawInt,
             Self::RawF64(_) => ArgRepr::RawF64,
             Self::RawAtom(_) => ArgRepr::RawAtom,
+            Self::Stored { .. } => ArgRepr::Stored,
             Self::Condition(_) => ArgRepr::Condition,
         }
     }

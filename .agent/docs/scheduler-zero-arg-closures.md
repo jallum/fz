@@ -477,6 +477,17 @@ the late read fails. CI runs that command as its own pull-request step
 pass `--all-features`, because the feature replaces the pop with poison and so
 changes the heap pins of every other test. The local gate does not run it.
 
+A resumed frame is popped only when no ref capture still names one of its slots:
+a ref to a boxed-scalar kind (int, float, reference) read from a frame names the
+capture slot itself, so `release_resumed_frame` keeps a frame while any ref
+capture's kind is such a kind. The `x1_ignore_pin` cargo feature builds a
+compiler that pops without asking. `cargo test --features x1_ignore_pin --test
+x1_ignore_pin` runs the fixtures whose output once depended on the pin and
+checks that each prints its golden and exits 0; none fails, because a number a
+continuation holds travels as a stored word and kind, not as a ref into the
+frame. CI runs it as its own pull-request step, for the same reason as the
+poison step.
+
 ## Spawn: a fresh task is still just a closure
 
 A fresh task has no continuation yet, so spawn builds one. Its `runnable` is an
@@ -506,13 +517,14 @@ alloc telemetry then measures only the task's own execution.
 ## Halt continuations
 
 When a resumed body finishes, it calls a halt continuation that records the final
-value into the process. There are four per program, one per return repr kind:
-`0=ValueRef`, `1=RawInt`, `2=RawF64`, `3=RawAtom`. Each is a zero-capture closure
+value into the process. There are five per program, one per return repr kind:
+`0=ValueRef`, `1=RawInt`, `2=RawF64`, `3=RawAtom`, `4=Stored`. Each is a zero-capture closure
 whose code pointer is the matching `fz_halt_cont_body_*` Cranelift body. Codegen
 emits them once, as read-only data objects (`fz_halt_cont_strict`,
-`fz_halt_cont_i64`, `fz_halt_cont_f64`, `fz_halt_cont_atom`), and code takes their
-address directly. The closure header packs `halt_kind` into its flags (low 14 bits
-= capture count, high 2 bits = halt kind), which is how `fz_entry_thunk` selects
+`fz_halt_cont_i64`, `fz_halt_cont_f64`, `fz_halt_cont_atom`, `fz_halt_cont_stored`),
+and code takes their address directly. The stored body takes the value's word and
+kind and records both. The closure header packs `halt_kind` into its flags (low 13
+bits = capture count, high 3 bits = halt kind), which is how `fz_entry_thunk` selects
 the right halt continuation for the inner body.
 
 A thin function reference (a `MakeFnRef`, a function value with no captures) is

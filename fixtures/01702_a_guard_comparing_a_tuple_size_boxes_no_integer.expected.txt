@@ -3,4 +3,4 @@
 {:heard_below, :heard_not_below, :heard_within, :heard_beyond, :heard_within}
 {:user_guard, 0}
 {:elem, 0}
-{:mixed_lanes, 1}
+{:mixed_lanes, 0}

@@ -27,6 +27,7 @@ fn lane_to_repr(lane: FrameLane) -> ArgRepr {
         FrameLane::Int => ArgRepr::RawInt,
         FrameLane::Float => ArgRepr::RawF64,
         FrameLane::Atom => ArgRepr::RawAtom,
+        FrameLane::Stored => ArgRepr::Stored,
     }
 }
 
@@ -62,6 +63,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
             ClosureCapture::RefWord(word) => stores.store_ref_word(self, idx, word, StoredRefKind::Open),
             ClosureCapture::RawInt(raw) => stores.store_raw(self, idx, raw, ValueKind::INT),
             ClosureCapture::RawAtom(raw) => stores.store_raw(self, idx, raw, ValueKind::ATOM),
+            ClosureCapture::Stored { word, kind } => stores.store_stored(self, idx, word, kind),
             ClosureCapture::RawF64(float) => {
                 let bits = self.b.ins().bitcast(types::I64, MemFlagsData::new(), float);
                 stores.store_raw(self, idx, bits, ValueKind::FLOAT);

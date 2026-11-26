@@ -1758,7 +1758,7 @@ fn first_capture(frame: u64) -> i64 {
 fn a_body_frame_in_a_young_block_is_written_where_it_is() {
     with_process(|process| {
         let in_tip = body_frame_holding(process, 4, 7);
-        let parked_alone = body_frame_holding(process, 16_000, 8);
+        let parked_alone = body_frame_holding(process, 8_000, 8);
 
         assert_eq!(fz_frame_for_write(process, in_tip), in_tip);
         assert_eq!(fz_frame_for_write(process, parked_alone), parked_alone);

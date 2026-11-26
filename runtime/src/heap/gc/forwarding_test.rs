@@ -144,7 +144,7 @@ fn live_headers_of_every_kind_have_a_clear_low_nibble() {
     for (denotation, captured, halt, arity) in [
         (0, 0, 0, 0),
         (1, 1, 1, 1),
-        (u32::MAX >> 1, 0x3FFF, 3, 4095),
+        (u32::MAX >> 1, 0x1FFF, 7, 4095),
         (73, 8, 0, 8),
     ] {
         let word = closure_header_word(ClosureDenotationId::user(denotation), captured, halt, arity);

@@ -62,6 +62,7 @@ fn lane_of(repr: AbiValueRepr) -> FrameLane {
         AbiValueRepr::RawInt => FrameLane::Int,
         AbiValueRepr::RawF64 => FrameLane::Float,
         AbiValueRepr::RawAtom => FrameLane::Atom,
+        AbiValueRepr::Stored => FrameLane::Stored,
     }
 }
 
@@ -414,7 +415,7 @@ fn dead_heap_slots(builder: &HashMap<Var, Slot>, member: &HashMap<Var, Slot>) ->
     let live: HashSet<u32> = member.values().map(|slot| slot.index).collect();
     let mut dead: Vec<u32> = builder
         .values()
-        .filter(|slot| slot.lane == FrameLane::Ref && !live.contains(&slot.index))
+        .filter(|slot| matches!(slot.lane, FrameLane::Ref | FrameLane::Stored) && !live.contains(&slot.index))
         .map(|slot| slot.index)
         .collect();
     dead.sort_unstable();

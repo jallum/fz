@@ -134,6 +134,7 @@ fn fill_cont_captures<M: cranelift_module::Module>(
             stores.store_raw(body, idx, bits, ValueKind::FLOAT);
         }
         ClosureCapture::RawAtom(raw) => stores.store_raw(body, idx, raw, ValueKind::ATOM),
+        ClosureCapture::Stored { word, kind } => stores.store_stored(body, idx, word, kind),
     });
     let nil = body.b.ins().iconst(types::I64, i64::from(NIL_ATOM_ID));
     for idx in count - empty_slots..count {
@@ -191,6 +192,21 @@ impl CaptureStores {
         let flags = MemFlagsData::trusted();
         body.b.ins().store(flags, raw, self.address, self.slot_offset(idx));
         let kind = body.b.ins().iconst(types::I8, i64::from(kind.tag()));
+        body.b.ins().store(flags, kind, self.address, self.kind_offset(idx));
+    }
+
+    /// Store a word and the kind it is read as: the slot holds the word, and
+    /// the kind byte holds the kind.
+    pub(super) fn store_stored<M: cranelift_module::Module>(
+        &self,
+        body: &mut CodegenFn<'_, '_, M>,
+        idx: usize,
+        word: ir::Value,
+        kind: ir::Value,
+    ) {
+        let flags = MemFlagsData::trusted();
+        body.b.ins().store(flags, word, self.address, self.slot_offset(idx));
+        let kind = body.b.ins().ireduce(types::I8, kind);
         body.b.ins().store(flags, kind, self.address, self.kind_offset(idx));
     }
 
@@ -289,8 +305,10 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
             .b
             .ins()
             .uload8(types::I64, flags, kinds, CLOSURE_CAPTURES_OFFSET + slot as i32);
-        let names_slot = body.kind_names_its_slot(kind);
-        pinned = body.b.ins().bor(pinned, names_slot);
+        if !IGNORE_FRAME_PIN {
+            let names_slot = body.kind_names_its_slot(kind);
+            pinned = body.b.ins().bor(pinned, names_slot);
+        }
     }
     let end = body
         .b
@@ -309,6 +327,11 @@ pub(crate) fn release_resumed_frame<M: cranelift_module::Module>(
         body.b.ins().store(flags, new_top, process, heap);
     }
 }
+
+/// The `x1_ignore_pin` test feature builds a compiler whose frame release does
+/// not keep a frame that a ref capture names a slot of. A corpus that still
+/// runs the same shows no live ref names a dead frame's slot.
+pub(crate) const IGNORE_FRAME_PIN: bool = cfg!(feature = "x1_ignore_pin");
 
 /// The `poison_dead_frames` test feature builds a compiler whose released
 /// frames are poisoned instead of given back; production builds pop.
