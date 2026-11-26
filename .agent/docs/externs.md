@@ -631,11 +631,12 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
   the value. The atom is interned by `collect_executable_atoms`. A caller
   therefore tail-calls the wrapper; no continuation or decoder stands between it
   and the C symbol. A caller that is not in tail position and whose callee is
-  frame-free, as an extern and any function that only calls externs are, makes
-  the extern call itself (`lower_extern_here`, shared with the wrapper): the
-  failing edge raises from the caller and the caller goes on in the same
-  function (see [`pipeline`](pipeline.md), the delivered call lowered in its
-  caller).
+  an extern makes the extern call itself (`lower_extern_here`, shared with the
+  wrapper): the failing edge raises from the caller and the caller goes on in the
+  same function. A function that only calls externs is frame-free, so it is a
+  machine function that makes the extern call, and its callers make a machine
+  call to it (see [`pipeline`](pipeline.md), the delivered call that is a
+  machine call).
 - The interpreter reads the same pair and answers `ExternCallValue::CheckedFailure`,
   which `continue_after_extern` hands to `raise_last_resort`, the function a
   decision's failure calls.

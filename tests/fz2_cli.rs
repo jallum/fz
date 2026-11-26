@@ -2746,9 +2746,10 @@ fn a_construction_that_starts_with_an_unsized_binary_asks_the_runtime_to_extend_
         let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
         let _ = remove_file(&source_path);
         let _ = remove_file(&clif_path);
-        let build = clif
-            .split("\n; fn ")
-            .find(|function| function.starts_with("build__"))
+        let functions = || clif.split("\n; fn ").filter(|function| function.starts_with("build__"));
+        let build = functions()
+            .find(|function| function.lines().next().is_some_and(|name| name.contains("__machine")))
+            .or_else(|| functions().next())
             .expect("the dump has `build`'s own code");
         let imports = |symbol: &str| build.contains(&format!("= {symbol}\n"));
         (imports("fz_bs_append_unfilled"), imports("fz_heap_room"))
@@ -2827,9 +2828,13 @@ fn clif_body_of(program: &str, function: &str) -> String {
     let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
     let _ = remove_file(&source_path);
     let _ = remove_file(&clif_path);
-    let code = clif
-        .split("\n; fn ")
-        .find(|code| code.starts_with(&format!("{function}__")))
+    let own = || {
+        clif.split("\n; fn ")
+            .filter(|code| code.starts_with(&format!("{function}__")))
+    };
+    let code = own()
+        .find(|code| code.lines().next().is_some_and(|name| name.contains("__machine")))
+        .or_else(|| own().next())
         .unwrap_or_else(|| panic!("the dump has `{function}`'s own code"));
     code.split_once('\n').expect("a function header").1.to_string()
 }

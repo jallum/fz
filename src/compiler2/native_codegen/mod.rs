@@ -29,6 +29,7 @@ mod list_cell;
 mod list_reuse;
 mod place;
 mod prim;
+mod raises;
 mod receive;
 pub(crate) mod recipe;
 pub(crate) mod repr;

@@ -536,6 +536,7 @@ fn an_uncaught_throw_prints_its_value_and_ends_the_process_with_status_1() {
 fn uncaught_exit(process: &mut Process, reason: AnyValue) -> Option<String> {
     let Stored { word, kind } = Stored::of(reason);
     process.failed = false;
+    process.unwinding = false;
     process.exit_status = 0;
     fz_exit(process, word, kind);
     assert!(process.failed, "an exit nothing handles ends the process");

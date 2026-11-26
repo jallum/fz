@@ -596,6 +596,11 @@ pub enum Prim {
     /// Publish an ownership-splitting edge; scalar lanes are unchanged.
     Share(Var),
     Extern(CallsiteIdent, ExternId, Vec<ExternArg>),
+    /// Call the machine function `FnId` on the argument lanes and answer the
+    /// lanes it returns, one variable each. The callee returns to this block
+    /// the way a C function does, taking no continuation; if it raised, this
+    /// function returns in turn without reaching the next statement.
+    MachineCall(FnId, Vec<Var>),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -810,7 +815,7 @@ impl Prim {
                     used.insert(arg.var);
                 }
             }
-            Prim::MakeTuple(args) => {
+            Prim::MachineCall(_, args) | Prim::MakeTuple(args) => {
                 for v in args {
                     used.insert(*v);
                 }
@@ -1659,6 +1664,7 @@ impl fmt::Display for Prim {
             Prim::Extern(_, e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }
+            Prim::MachineCall(callee, args) => write!(f, "machine_call({}, [{}])", callee, fmt_var_list(args)),
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),

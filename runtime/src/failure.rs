@@ -284,8 +284,7 @@ pub extern "C" fn fz_fail(process: *mut Process, line_ref: u64) {
     let process = unsafe { &mut *process };
     assert!(!process.ctx.is_null(), "fz_fail: process has no execution context");
     let ctx = unsafe { &*process.ctx };
-    process.failed = true;
-    process.exit_status = 1;
+    process.fail(1);
     let sink = ctx.fault.expect("fz_fail: fault sink installed");
     unsafe { sink(ctx.scheduler, line.as_ptr(), line.len()) };
 }
@@ -308,8 +307,7 @@ pub extern "C" fn fz_system_halt(process: *mut Process, status: i64) {
     let status = status as i32;
     let halt = ctx.halt.expect("fz_system_halt: halt hook installed");
     halt(ctx.scheduler, status);
-    process.failed = true;
-    process.exit_status = status;
+    process.fail(status);
 }
 
 /// Continue the raise a handler was delivered: raise `value` with the kind
@@ -382,8 +380,8 @@ fn raise(process: *mut Process, kind: RaiseKind, raised: Stored, reason: Option<
     report_raise(ctx, process, kind, name, process.handlers.depth(), stack_bytes);
     let Some(handler) = process.handlers.innermost() else {
         let line = failure_line(process_ptr, kind, value);
-        process.failed = true;
-        process.exit_status = exit_status(process_ptr, kind, value);
+        let status = exit_status(process_ptr, kind, value);
+        process.fail(status);
         if let Some(line) = line {
             let sink = ctx.fault.expect("raise: fault sink installed");
             unsafe { sink(ctx.scheduler, line.as_ptr(), line.len()) };

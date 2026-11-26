@@ -3,6 +3,7 @@ use super::receive::{
     emit_receive_projector_body,
 };
 use super::*;
+use crate::compiler2::NativeEntryAbi;
 use crate::diag::Diagnostics;
 use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{BlockId, FnId, Module, Prim, Term};
@@ -66,6 +67,12 @@ fn build_fn_sigs(surface: &NativeCodegenSurface<'_>) -> Vec<Signature> {
         .body_slots
         .iter()
         .map(|body_slot| match body_slot {
+            Some(body_slot) if matches!(body_slot.native_body.entry_abi, NativeEntryAbi::Machine) => {
+                build_machine_fn_signature(
+                    &surface.param_reprs[body_slot.codegen_id as usize],
+                    &arg_reprs_from_compiler2(&body_slot.native_body.return_reprs),
+                )
+            }
             Some(body_slot) => build_fn_signature(
                 &surface.param_reprs[body_slot.codegen_id as usize],
                 surface.cont_fns.contains(&body_slot.fn_id),
@@ -989,7 +996,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         .iter()
         .filter_map(|body| match body.entry_abi {
             crate::compiler2::NativeEntryAbi::Continuation { .. } => Some(body.fn_id),
-            crate::compiler2::NativeEntryAbi::Direct => None,
+            crate::compiler2::NativeEntryAbi::Direct | crate::compiler2::NativeEntryAbi::Machine => None,
         })
         .collect::<HashSet<_>>();
     let entry_body = program
@@ -1013,6 +1020,7 @@ fn prepare_native_codegen_surface_from_native_program<'a>(
         param_reprs,
         return_diverges,
         cont_fns,
+        raising_machines: super::raises::raising_machines(program),
         fn_halt_kinds,
     })
 }
@@ -1102,6 +1110,7 @@ pub(crate) fn compile_with_backend_surface<
             param_reprs: &surface.param_reprs,
             return_diverges: &surface.return_diverges,
             cont_fns: &surface.cont_fns,
+            raising_machines: &surface.raising_machines,
             receive_dispatch_fn_ids: &receive_dispatch_fn_ids,
         };
         {

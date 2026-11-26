@@ -43,7 +43,7 @@ use fz_runtime::ir_runtime::{
     fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
     fz_value_eq_ref, fz_value_eq_widening_ref,
 };
-use fz_runtime::process_abi::{PROCESS_DELIVERED_OFFSET, PROCESS_FAILED_OFFSET};
+use fz_runtime::process_abi::PROCESS_UNWINDING_OFFSET;
 use std::mem::{align_of, offset_of, size_of};
 use target_lexicon::{Architecture, OperatingSystem, Triple};
 
@@ -207,6 +207,9 @@ fn static_literal_field_for_var(
             value => Some(StaticLiteralField::Scalar(*value)),
         };
     }
+    if let Some(object) = cache.static_bitstring_refs.get(&var.0) {
+        return Some(StaticLiteralField::Bitstring(*object));
+    }
     cache
         .static_struct_refs
         .get(&var.0)
@@ -258,6 +261,10 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
             StaticLiteralField::Struct(data_id) => {
                 child_relocs.push((raw_offset, data_id));
                 buf[kind_offset] = ValueKind::STRUCT.tag();
+            }
+            StaticLiteralField::Bitstring(data_id) => {
+                child_relocs.push((raw_offset, data_id));
+                buf[kind_offset] = ValueKind::BITSTRING.tag();
             }
         }
     }
@@ -504,6 +511,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 .literal(body.jmod, bytes, *bit_len)?;
             match literal {
                 BitstringLiteral::Object(object) => {
+                    body.cache.static_bitstring_refs.insert(dest_var.0, object);
                     LowerOut::Strict(body.static_object_value(object, ValueKind::BITSTRING))
                 }
                 BitstringLiteral::Shared(shared) => {
@@ -1323,6 +1331,9 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 Ok(LowerOut::Strict(strict_bool(body.b, inv)))
             }
         },
+        Prim::MachineCall(..) => Err(CodegenError::new(
+            "a machine call answers its lanes as a multi-result statement, never as one variable",
+        )),
         Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
             if decl.variadic {
@@ -2472,28 +2483,91 @@ fn inline_scalar_extern<M: cranelift_module::Module>(
 
 /// What follows a call that cannot return: the callee raised. `fz_panic` either
 /// delivered the raise to a handler or failed the process, and in both cases
-/// this frame returns 0, as a yield does, so every frame above it unwinds to
+/// this frame returns, as a yield does, so every frame above it unwinds to
 /// the quantum entry, which resumes the delivered handler or ends the process.
 /// A process that neither failed nor has a delivered handler was ended by an
 /// extern that broke its `none` contract, which traps. Code after the call is
 /// unreachable and lands in a block nothing enters.
 pub(super) fn continue_after_raise<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
-    let process = body.process_arg();
-    let failed = body
-        .b
-        .ins()
-        .uload8(types::I64, MemFlagsData::trusted(), process, PROCESS_FAILED_OFFSET);
-    let delivered = body
-        .b
-        .ins()
-        .load(types::I64, MemFlagsData::trusted(), process, PROCESS_DELIVERED_OFFSET);
-    let unwinds = body.b.ins().bor(failed, delivered);
+    let unwinds = process_is_unwinding(body);
     body.b.ins().trapz(unwinds, TrapCode::user(1).unwrap());
-    let done = body.b.ins().iconst(types::I64, 0);
-    body.b.ins().return_(&[done]);
+    return_unwinding(body);
     let after = body.b.create_block();
     body.b.switch_to_block(after);
     body.b.seal_block(after);
+}
+
+/// Nonzero when the process raised: it failed, or a handler was delivered. The
+/// pinned register is read again here, not taken from the block's cached copy,
+/// so that no value is held across the call that raised, which would take a
+/// callee-saved register that every caller of this function then saves.
+fn process_is_unwinding<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) -> ir::Value {
+    let process = body.b.ins().get_pinned_reg(types::I64);
+    body.b
+        .ins()
+        .uload8(types::I64, MemFlagsData::trusted(), process, PROCESS_UNWINDING_OFFSET)
+}
+
+/// Returns from this function with the lanes its signature declares, each
+/// zero: a continuation function returns 0 to its caller, which is the quantum
+/// entry; a machine function returns zeros to a caller that checks for the
+/// raise before it reads them.
+fn return_unwinding<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
+    let lanes = body
+        .b
+        .func
+        .signature
+        .returns
+        .iter()
+        .map(|lane| lane.value_type)
+        .collect::<Vec<_>>();
+    let zeros = lanes
+        .into_iter()
+        .map(|lane| match lane {
+            types::F64 => body.b.ins().f64const(0.0),
+            lane => body.b.ins().iconst(lane, 0),
+        })
+        .collect::<Vec<_>>();
+    body.b.ins().return_(&zeros);
+}
+
+/// Calls machine function `callee` on `args` and answers the lanes it
+/// returns. A raise in the callee returns from this function too, before the
+/// lanes are read, and control goes on in the block where the callee returned
+/// normally.
+pub(super) fn lower_machine_call<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    callee: FnId,
+    args: &[Var],
+) -> Vec<CodegenValue> {
+    let callee_fid = *env.fn_ids.get(&callee.0).expect("machine callee fn_id missing");
+    let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
+    let call_args = body.coerce_call_args(args, &env.param_reprs[callee.0 as usize], var_env);
+    let call = body.b.ins().call(callee_fref, &call_args);
+    let lanes = body.b.inst_results(call).to_vec();
+    if env.raising_machines.contains(&callee) {
+        return_if_raised(body);
+    }
+    let mut cursor = 0;
+    env.body_return_reprs(callee.0)
+        .into_iter()
+        .map(|repr| take_param_binding(&lanes, &mut cursor, repr))
+        .collect()
+}
+
+fn return_if_raised<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>) {
+    let unwinds = process_is_unwinding(body);
+    let raised = body.b.create_block();
+    let returned = body.b.create_block();
+    body.b.ins().brif(unwinds, raised, &[], returned, &[]);
+    body.b.switch_to_block(raised);
+    body.b.seal_block(raised);
+    body.b.set_cold_block(raised);
+    return_unwinding(body);
+    body.b.switch_to_block(returned);
+    body.b.seal_block(returned);
 }
 
 /// The values a pair-returning extern binds to `vars`. A boolean field whose

@@ -28,7 +28,7 @@ multi-clause function spends one reduction, at its tail call. An entry is a
 block only when every transfer that reaches it is a direct transfer from its own
 function (see [`pipeline`](pipeline.md)), so blocks never form a loop of their
 own and every loop closes at a tail call. A call to a frame-free function is
-lowered in its caller (see [`pipeline`](pipeline.md)): it is neither a tail
+a machine call (see [`pipeline`](pipeline.md)): it is neither a tail
 call nor a continuation, and a frame-free function is in no call cycle, so it
 has no back edge; it spends no reduction and builds no continuation closure.
 The closures a loop builds are those of its calls to functions that need a

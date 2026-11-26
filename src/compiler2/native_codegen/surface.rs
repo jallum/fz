@@ -44,6 +44,8 @@ pub(crate) struct NativeCodegenSurface<'a> {
     pub param_reprs: Vec<Vec<ArgRepr>>,
     pub return_diverges: Vec<bool>,
     pub cont_fns: HashSet<FnId>,
+    /// The machine functions that may raise.
+    pub raising_machines: HashSet<FnId>,
     pub fn_halt_kinds: HashMap<u32, u32>,
 }
 

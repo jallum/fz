@@ -9,8 +9,9 @@ use cranelift_module::Module as ClModule;
 pub(crate) struct EntryHarnessOut {
     pub(super) var_env: HashMap<u32, CodegenValue>,
     /// The caller's continuation: the signature's trailing i64, or for a
-    /// continuation fn the outer continuation read from its frame.
-    pub(super) cont_param: ir::Value,
+    /// continuation fn the outer continuation read from its frame. A machine
+    /// function has none: it returns to its caller.
+    pub(super) cont_param: Option<ir::Value>,
     /// A continuation fn's own closure (the frame it runs in).
     pub(super) self_ref: Option<ir::Value>,
 }
@@ -42,7 +43,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
             &mut var_env,
         );
         self_ref = Some(own);
-        outer
+        Some(outer)
     } else {
         harness_plain_native(entry_blk, &params, my_param_reprs, &mut var_env)
     };
@@ -126,20 +127,20 @@ fn harness_cont_fn<M: ClModule>(
 /// All entry block params map 1:1 to leading Cranelift params via
 /// each ArgRepr's abi_arity; the trailing slot carries the cont SSA.
 ///
-/// Returns the trailing cont SSA value.
+/// Returns the trailing cont SSA value, which a machine function, returning
+/// to its caller, does not have.
 fn harness_plain_native(
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
     var_env: &mut HashMap<u32, CodegenValue>,
-) -> ir::Value {
+) -> Option<ir::Value> {
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().enumerate() {
         let repr = my_param_reprs[i];
         var_env.insert(p.0, take_param_binding(params, &mut param_cursor, repr));
     }
-    let cont_idx = param_cursor;
-    params[cont_idx]
+    params.get(param_cursor).copied()
 }
 
 #[cfg(test)]
