@@ -225,7 +225,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         .drive_root_backend_work_starts(root)
         .expect("the activation-edge fixture should settle its backend product");
     let (demand_completions, demand_wake_starts, demanded_formula_keys) = &*demand_work.borrow();
-    assert_eq!(macro_definition_consumers.borrow().len(), 5);
+    assert_eq!(macro_definition_consumers.borrow().len(), 4);
     assert_eq!(
         *macro_definition_consumers.borrow(),
         *macro_product_consumers.borrow(),
@@ -253,7 +253,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // A job gated on a fact its subject already carries never starts to
         // discover that fact missing, then wake once the fact lands
         // (`Job::missing_gates`).
-        (2803, 15, 31, 190),
+        (2801, 15, 31, 190),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -269,7 +269,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
     // then wakes those same consumers through the retained product dependency.
     assert_eq!(
         starts[WorkStart::ChangedRevisionWake] - demand_wake_starts,
-        1231,
+        1229,
         "ordinary generic helper facts have the exact non-demand changed-revision census",
     );
     assert_eq!(

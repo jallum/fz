@@ -1832,7 +1832,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         analyze_evaluations: 153,
         analyze_zero_change: 5,
         // Macro readiness is a retained content dependency.
-        total_evaluations: 721,
+        total_evaluations: 718,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00571_enum_predicate_search.fz",
@@ -1841,7 +1841,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         shifts: shifts(25, 75),
         analyze_evaluations: 593,
         analyze_zero_change: 25,
-        total_evaluations: 1212,
+        total_evaluations: 1210,
     },
     AnalysisClaimRatchet {
         fixture: "fixtures/00420_enum_take_drop_split.fz",
@@ -1850,7 +1850,7 @@ const ANALYSIS_CLAIM_RATCHET: [AnalysisClaimRatchet; 3] = [
         shifts: shifts(44, 91),
         analyze_evaluations: 663,
         analyze_zero_change: 23,
-        total_evaluations: 1660,
+        total_evaluations: 1658,
     },
 ];
 

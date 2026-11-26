@@ -1,0 +1,6 @@
+# BIF bad-argument raises go through __raise__ :badarg; the construction raise skips Kernel.panic (falls); largest drive +1 is a repeat request moved one call deeper, accepted by the user 2026-11-26 (fz-t93.36)
+largest drive requests +1
+total requests -24
+drives -5
+derivations -7
+reads handed -352

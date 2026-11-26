@@ -48,7 +48,7 @@ defmodule System do
   def halt(status) when is_integer(status) and status >= 0, do: fz_system_halt(status)
 
   def halt(status) when is_integer(status),
-    do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: invalid status\n"})
+    do: __raise__(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: invalid status\n"}, :badarg)
 
   @doc """
   Returns the program's allocation counters, as a map.

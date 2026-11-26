@@ -151,18 +151,16 @@ fn each_exception_type_costs_forty_three_jobs() {
     assert_eq!(six - one, 5 * 43, "five further exception types");
 }
 
-/// From eight exception types on, the program pays one job more, however many
-/// types follow. `Kernel.panic/1` keeps one row of inputs for each exception
-/// raised into it: one for each type, and an `ArgumentError` that
-/// `Kernel.__construction_failed__/1` raises, which these programs reach. The
-/// eighth type makes nine rows, past `ACTIVATION_INPUT_ROW_BUDGET`; the rows
-/// widen to one, the union of them, and `panic/1` is analysed once more for it.
-/// The collapse is the same whatever order jobs run in, so the extra is exactly
-/// one job at every count from eight.
+/// However many types follow, the program pays forty-three jobs for each and
+/// nothing beyond them. `Kernel.panic/1` keeps one row of inputs for each
+/// exception raised into it, and `Kernel.__construction_failed__/1` raises its
+/// `ArgumentError` with `__raise__`, not into `panic/1`, so it adds no row of
+/// its own. The count is the same whatever order jobs run in, so the extra is
+/// exactly none at 16 types and at 26.
 #[test]
-fn many_exception_types_cost_one_job_more_for_the_union_raised() {
+fn many_exception_types_cost_no_job_more_for_the_union_raised() {
     let one = jobs("many_types1", exception_types(1));
     let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 43;
-    assert_eq!(extra(16), 1, "sixteen types cost one job beyond forty-three each");
-    assert_eq!(extra(26), 1, "twenty-six types cost one job beyond forty-three each");
+    assert_eq!(extra(16), 0, "sixteen types cost forty-three each and no job beyond");
+    assert_eq!(extra(26), 0, "twenty-six types cost forty-three each and no job beyond");
 }

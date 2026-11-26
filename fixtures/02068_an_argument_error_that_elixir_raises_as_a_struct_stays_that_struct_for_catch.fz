@@ -1,0 +1,40 @@
+#---
+# purpose: "A failure that Elixir raises as an `ArgumentError` struct, not as an Erlang `:badarg`, reaches `catch` as that struct, and `:string.take/3` reaches it as `{:badarg, binary}`, on all three paths"
+# oracle: self
+# oracle.stamp: 8c08509211edc930
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      inspect(fun.())
+    catch
+      kind, reason -> inspect({kind, reason})
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      inspect(fun.())
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.puts(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("String.pad_leading with a non-binary pad", fn -> String.pad_leading("a", 3, v([1])) end)
+    show("unquote of invalid AST", fn -> quote do: unquote(v({1, 2, 3, 4})) end)
+    show(":string.take over invalid UTF-8", fn -> :string.take(v(<<255>>), [?a], false) end)
+  end
+end
+
+Main.main()

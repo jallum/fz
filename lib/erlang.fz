@@ -485,7 +485,7 @@ defmodule :erlang do
 
   """
   def not(value) when is_boolean(value), do: Kernel.not(value)
-  def not(_value), do: raise(%ArgumentError{message: "argument error"})
+  def not(_value), do: __raise__(%ArgumentError{message: "argument error"}, :badarg)
 
   @doc """
   Boolean conjunction. Both operands are evaluated, and both must be booleans,
@@ -498,7 +498,7 @@ defmodule :erlang do
 
   """
   def left and right when is_boolean(left) and is_boolean(right), do: Kernel.and(left, right)
-  def _left and _right, do: raise(%ArgumentError{message: "argument error"})
+  def _left and _right, do: __raise__(%ArgumentError{message: "argument error"}, :badarg)
 
   @doc """
   Boolean disjunction. Both operands are evaluated, and both must be booleans,
@@ -511,5 +511,5 @@ defmodule :erlang do
 
   """
   def left or right when is_boolean(left) and is_boolean(right), do: Kernel.or(left, right)
-  def _left or _right, do: raise(%ArgumentError{message: "argument error"})
+  def _left or _right, do: __raise__(%ArgumentError{message: "argument error"}, :badarg)
 end

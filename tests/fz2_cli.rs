@@ -46,14 +46,14 @@ const TARGET_FIXTURES: [TargetFixture; 3] = [
     TargetFixture {
         source: "fixtures/00571_enum_predicate_search.fz",
         golden: "fixtures/00571_enum_predicate_search.fz",
-        runtime_demand_walks: 595,
+        runtime_demand_walks: 593,
         mainline_runtime_demand_walks: 6378,
         mainline_runtime_demand_door: ObservationDoor::Interp,
     },
     TargetFixture {
         source: "fixtures/00567_fz_f98_range_map_converges.fz",
         golden: "fixtures/00567_fz_f98_range_map_converges.fz",
-        runtime_demand_walks: 129,
+        runtime_demand_walks: 125,
         mainline_runtime_demand_walks: 2971,
         mainline_runtime_demand_door: ObservationDoor::Run,
     },
@@ -2239,17 +2239,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             // What a program can raise is final only once every body of that program has been
             // analysed, so the bottom handler and the banner it calls settle here, with the
             // facts they read: the modules a value can name, and what each program raises.
-            ("Activation", 24),
-            ("ActivationAnalyzed", 28),
-            ("ActivationInputs", 25),
-            ("CallSiteSummary", 31),
-            ("CallSiteTargets", 31),
+            ("Activation", 22),
+            ("ActivationAnalyzed", 26),
+            ("ActivationInputs", 23),
+            ("CallSiteSummary", 29),
+            ("CallSiteTargets", 29),
             ("IncomingInputSlot", 28),
             ("NameableModules", 1),
             // Each program settles what it can raise: the fixture's program, and the program of a
             // macro that raises.
             ("Raisable", 2),
-            ("ReturnType", 28),
+            ("ReturnType", 26),
             ("RuntimeDemand", 14),
             ("RuntimeDemandInput", 10),
             ("RuntimeDemandInputs", 14),
@@ -2362,17 +2362,17 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         formula_totals,
         FormulaWork {
-            evaluations: 569,
-            runtime_demand_evaluations: 54,
-            initial: 436,
-            content_caused: 133,
+            evaluations: 521,
+            runtime_demand_evaluations: 49,
+            initial: 398,
+            content_caused: 123,
             readiness_caused: 0,
             concluded_caused: 0,
             uncaused: 0,
-            changed_outputs: 514,
-            unchanged_outputs: 55,
+            changed_outputs: 470,
+            unchanged_outputs: 51,
             already_pending: 8,
-            blocked_completions: 124,
+            blocked_completions: 114,
         },
         "{fixture}: the reactive RuntimeDemand formula work or its causal classification moved"
     );
@@ -2390,9 +2390,9 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.ran),
         BTreeMap::from([
-            ("blocked_waiter_expansion", 87),
-            ("changed_revision_wake", 326),
-            ("gate_expansion", 155),
+            ("blocked_waiter_expansion", 79),
+            ("changed_revision_wake", 300),
+            ("gate_expansion", 141),
             ("ignition", 1),
         ]),
         "{fixture}: the jobs run, by the reason that queued each"
@@ -2400,16 +2400,16 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
     assert_eq!(
         by_reason(ledger.already_pending),
         BTreeMap::from([
-            ("activation_published", 22),
+            ("activation_published", 21),
             ("blocked_waiter_expansion", 1),
             ("changed_revision_wake", 8),
-            ("gate_expansion", 36),
+            ("gate_expansion", 35),
         ]),
         "{fixture}: requests that found their job already queued"
     );
     assert_eq!(
         by_reason(ledger.reparked),
-        BTreeMap::from([("changed_revision_wake", 47)]),
+        BTreeMap::from([("changed_revision_wake", 44)]),
         "{fixture}: started jobs the pop gate parked again without running"
     );
     for reason in fz::compiler2::WorkStartReason::TELEMETRY_ORDER {
@@ -2433,12 +2433,12 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
             wake_records("applied", &["completion"]),
             wake_records("dependencies_moved", &["step"])
         ),
-        (375, 5),
+        (347, 4),
         "{fixture}: wake records of the completions, and of the external changes between them"
     );
     assert_eq!(
         ledger.requested(fz_engine::WorkStart::ChangedRevisionWake),
-        381,
+        352,
         "{fixture}: every wake record is one request at the door"
     );
     let products = report.product_totals();
@@ -2498,7 +2498,7 @@ fn the_drain_arbiter_publishes_readiness_only_movement_and_attributes_every_eval
         // Every settled product here is a fresh, changed generation. The
         // generic result/status boundary and each node's reach (one product per
         // function or executable a reach question touches) are among them.
-        (151, 151, 151, 0, 6, 0),
+        (138, 138, 138, 0, 6, 0),
         "{fixture}: reactive product settlement work includes ordinary helper products"
     );
     assert!(

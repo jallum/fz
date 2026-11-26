@@ -1,0 +1,27 @@
+:unicode.characters_to_binary of an integer
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not valid character data (an iodata term)
+
+:unicode.characters_to_binary of a list holding an atom
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not valid character data (an iodata term)
+
+:unicode.characters_to_binary of an improper list
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not valid character data (an iodata term)
+
+System.halt of a negative status
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: invalid status
+
+System.halt of an atom
+{:error, :function_clause}
+FunctionClauseError: no function clause matching in System.halt/1

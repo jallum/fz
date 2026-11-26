@@ -1,0 +1,12 @@
+a binary segment given an atom
+{:error, :badarg}
+ArgumentError: construction of binary failed: segment 1 of type 'binary': expected a binary but got: :a
+an integer segment given an atom
+{:error, :badarg}
+ArgumentError: construction of binary failed: segment 1 of type 'integer': expected an integer but got: :a
+an integer segment given a float
+{:error, :badarg}
+ArgumentError: construction of binary failed: segment 1 of type 'integer': expected an integer but got: 1.5
+an integer segment given a binary
+{:error, :badarg}
+ArgumentError: construction of binary failed: segment 1 of type 'integer': expected an integer but got: "s"
