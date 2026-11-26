@@ -564,9 +564,11 @@ closure's `halt_kind`, and tail-calls the inner body `(inner, halt_cl)`.
 The inner closure is one of two things:
 
 - a spawned user closure, deep-copied from the sender's heap into the new task's
-  heap (`spawn_closure`; the spawn paths are the only remaining callers of
-  `deep_copy_any_value_ref` that write another process's heap, and the child
-  has not run yet); or
+  heap by `sched::spawn_copying_closure` (`spawn_copying` for the interpreter's
+  argument lanes), the one spawn copy of the AOT, JIT and interpreter
+  schedulers. The child starts with the normal first block (1 KiB) and the copy
+  grows it by the heap's usual chain; the child has not run yet, so nothing
+  else reaches its heap and the copy needs no gift; or
 - a synthetic main-style entry. A `main` function has a raw `(cont)` body, so
   `mint_main_inner` wraps the raw fn pointer in a raw-int capture (GC never treats
   it as a heap reference) behind the fixed `fz_main_trampoline` body, which reads

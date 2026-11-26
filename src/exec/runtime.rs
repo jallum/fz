@@ -30,13 +30,13 @@ use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use crate::telemetry::{Telemetry, TelemetryExt as _};
 use fz_runtime::any_value::{AnyValueRef, Stored};
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV};
-use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::output::{OUTPUT_HOOK, OutputContext, OutputSink, STDOUT_OUTPUT, WARN_HOOK};
 use fz_runtime::pinned_abi::call2;
 use fz_runtime::proc_table::ProcTable;
 use fz_runtime::process::Disposition;
 use fz_runtime::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
+    spawn_copying_closure,
 };
 use fz_runtime::sched_core::{
     Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
@@ -273,16 +273,12 @@ impl<'a, T: Telemetry + ?Sized> Runtime<'a, T> {
     /// task's heap, then stores it as a pending entry. The scheduler later
     /// dispatches that closure via fz_spawn_entry in the child task's quantum.
     pub fn spawn_closure(&mut self, sender: *mut Process, closure_ref_word: u64) -> PidId {
-        let process = unsafe { &mut *self.start_process() };
-
-        // Deep-copy the closure from sender's heap into the new task's heap.
         assert!(!sender.is_null(), "spawn_closure: no sender process");
         let sender = unsafe { &*sender };
-        let closure_ref = AnyValueRef::from_raw_word(closure_ref_word).expect("spawn_closure: closure ref");
-        closure_ref
-            .closure_addr()
-            .expect("spawn_closure: closure must be a closure");
-        let copied = deep_copy_any_value_ref(closure_ref, &sender.heap.view(), &mut process.heap);
+        let closure = AnyValueRef::from_raw_word(closure_ref_word).expect("spawn_closure: closure ref");
+        let (process, copied) =
+            spawn_copying_closure(&mut self.tasks, sender, closure).unwrap_or_else(|full| panic!("{full}"));
+        let process = unsafe { &mut *process };
         copied
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");

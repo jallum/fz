@@ -205,6 +205,51 @@ fn a_closure_measures_itself_and_what_it_captures() {
     assert_eq!(bytes, closure_size_for_count(2) + 4 * CELL);
 }
 
+/// A closure of `captures`, on `heap`, as a ref.
+fn closure_of(heap: &mut Heap, captures: &[AnyValue]) -> AnyValueRef {
+    let bits = heap.alloc_closure(ClosureDenotationId::user(0), 0, captures.len(), 0, 0x1234, captures);
+    heap_ref(ValueKind::CLOSURE, closure_addr_from_tagged(bits).expect("closure"))
+}
+
+/// Intent: a closure whose captures are all inline is its own size however many
+/// it has, past the eight kind bytes the check reads at a time.
+#[test]
+fn a_closure_of_inline_captures_measures_only_itself() {
+    let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let inline = [
+        AnyValue::int(1),
+        AnyValue::float(2.5),
+        AnyValue::atom(3),
+        AnyValue::Null,
+        AnyValue::EmptyList,
+    ];
+    let captures: Vec<AnyValue> = inline.iter().copied().cycle().take(19).collect();
+    let closure = closure_of(&mut sender, &captures);
+    assert_eq!(
+        measured_equals_copied(&mut sender, &[closure]),
+        closure_size_for_count(19)
+    );
+}
+
+/// Intent: a heap capture is found wherever its kind byte lies: first, last in
+/// the first eight, or in a later group of eight.
+#[test]
+fn a_heap_capture_is_measured_at_any_position() {
+    for position in [0, 7, 8, 16] {
+        let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());
+        let list = int_list(&mut sender, EMPTY_LIST, 0..3);
+        let list_value = heap_value(ValueKind::LIST, list_addr_from_tagged(list).expect("addr"));
+        let mut captures = vec![AnyValue::int(7); 17];
+        captures[position] = list_value;
+        let closure = closure_of(&mut sender, &captures);
+        assert_eq!(
+            measured_equals_copied(&mut sender, &[closure]),
+            closure_size_for_count(17) + 3 * CELL,
+            "a list captured at position {position}"
+        );
+    }
+}
+
 #[test]
 fn a_view_measures_its_view_and_its_binref_and_not_the_shared_bytes() {
     let mut sender = Heap::new(SIZE_TABLE[0], fresh_registry());

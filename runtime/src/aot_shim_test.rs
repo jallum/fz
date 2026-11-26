@@ -1,5 +1,6 @@
 use super::*;
 use crate::any_value::Stored;
+use crate::heap::Heap;
 use crate::park::park_test::{code_of, frame_of, leaked_site};
 use std::time::Duration;
 
@@ -413,4 +414,54 @@ fn a_spawn_park_send_wake_exit_cycle_allocates_nothing_but_debug_views_after_the
         rounds, [DEBUG_VIEW_RANGES; 4],
         "a reused shell allocates nothing; the first life made {first}"
     );
+}
+
+/// A list of `len` integers on `heap`.
+fn list_of_ints(heap: &mut Heap, len: i64) -> AnyValueRef {
+    (0..len).fold(AnyValueRef::empty_list(), |tail, n| {
+        heap.alloc_list_cons_int(n, tail).expect("a list cell")
+    })
+}
+
+/// The child a spawn of a closure capturing `len` integers started.
+fn spawn_capturing(sched: &mut AotScheduler, parent: &mut Process, len: i64) -> &'static mut Process {
+    let list = list_of_ints(&mut parent.heap, len);
+    let closure = frame_of(&mut parent.heap, &[list]);
+    let pid = aot_spawn_hook(parent, sched_handle(sched), closure.raw_word());
+    // SAFETY: the table keeps the child at its address until it exits.
+    unsafe { &mut *sched.tasks.get_ptr(pid).expect("the child") }
+}
+
+/// Intent: a closure far larger than the smallest block is copied whole into
+/// its child's heap.
+#[test]
+fn a_spawned_closure_that_captures_a_large_list_is_copied_whole() {
+    let mut sched = test_scheduler();
+    sched.entry_thunk = 0x1000 as *const u8;
+    let parent = spawn_task(&mut sched);
+
+    let child = spawn_capturing(&mut sched, parent, 10_000);
+
+    assert!(child.heap.young_bytes() > 10_000 * 16, "the list is in the child");
+}
+
+/// Intent: a shell reused for a large closure holds the copy just as a fresh
+/// shell does.
+#[test]
+fn a_reused_shell_spawned_with_a_large_closure_holds_the_copy() {
+    let mut sched = test_scheduler();
+    sched.entry_thunk = 0x1000 as *const u8;
+    let parent = spawn_task(&mut sched);
+    let first = spawn_capturing(&mut sched, parent, 100).pid;
+    sched.tasks.retire(first);
+    assert_eq!(sched.tasks.free_shells(), 1);
+
+    let child = spawn_capturing(&mut sched, parent, 10_000);
+
+    assert_eq!(
+        sched.tasks.free_shells(),
+        0,
+        "the exited process's shell served the spawn"
+    );
+    assert!(child.heap.young_bytes() > 10_000 * 16, "the list is in the child");
 }

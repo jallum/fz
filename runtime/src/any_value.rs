@@ -103,6 +103,12 @@ impl ValueKind {
         self.0
     }
 
+    /// Whether `tag` names a heap kind.
+    #[inline(always)]
+    pub const fn tag_is_heap(tag: u8) -> bool {
+        Self(tag).is_heap()
+    }
+
     pub const fn is_heap(self) -> bool {
         (self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8) || self.0 == TAG_BINREF as u8
     }
@@ -640,15 +646,12 @@ impl Stored {
         }
     }
 
-    /// The pair a ref spells, for tests that build their values as refs.
-    #[cfg(test)]
+    /// The pair a ref spells.
     pub fn of_ref(value: AnyValueRef) -> Self {
         Self::of(AnyValue::from_ref(value).expect("a ref spells a value"))
     }
 
-    /// The ref a heap value or the empty list spells, for tests that read a
-    /// message's object back.
-    #[cfg(test)]
+    /// The ref a heap value or the empty list spells.
     pub fn heap_ref(self) -> AnyValueRef {
         match self.value("Stored::heap_ref") {
             AnyValue::HeapRef(value) => value,
@@ -768,7 +771,7 @@ pub unsafe fn closure_header_write(addr: *mut u8, header: u64) {
 }
 
 #[inline]
-pub fn closure_size_for_count(captured_count: usize) -> usize {
+pub const fn closure_size_for_count(captured_count: usize) -> usize {
     let raw_bytes = (captured_count + 1) * 8;
     let kind_bytes = (captured_count + 7) & !7;
     (8 + raw_bytes + kind_bytes + 15) & !15
@@ -875,6 +878,43 @@ pub unsafe fn closure_capture_raw_slot(addr: *const u8, idx: usize) -> *mut u64 
 pub unsafe fn closure_capture_kind_slot(addr: *const u8, idx: usize) -> *mut u8 {
     let count = unsafe { closure_captured_count(addr) };
     unsafe { addr.add(CLOSURE_CAPTURES_OFFSET as usize + count * 8 + idx) as *mut u8 }
+}
+
+/// Whether any capture of the closure at `addr` may hold a heap value, read
+/// eight kind bytes at a time. `false` is exact: every capture is inline. `true`
+/// means look at each capture, since padding bytes are not promised to be zero.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object.
+#[inline(always)]
+pub unsafe fn closure_may_hold_heap(addr: *const u8) -> bool {
+    // A heap tag is 1..=8; with 7 added, only a heap tag sets bit 3 and leaves bit 4 clear.
+    const ADD_7: u64 = 0x0707_0707_0707_0707;
+    const BIT_3: u64 = 0x0808_0808_0808_0808;
+    let count = unsafe { closure_captured_count(addr) };
+    let kinds = unsafe { addr.add(CLOSURE_CAPTURES_OFFSET as usize + count * 8) };
+    (0..count.div_ceil(8)).any(|chunk| {
+        let word = unsafe { ptr::read_unaligned(kinds.add(chunk * 8) as *const u64) };
+        let sum = word.wrapping_add(ADD_7);
+        sum & !(sum >> 1) & BIT_3 != 0
+    })
+}
+
+/// The raw word and kind tag of capture `idx`, read without decoding it.
+///
+/// # Safety
+///
+/// `addr` must point to the start of an initialized strict Closure object and
+/// `idx` must be in-bounds for its captured-count prefix.
+#[inline(always)]
+pub unsafe fn closure_capture_word_tag(addr: *const u8, idx: usize) -> (u64, u8) {
+    unsafe {
+        (
+            ptr::read(closure_capture_raw_slot(addr, idx)),
+            ptr::read(closure_capture_kind_slot(addr, idx)),
+        )
+    }
 }
 
 /// # Safety
@@ -1202,6 +1242,12 @@ impl ListLink {
         self.0
     }
 
+    /// The kind tag of the head, read without checking it names a kind.
+    #[inline(always)]
+    pub fn head_tag(self) -> u8 {
+        ((self.0 & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT) as u8
+    }
+
     pub fn head_kind(self) -> ValueKind {
         let tag = ((self.0 & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT) as u8;
         ValueKind::new(tag).expect("list head kind tag")
@@ -1286,6 +1332,11 @@ impl ListCons {
 
     pub fn head_kind(&self) -> ValueKind {
         self.link().head_kind()
+    }
+
+    #[inline(always)]
+    pub fn head_tag(&self) -> u8 {
+        self.link().head_tag()
     }
 
     #[inline(always)]
