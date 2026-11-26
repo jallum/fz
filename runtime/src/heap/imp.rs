@@ -17,10 +17,10 @@ use super::stats::{GcStats, Generation, StubCounts, StubSite};
 use super::{BinaryBudget, Heap, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, ListLink, ListTail, MAP_FLAT_MAX,
-    MapDestinationKind, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind,
-    bitstring_header_word, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot,
-    closure_capture_raw_slot, closure_capture_set, closure_capture_value, closure_header_word, closure_header_write,
+    AnyValue, AnyValueRef, AnyValueRefError, ListCons, ListLink, ListTail, MAP_FLAT_MAX, MapDestinationKind,
+    STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word,
+    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
+    closure_capture_set, closure_capture_value, closure_captured_field, closure_header_word, closure_header_write,
     closure_size_for_count, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count,
     map_destination_header_word, map_destination_state, map_entry, map_header_word, map_key, map_key_in_arrays,
     map_key_kind, map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind,
@@ -1333,17 +1333,11 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
     ) -> u64 {
-        assert!(
-            captured_count <= CLOSURE_FLAGS_CAPTURED_MASK as usize,
-            "closure captured count overflow"
-        );
+        let captured_field = closure_captured_field(captured_count).unwrap_or_else(|overflow| panic!("{overflow}"));
         let total = closure_size_for_count(captured_count);
         let p = self.alloc_at(site, total);
         unsafe {
-            closure_header_write(
-                p,
-                closure_header_word(denotation, captured_count as u16, halt_kind, arity),
-            );
+            closure_header_write(p, closure_header_word(denotation, captured_field, halt_kind, arity));
             write(p.add(8) as *mut u64, 0);
             if total > 16 {
                 write_bytes(p.add(16), 0, total - 16);

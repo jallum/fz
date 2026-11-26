@@ -1,8 +1,9 @@
 //! Which continuations share a body frame, and what the frame costs the
-//! compiled program. Each test compiles and runs a real program and observes
-//! the native program the planner produced, the code the backend emitted for
-//! it, and the process that ran it.
+//! compiled program. Each test but the layout's refusal compiles and runs a
+//! real program and observes the native program the planner produced, the code
+//! the backend emitted for it, and the process that ran it.
 
+use super::*;
 use crate::compiler2::artifact::FrameRole;
 use crate::compiler2::drive_harness::NativeProgramCapture;
 use crate::compiler2::{CodeSubmission, Compiler2, ExecutableNeed, RootSubmission};
@@ -16,6 +17,7 @@ use std::rc::Rc;
 struct FramedRun {
     roots: Vec<u32>,
     members: usize,
+    refused: Vec<RefusedFrame>,
     code_bytes: usize,
     exit: ExitRecord,
 }
@@ -39,6 +41,12 @@ fn compile_and_run_here(name: &str, source: &str) -> FramedRun {
     exits.install(&tel);
     let native = NativeProgramCapture::new();
     native.install(&tel);
+    let refused = Rc::new(RefCell::new(Vec::new()));
+    let refused_sink = Rc::clone(&refused);
+    tel.attach_raw_event2::<crate::compiler2::RootId, RefusedFrame, _>(
+        &["fz", "compiler2", "native_program", "frame_refused"],
+        move |_, _, _, _, frame| refused_sink.borrow_mut().push(*frame),
+    );
     let code_bytes = Rc::new(RefCell::new(0usize));
     let code_bytes_sink = Rc::clone(&code_bytes);
     tel.attach_raw_span1_1::<crate::fz_ir::FnId, cranelift_codegen::Context, _, _, _>(
@@ -73,6 +81,7 @@ fn compile_and_run_here(name: &str, source: &str) -> FramedRun {
             .map(|frame| frame.slots)
             .collect(),
         members: frames().filter(|frame| frame.role == FrameRole::Member).count(),
+        refused: refused.borrow().clone(),
         code_bytes: *code_bytes.borrow(),
         exit: exits.last().expect("runtime process exit telemetry"),
     }
@@ -131,4 +140,80 @@ fn compiler2_a_short_body_keeps_a_frame_per_continuation() {
 
     assert_eq!(run.exit.halt_value, 14);
     assert_eq!((run.roots.len(), run.members), (0, 0));
+}
+
+/// A body holding two hundred closures and then calling each used to store
+/// every closure again at every call: the frame's slots grew with the square of
+/// the closures (17,206 here) and past the closure header's 14-bit count. A
+/// value has one slot however many names the body gives it, so the frame holds
+/// two slots per closure (the closure and its capture) and the calls run in it,
+/// collecting while it is live.
+#[test]
+fn compiler2_a_frame_holds_each_live_value_once_however_many_names_the_body_gives_it() {
+    let run = compile_and_run(
+        "two_hundred_closures.fz",
+        &fixture("02033_two_hundred_closures_that_allocate_when_called_share_a_body_frame_that_holds_each_value_once"),
+    );
+
+    assert_eq!(run.roots, [370], "the slots are linear in the closures, not quadratic");
+    assert_eq!(run.refused, [], "a frame this size fits the header");
+}
+
+/// A frame placed one slot wider than the closure header counts is refused
+/// with every member that runs in it, and the report names its width; a frame
+/// exactly as wide as the header counts stays.
+#[test]
+fn compiler2_a_frame_wider_than_the_closure_header_counts_is_refused_with_its_members() {
+    let limit = u32::from(CLOSURE_FLAGS_CAPTURED_MASK);
+    let (too_wide, fits) = (FnId(1), FnId(10));
+    let (wide_member, fitting_member) = (FnId(2), FnId(11));
+    let site = Site {
+        builder: too_wide,
+        block: 0,
+    };
+    let join = |member, builder| Join {
+        member,
+        site: Site { builder, ..site },
+        extra: 0,
+        stores: Vec::new(),
+        clears: Vec::new(),
+        loads: Vec::new(),
+    };
+    let frame = |root| PlacedFrame {
+        root,
+        held: HashMap::default(),
+    };
+    let mut layout = FrameLayout::default();
+    layout.root_slots.insert(too_wide, limit + 1);
+    layout.root_slots.insert(fits, limit);
+    for (fn_id, root) in [
+        (too_wide, too_wide),
+        (wide_member, too_wide),
+        (fits, fits),
+        (fitting_member, fits),
+    ] {
+        layout.frames.insert(fn_id, frame(root));
+    }
+    layout.joins.push(join(wide_member, too_wide));
+    layout.joins.push(join(fitting_member, fits));
+
+    let refused = layout.refuse_oversize();
+
+    assert_eq!(
+        refused,
+        [RefusedFrame {
+            root: too_wide,
+            slots: limit + 1
+        }]
+    );
+    let mut kept: Vec<FnId> = layout.frames.keys().copied().collect();
+    kept.sort();
+    assert_eq!(kept, [fits, fitting_member], "only the frame that fits is kept");
+    assert_eq!(
+        layout.joins.len(),
+        1,
+        "the refused chain's member no longer joins a frame"
+    );
+    assert_eq!(layout.joins[0].member, fitting_member);
+    assert_eq!(layout.root_slots.keys().copied().collect::<Vec<_>>(), [fits]);
 }

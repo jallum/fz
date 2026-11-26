@@ -14,12 +14,13 @@
 //! `receive` -- starts no chain inside another one.
 
 use crate::fast_hash::{HashMap, HashSet};
-use crate::fz_ir::{Block, DirectCallTarget, FnId, FnIr, FrameLane, Prim, Stmt, Term, Var};
+use crate::fz_ir::{Block, BlockId, DirectCallTarget, FnId, FnIr, FrameLane, Prim, Stmt, Term, Var};
 use crate::ir_dce::classify_var_uses;
 use crate::source::Span;
 
 use super::artifact::{AbiValueRepr, BodyFrame, FrameRole, NativeBodyOrigin, NativeEntryAbi, NativeProgram};
 use super::types::Ty;
+use fz_runtime::any_value::CLOSURE_FLAGS_CAPTURED_MASK;
 
 /// Where a continuation is built: the terminator of `block` in `builder`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,9 +40,18 @@ struct Slot {
 /// they resume, which costs less than carrying a frame wide enough for all.
 const MIN_CHAIN: u32 = 16;
 
+/// A frame whose slots a closure header cannot count: its chain keeps a
+/// continuation per call instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RefusedFrame {
+    pub root: FnId,
+    pub slots: u32,
+}
+
 /// Lays out every body frame of `program` and rewrites its continuations to
-/// run in them. `any` types the frame values the rewrite introduces.
-pub(crate) fn frame_bodies(program: &mut NativeProgram, any: Ty) {
+/// run in them, answering the frames it refused. `any` types the frame values
+/// the rewrite introduces.
+pub(crate) fn frame_bodies(program: &mut NativeProgram, any: Ty) -> Vec<RefusedFrame> {
     let bodies: HashMap<FnId, usize> = program
         .bodies
         .iter()
@@ -53,7 +63,9 @@ pub(crate) fn frame_bodies(program: &mut NativeProgram, any: Ty) {
     for function in &program.module.fns {
         layout.place_chain_to(program, &bodies, &sites, function.id);
     }
-    layout.apply(program, &bodies, any)
+    let refused = layout.refuse_oversize();
+    layout.apply(program, &bodies, any);
+    refused
 }
 
 fn lane_of(repr: AbiValueRepr) -> FrameLane {
@@ -217,6 +229,7 @@ struct FrameLayout {
     joins: Vec<Join>,
     not_members: HashSet<FnId>,
     not_roots: HashSet<FnId>,
+    carried: HashMap<FnId, HashMap<Var, Var>>,
 }
 
 struct PlacedFrame {
@@ -285,6 +298,10 @@ impl FrameLayout {
             self.not_members.insert(member);
             return;
         }
+        let carried = self
+            .carried
+            .entry(site.builder)
+            .or_insert_with(|| carried_values(program.module.fn_by_id(site.builder)));
         let builder = &self.frames[&site.builder];
         let root = builder.root;
         let mut join = Join {
@@ -298,7 +315,8 @@ impl FrameLayout {
         let mut held = HashMap::default();
         for (position, var) in captured.iter().enumerate() {
             let lane = lane_of(reprs[extra + position]);
-            let slot = match builder.held.get(var) {
+            let held_slot = builder.held.get(var).or_else(|| builder.held.get(carried.get(var)?));
+            let slot = match held_slot {
                 Some(slot) if slot.lane == lane => *slot,
                 _ => match join
                     .stores
@@ -368,6 +386,27 @@ impl FrameLayout {
         true
     }
 
+    /// Drops every frame whose root holds more slots than a closure header
+    /// counts, with the members that run in it.
+    fn refuse_oversize(&mut self) -> Vec<RefusedFrame> {
+        let mut refused: Vec<RefusedFrame> = self
+            .root_slots
+            .iter()
+            .filter(|(_, slots)| **slots > u32::from(CLOSURE_FLAGS_CAPTURED_MASK))
+            .map(|(root, slots)| RefusedFrame {
+                root: *root,
+                slots: *slots,
+            })
+            .collect();
+        refused.sort_by_key(|frame| frame.root);
+        let roots: HashSet<FnId> = refused.iter().map(|frame| frame.root).collect();
+        let frames = &self.frames;
+        self.joins.retain(|join| !roots.contains(&frames[&join.member].root));
+        self.frames.retain(|_, placed| !roots.contains(&placed.root));
+        self.root_slots.retain(|root, _| !roots.contains(root));
+        refused
+    }
+
     fn apply(self, program: &mut NativeProgram, bodies: &HashMap<FnId, usize>, any: Ty) {
         let mut rewrite = Rewrite::new(program, bodies, any);
         for join in &self.joins {
@@ -386,6 +425,76 @@ impl FrameLayout {
             program.bodies[bodies[fn_id]].frame = Some(BodyFrame { role, slots });
         }
     }
+}
+
+/// The value each block parameter of `function` carries: the one value every
+/// jump into its block passes it. A jump that hands the parameter back to
+/// itself, around a loop, adds nothing. A block entered by a branch or a `try`
+/// carries nothing, and neither does the entry. The IR names a value by
+/// whichever block parameter holds it, and a frame slot belongs to the value.
+fn carried_values(function: &FnIr) -> HashMap<Var, Var> {
+    let mut jumps: HashMap<BlockId, Vec<&[Var]>> = HashMap::default();
+    let mut entered_otherwise: HashSet<BlockId> = HashSet::default();
+    for block in &function.blocks {
+        match &block.terminator {
+            Term::Goto(target, args) => jumps.entry(*target).or_default().push(args),
+            Term::If { then_b, else_b, .. } => entered_otherwise.extend([*then_b, *else_b]),
+            Term::Try { body, .. } => {
+                entered_otherwise.insert(*body);
+            }
+            _ => {}
+        }
+    }
+    let mut carried: HashMap<Var, Var> = HashMap::default();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for block in &function.blocks {
+            if block.id == function.entry || entered_otherwise.contains(&block.id) {
+                continue;
+            }
+            let Some(edges) = jumps.get(&block.id) else { continue };
+            for (position, param) in block.params.iter().enumerate() {
+                if carried.contains_key(param) {
+                    continue;
+                }
+                if let Some(value) = sole_value(&carried, edges, position, *param) {
+                    carried.insert(*param, value);
+                    changed = true;
+                }
+            }
+        }
+    }
+    let params: Vec<Var> = carried.keys().copied().collect();
+    for param in params {
+        let value = carried_root(&carried, param);
+        carried.insert(param, value);
+    }
+    carried
+}
+
+/// The value `var` stands for once every carrying parameter on the way is
+/// followed.
+fn carried_root(carried: &HashMap<Var, Var>, mut var: Var) -> Var {
+    while let Some(next) = carried.get(&var).filter(|next| **next != var) {
+        var = *next;
+    }
+    var
+}
+
+/// The one value every jump passes at `position`, other than `param` itself.
+fn sole_value(carried: &HashMap<Var, Var>, edges: &[&[Var]], position: usize, param: Var) -> Option<Var> {
+    let mut sole = None;
+    for edge in edges {
+        let value = carried_root(carried, *edge.get(position)?);
+        if value == param {
+            continue;
+        }
+        if *sole.get_or_insert(value) != value {
+            return None;
+        }
+    }
+    sole
 }
 
 /// The entry parameters of `member`, when its site hands it exactly its

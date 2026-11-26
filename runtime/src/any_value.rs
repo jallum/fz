@@ -669,15 +669,45 @@ impl Stored {
 pub const CLOSURE_FLAGS_CAPTURED_MASK: u16 = 0x3FFF;
 pub const CLOSURE_FLAGS_HALT_KIND_SHIFT: u16 = 14;
 
+/// A closure with more captures than the header's `captured_count` field holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClosureCaptureOverflow {
+    pub count: usize,
+}
+
+impl std::fmt::Display for ClosureCaptureOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "closure captured count {} exceeds the {} the header holds",
+            self.count, CLOSURE_FLAGS_CAPTURED_MASK
+        )
+    }
+}
+
+/// The header's `captured_count` field for a closure of `count` captures.
+/// The one conversion from a capture count to the field: every builder of a
+/// closure header goes through it, so a header never holds a count it was not
+/// given.
+#[inline]
+pub fn closure_captured_field(count: usize) -> Result<u16, ClosureCaptureOverflow> {
+    u16::try_from(count)
+        .ok()
+        .filter(|field| *field <= CLOSURE_FLAGS_CAPTURED_MASK)
+        .ok_or(ClosureCaptureOverflow { count })
+}
+
 #[inline]
 pub fn closure_flags_pack(captured_count: u16, halt_kind: u16) -> u16 {
-    debug_assert!(
+    assert!(
         captured_count <= CLOSURE_FLAGS_CAPTURED_MASK,
-        "closure captured count {} exceeds 14-bit capacity",
-        captured_count
+        "{}",
+        ClosureCaptureOverflow {
+            count: captured_count as usize
+        }
     );
-    debug_assert!(halt_kind <= 0b11, "closure halt_kind {} out of range", halt_kind);
-    (captured_count & CLOSURE_FLAGS_CAPTURED_MASK) | (halt_kind << CLOSURE_FLAGS_HALT_KIND_SHIFT)
+    assert!(halt_kind <= 0b11, "closure halt_kind {} out of range", halt_kind);
+    captured_count | (halt_kind << CLOSURE_FLAGS_HALT_KIND_SHIFT)
 }
 
 #[inline]

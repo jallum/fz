@@ -1739,3 +1739,27 @@ fn a_link_answers_a_proper_tail_a_terminator_or_a_hole() {
 fn the_value_of_a_hole_is_refused() {
     let _ = unsafe { ListLink::hole(ValueKind::INT).tail().value() };
 }
+
+/// A header holds the capture count it was given or the build refuses: the
+/// check is a real one, not a debug assertion, so a release build cannot pack a
+/// count that wraps into the field.
+#[test]
+fn closure_capture_counts_past_the_header_field_are_refused_in_every_build() {
+    let limit = CLOSURE_FLAGS_CAPTURED_MASK as usize;
+    assert_eq!(closure_captured_field(0), Ok(0));
+    assert_eq!(closure_captured_field(limit), Ok(CLOSURE_FLAGS_CAPTURED_MASK));
+    assert_eq!(
+        closure_captured_field(limit + 1),
+        Err(ClosureCaptureOverflow { count: limit + 1 })
+    );
+    assert_eq!(
+        closure_captured_field(u16::MAX as usize + 1),
+        Err(ClosureCaptureOverflow {
+            count: u16::MAX as usize + 1
+        }),
+        "a count past sixteen bits is not truncated to a small one first"
+    );
+
+    let packed = std::panic::catch_unwind(|| closure_flags_pack(CLOSURE_FLAGS_CAPTURED_MASK + 1, 0));
+    assert!(packed.is_err(), "packing an oversize count must stop, not mask it");
+}

@@ -727,6 +727,11 @@ events (see [runtime-telemetry](runtime-telemetry.md#fzruntimereuse_site)):
 a site's hits include unchanged identity retention as well as guarded
 rewriting.
 
+`native_program.frame_refused` carries the root plus a `RefusedFrame` (the
+root function and its slot count) once per body frame whose slots a closure
+header cannot count; it fires from native lowering only for such a frame, and
+the body's chain then runs a continuation per call.
+
 `work_graph.applied` carries raw `World` and `JobCompletion`; its handlers read
 the job and applied step, including changed facts, movements, wakes, and waits.
 The job span does not duplicate either payload: its start owns job identity and

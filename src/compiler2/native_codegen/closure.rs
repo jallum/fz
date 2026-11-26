@@ -3,8 +3,8 @@ use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_module::FuncId;
 use fz_runtime::any_value::{
-    CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, ClosureDenotationId, NIL_ATOM_ID, ValueKind, closure_header_word,
-    closure_size_for_count,
+    CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, ClosureDenotationId, NIL_ATOM_ID, ValueKind, closure_captured_field,
+    closure_header_word, closure_size_for_count,
 };
 use fz_runtime::heap::{HeapAllocKind, INLINE_ALLOC_LAYOUT};
 use fz_runtime::ir_runtime::fz_handler_reserve;
@@ -48,7 +48,7 @@ pub(crate) fn push_handler_record<M: cranelift_module::Module>(
     let record_bytes = image_bytes + 8;
     let address = reserve_handler_record(body, record_bytes);
     let flags = MemFlagsData::trusted();
-    let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
+    let header = cont_header_word(count);
     let header = body.b.ins().iconst(types::I64, header as i64);
     body.b.ins().store(flags, header, address, 0);
     let code_addr = fn_addr(body.jmod, cont_fid, body.b);
@@ -141,6 +141,14 @@ fn fill_cont_captures<M: cranelift_module::Module>(
     }
 }
 
+/// The header of a continuation closure of `count` captures. A count the header
+/// cannot hold is a compiler bug (frame placement refuses such a frame), so it
+/// stops the compile: codegen has no error channel at this depth.
+fn cont_header_word(count: usize) -> u64 {
+    let captured = closure_captured_field(count).unwrap_or_else(|overflow| panic!("{overflow}"));
+    closure_header_word(ClosureDenotationId::INTERNAL, captured, 0, CONT_ARITY as u16)
+}
+
 /// Place an unfilled continuation closure of `count` captures: the header and
 /// code address are written, the captures are not.
 pub(super) fn place_cont_closure<M: cranelift_module::Module>(
@@ -148,7 +156,7 @@ pub(super) fn place_cont_closure<M: cranelift_module::Module>(
     count: usize,
     code_addr: ir::Value,
 ) -> Placed {
-    let header = closure_header_word(ClosureDenotationId::INTERNAL, count as u16, 0, CONT_ARITY as u16);
+    let header = cont_header_word(count);
     emit_closure(body, HeapAllocKind::Continuation, header, count, code_addr)
 }
 
