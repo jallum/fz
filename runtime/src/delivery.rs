@@ -1,19 +1,24 @@
-//! The state a send and a receive contest, behind one lock.
+//! The state a send and a receive contest, behind one borrow.
 //!
 //! A process that reaches `receive` and a process that sends to it meet in
 //! three places: the park record (the receive waiting for a match), the
 //! in-queue (storage other processes allocated for this one) and the walk of
 //! the mailbox that decides whether the receive has to park at all. They are
-//! one critical section's worth of state, so they live in one struct behind
-//! one mutex and are reachable only through its guard.
+//! one critical section's worth of state, so they live in one struct inside
+//! one `RefCell` and are reachable only through its borrow.
 //!
-//! The mailbox stays outside the lock: only the owning process touches it,
+//! A scheduler runs on one OS thread (`src/exec/runtime.rs`), and a process
+//! belongs to one scheduler, so a send and a receive never overlap in time:
+//! the borrow marks the section that must not be re-entered, and a nested
+//! borrow panics instead of waiting. The process holds no allocation for it.
+//!
+//! The mailbox stays outside the cell: only the owning process touches it,
 //! and only after a drain.
 
 use crate::park::ParkRecord;
 use crate::sched::{Gift, GiftPayload};
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::VecDeque;
-use std::sync::{Mutex, MutexGuard};
 
 /// The park record and the in-queue of one process.
 #[derive(Default)]
@@ -86,35 +91,32 @@ impl Delivery {
     }
 }
 
-/// A `Delivery` that can be reached only by holding its lock.
+/// A `Delivery` that can be reached only through a borrow.
+///
+/// The cell is a `RefCell`: it allocates nothing and costs a flag test per
+/// borrow. A nested conflicting borrow panics.
 #[derive(Default)]
-pub struct DeliveryLock {
-    inner: Mutex<Delivery>,
+pub struct DeliveryCell {
+    inner: RefCell<Delivery>,
 }
 
-impl DeliveryLock {
-    pub fn lock(&self) -> MutexGuard<'_, Delivery> {
-        self.inner
-            .lock()
-            .expect("a panic while holding the delivery lock poisons it")
+impl DeliveryCell {
+    pub fn borrow(&self) -> Ref<'_, Delivery> {
+        self.inner.borrow()
     }
 
-    /// The delivery state through exclusive access: nobody can hold the lock,
-    /// so nothing is locked.
+    pub fn borrow_mut(&self) -> RefMut<'_, Delivery> {
+        self.inner.borrow_mut()
+    }
+
+    /// The delivery state through exclusive access: no borrow can be live.
     pub fn get_mut(&mut self) -> &mut Delivery {
-        self.inner
-            .get_mut()
-            .expect("a panic while holding the delivery lock poisons it")
+        self.inner.get_mut()
     }
 
-    /// The guard if nobody holds the lock right now.
+    /// The mutable borrow if nobody holds a borrow right now.
     #[cfg(test)]
-    pub fn try_lock(&self) -> Option<MutexGuard<'_, Delivery>> {
-        use std::sync::TryLockError;
-        match self.inner.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::WouldBlock) => None,
-            Err(TryLockError::Poisoned(_)) => panic!("the delivery lock is poisoned"),
-        }
+    pub fn try_borrow_mut(&self) -> Option<RefMut<'_, Delivery>> {
+        self.inner.try_borrow_mut().ok()
     }
 }

@@ -64,7 +64,7 @@ fn record_on_42(task: &mut Process, timer: Option<TimerId>) -> ParkRecord {
 
 fn park_on_42(task: &mut Process, timer: Option<TimerId>) {
     let record = record_on_42(task, timer);
-    task.delivery.lock().install_park(record);
+    task.delivery.borrow_mut().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
@@ -137,25 +137,25 @@ extern "C" fn match_7_binding_nothing(
 
 fn park_binding_nothing(task: &mut Process) {
     let record = record_of(task, match_7_binding_nothing, 0, None);
-    task.delivery.lock().install_park(record);
+    task.delivery.borrow_mut().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
 fn park_binding_both_elements(task: &mut Process) {
     let record = record_of(task, bind_both_elements, 2, None);
-    task.delivery.lock().install_park(record);
+    task.delivery.borrow_mut().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
 fn park_binding_twice(task: &mut Process) {
     let record = record_of(task, bind_list_twice, 2, None);
-    task.delivery.lock().install_park(record);
+    task.delivery.borrow_mut().install_park(record);
     task.state = ProcessState::Blocked;
 }
 
 fn pending_match(task: &Process) -> Option<(usize, Roots)> {
     task.delivery
-        .lock()
+        .borrow_mut()
         .queued_gifts()
         .find_map(|gift| match &gift.payload {
             GiftPayload::Match { clause_idx, roots } => Some((*clause_idx, roots.clone())),
@@ -164,7 +164,7 @@ fn pending_match(task: &Process) -> Option<(usize, Roots)> {
 }
 
 fn drain(task: &mut Process) -> Option<(usize, Roots)> {
-    let mut delivery = task.delivery.lock();
+    let mut delivery = task.delivery.borrow_mut();
     drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox)
 }
 
@@ -178,7 +178,7 @@ fn probe_sender_hit_queues_the_match_and_leaves_the_receiver_untouched_until_it_
     assert_eq!(probe.outcome, ProbeOutcome::Hit);
     assert_eq!(probe.receiver, task.pid);
     assert!(
-        task.delivery.lock().park().is_some(),
+        task.delivery.borrow().park().is_some(),
         "the park record stays until the receiver delivers"
     );
     assert_eq!(
@@ -196,7 +196,7 @@ fn probe_sender_hit_queues_the_match_and_leaves_the_receiver_untouched_until_it_
     let (clause_idx, bound) = pending_match(&task).expect("the match waits in the in-queue");
     assert_eq!(clause_idx, 0);
     assert_eq!(bound.len(), 1);
-    assert!(task.delivery.lock().has_pending_match());
+    assert!(task.delivery.borrow().has_pending_match());
 }
 
 #[test]
@@ -206,8 +206,8 @@ fn deliver_in_queue_finishes_a_matched_receive_with_the_gifted_values() {
     park_on_42(&mut task, None);
     probe_sender(&mut sender, &task, int_msg(42));
     deliver_in_queue(&mut task);
-    assert!(task.delivery.lock().park().is_none());
-    assert!(task.delivery.lock().queued_gifts().next().is_none());
+    assert!(task.delivery.borrow().park().is_none());
+    assert!(task.delivery.borrow().queued_gifts().next().is_none());
     let runnable = task
         .runnable_closure()
         .expect("the match queued a runnable closure")
@@ -230,11 +230,11 @@ fn probe_sender_miss_queues_the_message_and_keeps_the_park() {
     assert_eq!(probe.outcome, ProbeOutcome::Miss);
     assert_eq!(probe.gift_bytes, 16, "one cons cell crosses");
     assert_eq!(probe.gift_blocks, 1);
-    assert!(task.delivery.lock().park().is_some());
+    assert!(task.delivery.borrow().park().is_some());
     assert_eq!(task.state, ProcessState::Blocked);
     assert!(task.runnable_closure().is_none());
     assert!(task.mailbox.is_empty(), "the message waits in the in-queue");
-    assert_eq!(task.delivery.lock().queued_gifts().count(), 1);
+    assert_eq!(task.delivery.borrow().queued_gifts().count(), 1);
     deliver_in_queue(&mut task);
     assert_eq!(task.mailbox.len(), 1);
     let delivered = task.mailbox.front().expect("delivered");
@@ -249,7 +249,7 @@ fn probe_sender_miss_queues_the_message_and_keeps_the_park() {
         "the receive that takes it brings it into the heap"
     );
     assert!(
-        task.delivery.lock().park().is_some(),
+        task.delivery.borrow().park().is_some(),
         "a miss never decides the receive"
     );
 }
@@ -260,8 +260,8 @@ fn probe_sender_not_parked_queues_the_message_and_returns_miss() {
     let task = fresh_task();
     let probe = probe_sender(&mut sender, &task, int_msg(7));
     assert_eq!(probe.outcome, ProbeOutcome::Miss);
-    assert_eq!(task.delivery.lock().queued_gifts().count(), 1);
-    assert!(!task.delivery.lock().has_pending_match());
+    assert_eq!(task.delivery.borrow().queued_gifts().count(), 1);
+    assert!(!task.delivery.borrow().has_pending_match());
 }
 
 /// A clause's roots are disjoint positions of the message, so a hit copies
@@ -323,7 +323,7 @@ fn a_hit_that_binds_nothing_gifts_nothing() {
     let (clause_idx, bound) = pending_match(&task).expect("the match waits in the in-queue");
     assert_eq!((clause_idx, bound.len()), (0, 0));
     deliver_in_queue(&mut task);
-    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.borrow().park().is_none());
     assert!(task.runnable_closure().is_some());
     drop(task);
     drop(sender);
@@ -343,7 +343,7 @@ fn a_second_sender_does_not_probe_a_receive_that_is_already_matched() {
         "the receive is decided; a later 42 is an ordinary arrival"
     );
     deliver_in_queue(&mut task);
-    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.borrow().park().is_none());
     assert_eq!(mailbox_ints(&task), vec![42], "the second 42 waits in the mailbox");
 }
 
@@ -355,7 +355,7 @@ fn a_second_match_for_one_parked_receive_is_refused() {
     park_on_42(&mut task, None);
     probe_sender(&mut sender, &task, int_msg(42));
     let (segment, roots) = gift_copy(&mut sender.heap, &[int_msg(42)]);
-    task.delivery.lock().push_gift(Gift {
+    task.delivery.borrow_mut().push_gift(Gift {
         segment,
         payload: GiftPayload::Match { clause_idx: 0, roots },
     });
@@ -370,7 +370,7 @@ fn drain_in_queue_keeps_messages_waiting_in_arrival_order() {
         probe_sender(&mut sender, &task, msg);
     }
     assert!(drain(&mut task).is_none());
-    assert!(task.delivery.lock().queued_gifts().next().is_none());
+    assert!(task.delivery.borrow().queued_gifts().next().is_none());
     let heads: Vec<i64> = task
         .mailbox
         .messages()
@@ -403,7 +403,7 @@ fn a_dropped_receiver_returns_its_pending_gifts_to_the_pool_and_releases_their_b
     probe_sender(&mut sender, &task, binary_ref);
     let msg = sender_list(&mut sender, 1);
     probe_sender(&mut sender, &task, msg);
-    assert_eq!(task.delivery.lock().queued_gifts().count(), 2);
+    assert_eq!(task.delivery.borrow().queued_gifts().count(), 2);
     assert_eq!(
         shared_refs(&witness),
         3,
@@ -455,7 +455,7 @@ fn reach_receive_with_an_empty_mailbox_parks() {
     let mut task = running_task();
     let record = record_on_42(&mut task, None);
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
-    assert!(task.delivery.lock().park().is_some());
+    assert!(task.delivery.borrow().park().is_some());
     assert_eq!(task.state, ProcessState::Blocked);
 }
 
@@ -475,7 +475,7 @@ fn reach_receive_hit_continues_with_the_clause_and_splices_the_message_out() {
         assert_eq!(read(cont.add(8) as *const u64), CLAUSE_CODE as u64);
         assert_eq!(any_value::closure_capture_value(cont, 1), AnyValue::Int(42));
     }
-    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.borrow().park().is_none());
     assert_eq!(task.state, ProcessState::Running);
     assert_eq!(mailbox_ints(&task), vec![1, 2, 3]);
 }
@@ -499,7 +499,7 @@ fn reach_receive_miss_parks_blocked_and_keeps_the_mailbox() {
     let record = record_on_42(&mut task, None);
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
     assert_eq!(task.state, ProcessState::Blocked);
-    assert!(task.delivery.lock().park().is_some());
+    assert!(task.delivery.borrow().park().is_some());
     assert_eq!(mailbox_ints(&task), vec![1, 2]);
 }
 
@@ -513,7 +513,7 @@ fn reach_receive_after_zero_miss_continues_with_the_after_body() {
         panic!("an `after 0` receive that misses must continue");
     };
     assert_eq!(code_of(after), AFTER_CODE);
-    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.borrow().park().is_none());
     assert_eq!(task.state, ProcessState::Running);
     assert_eq!(mailbox_ints(&task), vec![1]);
 }
@@ -545,15 +545,15 @@ fn reach_receive_never_leaves_the_process_ready() {
 }
 
 thread_local! {
-    /// The process whose delivery lock `match_42_noting_the_lock` watches.
+    /// The process whose delivery borrow `match_42_noting_the_borrow` watches.
     static WATCHED: std::cell::Cell<*const Process> = const { std::cell::Cell::new(std::ptr::null()) };
-    /// One entry per matcher run: was the watched delivery lock held?
-    static LOCK_HELD_AT_MATCH: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
+    /// One entry per matcher run: was the watched delivery borrow held?
+    static BORROW_HELD_AT_MATCH: RefCell<Vec<bool>> = const { RefCell::new(Vec::new()) };
 }
 
-/// `match_42`, noting whether the watched process's delivery lock was held
+/// `match_42`, noting whether the watched process's delivery borrow was held
 /// while the matcher ran.
-extern "C" fn match_42_noting_the_lock(
+extern "C" fn match_42_noting_the_borrow(
     process: *mut Process,
     word: u64,
     kind: u64,
@@ -561,19 +561,19 @@ extern "C" fn match_42_noting_the_lock(
     out: *mut Stored,
 ) -> u32 {
     let watched = WATCHED.with(std::cell::Cell::get);
-    let held = unsafe { &*watched }.delivery.try_lock().is_none();
-    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
+    let held = unsafe { &*watched }.delivery.try_borrow_mut().is_none();
+    BORROW_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
     match_42(process, word, kind, frame, out)
 }
 
 fn watch_matches_on(task: &mut Process) -> ParkRecord {
     WATCHED.with(|watched| watched.set(task as *const Process));
-    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().clear());
-    record_of(task, match_42_noting_the_lock, 1, None)
+    BORROW_HELD_AT_MATCH.with(|notes| notes.borrow_mut().clear());
+    record_of(task, match_42_noting_the_borrow, 1, None)
 }
 
-fn matcher_runs_and_whether_the_lock_was_held() -> Vec<bool> {
-    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow().clone())
+fn matcher_runs_and_whether_the_borrow_was_held() -> Vec<bool> {
+    BORROW_HELD_AT_MATCH.with(|notes| notes.borrow().clone())
 }
 
 const TIMER: TimerId = 9;
@@ -594,7 +594,7 @@ fn a_hit_then_the_timer_decides_the_receive_once_and_the_timer_finds_it_stale() 
 
     deliver_in_queue(&mut task);
     assert!(task.runnable_closure().is_some(), "the hit's delivery is the one wake");
-    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.borrow().park().is_none());
 }
 
 #[test]
@@ -602,7 +602,7 @@ fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_mi
     let mut sender = running_task();
     let mut task = fresh_task();
     let record = watch_matches_on(&mut task);
-    task.delivery.lock().install_park(ParkRecord {
+    task.delivery.borrow_mut().install_park(ParkRecord {
         after_timer_id: Some(TIMER),
         ..record
     });
@@ -622,10 +622,10 @@ fn the_timer_then_a_sender_decides_the_receive_once_and_the_sender_delivers_a_mi
     );
     assert_eq!(probe.reductions, 0);
     assert!(
-        matcher_runs_and_whether_the_lock_was_held().is_empty(),
+        matcher_runs_and_whether_the_borrow_was_held().is_empty(),
         "no park, no matcher run"
     );
-    assert!(!task.delivery.lock().has_pending_match());
+    assert!(!task.delivery.borrow().has_pending_match());
     deliver_in_queue(&mut task);
     assert_eq!(mailbox_ints(&task), vec![42], "the message waits for a later receive");
     assert_eq!(
@@ -644,22 +644,22 @@ fn a_second_timer_fire_for_a_decided_receive_is_stale() {
 }
 
 #[test]
-fn a_matcher_run_by_a_sender_holds_the_receivers_delivery_lock() {
+fn a_matcher_run_by_a_sender_holds_the_receivers_delivery_borrow() {
     let mut sender = running_task();
     let mut task = fresh_task();
     let record = watch_matches_on(&mut task);
-    task.delivery.lock().install_park(record);
+    task.delivery.borrow_mut().install_park(record);
 
     probe_sender(&mut sender, &task, int_msg(42));
 
     assert_eq!(
-        matcher_runs_and_whether_the_lock_was_held(),
+        matcher_runs_and_whether_the_borrow_was_held(),
         vec![true],
-        "the sender decides the receive with the lock held, read to queue"
+        "the sender decides the receive with the borrow held, read to queue"
     );
     assert!(
-        task.delivery.try_lock().is_some(),
-        "the lock is released after the probe"
+        task.delivery.try_borrow_mut().is_some(),
+        "the borrow is released after the probe"
     );
 }
 
@@ -673,13 +673,13 @@ fn a_delivery_waits_out_the_receive_entry_and_is_probed_against_the_installed_pa
 
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
     assert_eq!(
-        matcher_runs_and_whether_the_lock_was_held(),
+        matcher_runs_and_whether_the_borrow_was_held(),
         vec![true, true],
-        "the delivery path cannot take the lock while the walk is running"
+        "the delivery path cannot take the borrow while the walk is running"
     );
     assert!(
-        task.delivery.try_lock().is_some(),
-        "the entry released the lock with the park installed"
+        task.delivery.try_borrow_mut().is_some(),
+        "the entry released the borrow with the park installed"
     );
 
     let probe = probe_sender(&mut sender, &task, int_msg(42));
@@ -688,26 +688,26 @@ fn a_delivery_waits_out_the_receive_entry_and_is_probed_against_the_installed_pa
         ProbeOutcome::Hit,
         "the delivery is probed against the installed park"
     );
-    assert_eq!(matcher_runs_and_whether_the_lock_was_held(), vec![true, true, true]);
+    assert_eq!(matcher_runs_and_whether_the_borrow_was_held(), vec![true, true, true]);
 }
 
 /// Arming the after-timer happens between the mailbox walk and the park
-/// install. The hook notes whether the delivery lock is held at that point.
-extern "C" fn note_the_lock_while_arming_the_timer(_scheduler: *mut (), _pid: u32, _after_ms: u64) -> u64 {
+/// install. The hook notes whether the delivery borrow is held at that point.
+extern "C" fn note_the_borrow_while_arming_the_timer(_scheduler: *mut (), _pid: u32, _after_ms: u64) -> u64 {
     let watched = WATCHED.with(std::cell::Cell::get);
-    let held = unsafe { &*watched }.delivery.try_lock().is_none();
-    LOCK_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
+    let held = unsafe { &*watched }.delivery.try_borrow_mut().is_none();
+    BORROW_HELD_AT_MATCH.with(|notes| notes.borrow_mut().push(held));
     TIMER
 }
 
 #[test]
-fn the_lock_stays_held_from_the_end_of_the_walk_to_the_park_install() {
+fn the_borrow_stays_held_from_the_end_of_the_walk_to_the_park_install() {
     let mut task = running_task();
     task.mailbox.push(int_msg(1), GiftSegment::empty());
     let mut record = watch_matches_on(&mut task);
     record.after_deadline_ms = Some(10);
     let mut ctx = ExecCtx {
-        timer_schedule: Some(note_the_lock_while_arming_the_timer),
+        timer_schedule: Some(note_the_borrow_while_arming_the_timer),
         ..ExecCtx::empty()
     };
     task.ctx = &mut ctx;
@@ -715,11 +715,14 @@ fn the_lock_stays_held_from_the_end_of_the_walk_to_the_park_install() {
     assert_eq!(reach_receive(&mut task, record), ReceiveStep::Parked);
 
     assert_eq!(
-        matcher_runs_and_whether_the_lock_was_held(),
+        matcher_runs_and_whether_the_borrow_was_held(),
         vec![true, true],
-        "the walk's one matcher run and the timer arming, which sits between walk and install, both hold the lock"
+        "the walk's one matcher run and the timer arming, which sits between walk and install, both hold the borrow"
     );
-    assert_eq!(task.delivery.lock().park().and_then(|p| p.after_timer_id), Some(TIMER));
+    assert_eq!(
+        task.delivery.borrow().park().and_then(|p| p.after_timer_id),
+        Some(TIMER)
+    );
     task.ctx = std::ptr::null_mut();
 }
 

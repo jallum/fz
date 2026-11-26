@@ -16,14 +16,14 @@ The closure captures everything needed to continue. The scheduler passes no
 message, timeout value, loop argument, continuation pointer, or resume token —
 all of that is captured into the closure before the process goes back on the run
 queue. So a `Process` carries just two scheduler-facing slots, one of them behind a
-lock:
+borrow:
 
 - `runnable: Option<ClosureRef>` — the one re-entry verb. `ClosureRef` wraps a
   non-null pointer to a `(self)`-callable closure, so `Some` always names real
   work; `None` means nothing is queued.
-- `delivery: DeliveryLock` — the receive-park snapshot (`WaitState`) and the
-  in-queue of gifts, reachable only through the lock (see [Delivery
-  lock](#delivery-lock)). A matcher hit takes the park and moves the outcome
+- `delivery: DeliveryCell` — the receive-park snapshot (`WaitState`) and the
+  in-queue of gifts, reachable only through a borrow (see [Delivery
+  cell](#delivery-cell)). A matcher hit takes the park and moves the outcome
   closure into `runnable`.
 
 `Process.state` (`ProcessState`: `New`, `Ready`, `Running`, `Blocked`, `Exited`)
@@ -184,48 +184,49 @@ entry is taken: `deliver_in_queue` in `run_until_idle` (JIT) and
 them with its `Process`, as it does the segments of messages still waiting in its
 mailbox; each un-grafted segment returns its block to the pool.
 
-## Delivery lock
+## Delivery cell
 
 A send and a receive contest three things: the park record, the in-queue and
 the walk of the mailbox that decides whether the receive parks at all. They
-live in one `Delivery` (`runtime/src/delivery.rs`) behind one `std::sync::Mutex`
-in `Process.delivery`, and a `&mut Delivery` can only come from the guard. The
-mailbox stays outside the lock: only the owning process touches it, and only
-after a drain. Each critical section holds the lock from its first read to its
+live in one `Delivery` (`runtime/src/delivery.rs`) inside one `RefCell`
+in `Process.delivery`, and a `&mut Delivery` can only come from its borrow. The
+mailbox stays outside the cell: only the owning process touches it, and only
+after a drain. Each critical section holds the borrow from its first read to its
 last write:
 
 - `sched::reach_receive` holds it across the mailbox walk and the park install.
   If the walk and the install were separate sections, a delivery between the
   end of the walk and the install would find no park to probe while the walk
   had already passed the mailbox, and nobody would probe the message. Under the
-  lock the delivery waits for the install and is then probed against the park.
+  borrow the delivery runs only after the install and is probed against the park.
   A hit or an `after 0` miss returns without installing a park.
 - `sched::probe_sender` (and the interpreter's `probe_parked_receive`, whose
-  caller takes the lock) holds it across reading the park, checking for a
+  caller takes the borrow) holds it across reading the park, checking for a
   pending match, running the matcher on the sender, queueing the gift and
   cancelling the after-timer. The first hit decides the receive. A later sender
   finds the match queued (`Delivery::undecided_park` is `None`) and gifts a
   plain miss without running the matcher.
 - `sched::fire_after_timer` (and the interpreter's `wake_receive_after`) takes
-  the park under the same lock, so a timer and a hit win or lose the same way:
+  the park under the same borrow, so a timer and a hit win or lose the same way:
   the loser finds no park, or a park whose timer id is not its own. The
   stale-timer check in each scheduler's `wake_expired` is the fallback for a
   timer that fires after the hit cancelled it.
-- `sched::drain_in_queue` takes entries under the lock, and `deliver_in_queue`
+- `sched::drain_in_queue` takes entries under the borrow, and `deliver_in_queue`
   keeps it through taking the park for a matched receive.
 
-The matcher a sender runs executes with the receiver's lock held, so a guard
-that tried to deliver to the same receiver would deadlock; matchers never send.
+The matcher a sender runs executes with the receiver's borrow held, so a nested borrow
+of the same receiver panics; matchers never send.
 The interpreter keeps its own park record in `IrInterpRuntime.backend_parked`
 rather than in `Delivery`; its probe, timer and delivery paths still take the
-receiver's lock for the pending-match decision and the in-queue.
+receiver's borrow for the pending-match decision and the in-queue.
 
 `delivery` is declared before `heap` in `Process`, so a process dropped with
 gifts still queued drops them first: each `GiftSegment` returns its block to
 the pool (a block below or within the table) or the allocator (an exact block above it) and releases its stubs. A receiver left parked
 when the run ends is torn down this way, and `fz.runtime.run_ended` reports that
-the pool got every block back ([runtime telemetry](runtime-telemetry.md)). With
-one worker the lock is never contended.
+the pool got every block back ([runtime telemetry](runtime-telemetry.md)).
+
+A scheduler runs on one OS thread (`src/exec/runtime.rs`), so the borrow is never contended.
 
 ## Timeout
 
@@ -373,7 +374,7 @@ calls `retire`, which runs `Process::vacate` (every heap block returns to the
 pool, the off-heap chain is released, the queued gifts, the mailbox and the
 handlers are dropped), frees the slot with the next generation, and puts the
 shell on a free list. The shell keeps the buffers it grew, emptied: the gift
-queue, the mailbox, the handler stack and the delivery lock. `spawn` takes the
+queue, the mailbox and the handler stack. `spawn` takes the
 oldest free slot and the newest free shell, and allocates a shell only when none
 waits, so a process spawned after warm-up makes no allocation of its own.
 `Process::with_node` and `Process::reuse` are the one constructor, `Process::on_shell`,
