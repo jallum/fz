@@ -959,6 +959,12 @@ through `Process::atom_key_hashes`: the address of the table's word that holds
 where the key hashes begin, which the table updates as it grows and which
 stays where it is while the node lives.
 
+Compiled code orders two atoms through `Process::atom_name_prefixes`, the
+address of the table's word that holds where the name prefixes begin (the first
+eight bytes of each name, big-endian and zero-padded, one word per atom id; it
+moves with the table and stays where it is while the node lives). Two prefixes
+that differ order as unsigned integers exactly as their names order.
+
 `Heap::map_layout` answers `MapLayout::Trie` for a root. A map of more than 32
 entries is always a trie and a map of 32 or fewer is always a flat array:
 `alloc_map_slots`, `alloc_map_refs_bits`, `fz_map_from_kv` and the destination

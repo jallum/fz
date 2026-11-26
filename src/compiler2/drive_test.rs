@@ -9887,6 +9887,104 @@ fn typed_integer_arithmetic_and_comparison_declare_no_runtime_import() {
     }
 }
 
+/// Two atoms the program makes from text, so no comparison folds: `walk` counts
+/// how often `condition` holds of them, branching on it.
+fn atom_comparison_program(condition: &str) -> String {
+    format!(
+        concat!(
+            "defmodule P do\n",
+            "  def go(a, b, n), do: walk(a, b, n, 0)\n",
+            "  defp walk(_a, _b, 0, acc), do: acc\n",
+            "  defp walk(a, b, n, acc), do: walk(a, b, n - 1, if({}, do: acc + 1, else: acc))\n",
+            "end\n",
+            "def main(), do: P.go(String.to_atom(\"a\"), String.to_atom(\"z\"), String.length(\"abc\"))\n",
+        ),
+        condition
+    )
+}
+
+/// Every function body that calls `import` does so only from blocks marked cold.
+fn calls_only_from_cold_blocks(clif: &str, import: &str) -> bool {
+    let mut calls = 0;
+    for body in clif.split("\nfunction ") {
+        let Some(alias) = body.lines().find_map(|line| {
+            line.strip_prefix("; ")
+                .and_then(|l| l.strip_suffix(&format!(" = {import}")))
+        }) else {
+            continue;
+        };
+        let needle = format!("call {alias}(");
+        let mut cold = false;
+        for line in body.lines() {
+            if line.starts_with("block") {
+                cold = line.contains(" cold:");
+            }
+            if line.contains(&needle) {
+                calls += 1;
+                if !cold {
+                    return false;
+                }
+            }
+        }
+    }
+    calls > 0
+}
+
+/// Two atoms are the same exactly when their ids are: every equality operator
+/// on two known atoms is one `icmp` and never a runtime call.
+#[test]
+fn atom_equality_is_an_integer_compare_with_no_runtime_import() {
+    for (condition, import) in [
+        ("a == b", "fz_op_eq"),
+        ("a != b", "fz_op_neq"),
+        ("a === b", "fz_op_identical"),
+        ("a !== b", "fz_op_not_identical"),
+    ] {
+        let clif = lowered_clif_text(&atom_comparison_program(condition));
+        assert!(
+            !declares_import(&clif, import),
+            "`{condition}` is an icmp, not a call to {import}:\n{clif}"
+        );
+    }
+}
+
+/// Atoms order by name, so a pair whose first eight name bytes differ is
+/// decided by an integer compare in the body; the runtime is asked only from the
+/// cold path where those bytes tie.
+#[test]
+fn atom_ordering_asks_the_runtime_only_on_the_cold_tie_path() {
+    for condition in ["a < b", "a <= b", "a > b", "a >= b", "Kernel.compare(a, b) < 0"] {
+        let clif = lowered_clif_text(&atom_comparison_program(condition));
+        assert!(
+            calls_only_from_cold_blocks(&clif, "fz_atom_names_cmp"),
+            "`{condition}` calls fz_atom_names_cmp from the cold tie path only:\n{clif}"
+        );
+        assert!(
+            clif.contains("icmp ult"),
+            "`{condition}` compares the name prefixes:\n{clif}"
+        );
+    }
+}
+
+/// Only two known atoms are compared in place: two lists the program makes
+/// from text still ask the runtime, for equality and for order.
+#[test]
+fn a_pair_that_is_not_two_atoms_still_asks_the_runtime() {
+    let program = |condition: &str| {
+        atom_comparison_program(condition).replace(
+            "String.to_atom(\"a\"), String.to_atom(\"z\")",
+            "[String.length(\"a\")], [String.length(\"abc\")]",
+        )
+    };
+    for (condition, import) in [("a == b", "fz_op_eq"), ("a < b", "fz_value_cmp_ref")] {
+        let clif = lowered_clif_text(&program(condition));
+        assert!(
+            declares_import(&clif, import),
+            "`{condition}` on two lists calls {import}:\n{clif}"
+        );
+    }
+}
+
 /// An extern with no row in the recipe table is still a call.
 #[test]
 fn an_extern_without_a_recipe_is_still_called() {

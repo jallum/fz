@@ -1,0 +1,62 @@
+#---
+# purpose: two atoms compare by name and by id the same on every path wherever the comparison sits: a branch, a stored boolean, a guard in a function head, a case and a receive, an operator capture, `Enum.sort/1` (which orders through `Kernel.compare/2`), and against an atom written in the source
+# kind: run
+# oracle: self
+# oracle.stamp: 59c2bc9bf4488ea0
+#---
+#
+# The atoms are built at run time, so no comparison folds. Names that share
+# their first eight bytes, a name with a NUL and a name that is a prefix of
+# another decide by the rest of the name.
+defmodule Branch do
+  def count(atoms, a), do: Enum.reduce(atoms, 0, fn b, n -> if(a < b, do: n + 1, else: n) end)
+  def equal(a, b), do: if(a == b, do: :same, else: :other)
+  def identical(a, b), do: if(a !== b, do: :other, else: :same)
+  def stored(a, b), do: [a <= b, a >= b, a == b, a != b, a === b, a !== b]
+  def flag(a, b), do: (a == b) == (a === b)
+end
+
+defmodule Guarded do
+  def head(a, b) when a < b, do: :before
+  def head(a, b) when a == b, do: :same
+  def head(a, b) when a > b, do: :after
+
+  def pick(a, b) do
+    case {a, b} do
+      {x, y} when x <= y -> {:le, x}
+      {x, y} when x >= y -> {:ge, y}
+    end
+  end
+
+  def inbox(a, b) do
+    send(self(), {a, b})
+
+    receive do
+      {x, y} when x != y and x < y -> :receive_before
+      {x, y} when x == y -> :receive_same
+      {_x, _y} -> :receive_after
+    end
+  end
+end
+
+atoms = Enum.map(["a", "ab", "a\0", "eight888", "eight888a", "eight888b", "zebra", "é", "nil", "true"], &String.to_atom/1)
+
+for a <- atoms, b <- atoms do
+  IO.inspect({a, b, Branch.equal(a, b), Branch.identical(a, b), Branch.flag(a, b)})
+  IO.inspect({a, b, Branch.stored(a, b)})
+  IO.inspect({a, b, Guarded.head(a, b), Guarded.pick(a, b), Guarded.inbox(a, b)})
+end
+
+IO.inspect(Enum.sort(atoms))
+IO.inspect({Enum.min(atoms), Enum.max(atoms)})
+IO.inspect(Enum.sort(Enum.reverse(atoms)))
+Enum.each(atoms, fn a -> IO.inspect({a, Branch.count(atoms, a)}) end)
+
+IO.inspect(Enum.sort(atoms, &(&1 <= &2)))
+IO.inspect(Enum.sort(atoms, &(&1 > &2)))
+IO.inspect(Enum.map(atoms, &(&1 == :a)))
+IO.inspect(Enum.map(atoms, &(:a < &1)))
+IO.inspect(Enum.map(atoms, &(&1 != nil)))
+IO.inspect(Enum.map(atoms, &(&1 === true)))
+IO.inspect(Enum.zip_with(atoms, Enum.reverse(atoms), &</2))
+IO.inspect(Enum.zip_with(atoms, Enum.reverse(atoms), &==/2))

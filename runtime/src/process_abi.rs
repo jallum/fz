@@ -30,6 +30,12 @@ pub const PROCESS_HANDLER_END_OFFSET: i32 = (offset_of!(Process, handlers) + HAN
 /// `Process::atom_key_hashes`: the address of the word that holds where the
 /// atom key hashes begin, one word per atom id.
 pub const PROCESS_ATOM_KEY_HASHES_OFFSET: i32 = offset_of!(Process, atom_key_hashes) as i32;
+
+/// `Process::atom_name_prefixes`: the address of the word that holds where the
+/// atom name prefixes begin, one word per atom id. A prefix is the first eight
+/// bytes of the name, big-endian and zero-padded, so two prefixes that differ
+/// order as an unsigned integer exactly as their names order.
+pub const PROCESS_ATOM_NAME_PREFIXES_OFFSET: i32 = offset_of!(Process, atom_name_prefixes) as i32;
 #[cfg(test)]
 #[path = "process_abi_test.rs"]
 mod process_abi_test;

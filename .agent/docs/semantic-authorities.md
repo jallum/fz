@@ -116,7 +116,9 @@ the references, below the functions. For the atom category it delegates to
 `Node::cmp_atom_names`, the single owner of atom name order (`cmp_atom_ids` adds
 only the equal-id shortcut). The atom table
 keeps the first eight bytes of each name as a big-endian word; two atoms order
-by those words, and by their names when the words agree. Atom ids are handed out in first-seen order, so ordering by
+by those words, and by their names when the words agree. Compiled code
+reads the same words through `Process::atom_name_prefixes` for two known atoms
+and asks `fz_value_cmp_ref` only when the words tie (`atom_compare.rs`). Atom ids are handed out in first-seen order, so ordering by
 id would depend on which atom the program mentioned first. Ordinary comparison
 reaches the node through its process; each process heap shares that same node so
 map ordering asks the same question without ambient process state (fz-5xp.90).

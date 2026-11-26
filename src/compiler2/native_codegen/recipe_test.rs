@@ -570,6 +570,7 @@ fn every_row_is_proved_against_its_runtime_function() {
         .chain(cell_proofs().iter().map(|proof| proof.symbol))
         .chain(box_proofs().iter().map(|proof| proof.symbol))
         .chain(BINARY_COMPARISONS.iter().map(|(symbol, ..)| *symbol))
+        .chain(ATOM_ROWS.iter().map(|(symbol, ..)| *symbol))
         .chain([SLICE_SYMBOL])
         .chain(REUSE_SYMBOLS)
         .collect();
@@ -2156,36 +2157,69 @@ const BINARY_COMPARISONS: [(&str, BinaryFunction, bool); 6] = [
 struct CompiledComparison {
     code: BinaryFunction,
     imports: Vec<String>,
+    /// The row left the operation to the runtime function.
+    declined: bool,
     _backend: JitBackend,
 }
 
 fn compile_comparison(symbol: &str) -> CompiledComparison {
+    compile_row(symbol, Operands::Words)
+}
+
+/// What a compiled row's operands are.
+#[derive(Clone, Copy, PartialEq)]
+enum Operands {
+    /// The process and two words.
+    Words,
+    /// The process and two stored values whose kinds are parameters, so unknown.
+    Stored,
+    /// The process and two atom ids, each known by its constant kind.
+    Atoms,
+}
+
+/// The row of a function of two stored values, each operand's kind the constant
+/// atom kind, compiled to a function of the process and the two atom ids.
+fn compile_atom_row(symbol: &str) -> CompiledComparison {
+    compile_row(symbol, Operands::Atoms)
+}
+
+fn compile_row(symbol: &str, operands: Operands) -> CompiledComparison {
     let mut backend = JitBackend::new();
     let module = backend.module_mut();
     let mut ctx = module.make_context();
     let mut fbctx = FunctionBuilderContext::new();
     let mut sig = module.make_signature();
-    sig.params = vec![ir::AbiParam::new(types::I64); 3];
+    sig.params = vec![ir::AbiParam::new(types::I64); if operands == Operands::Stored { 5 } else { 3 }];
     sig.returns = vec![ir::AbiParam::new(types::I64)];
     ctx.func.signature = sig.clone();
     let sites = RefCell::new(SiteTable::declare(module).expect("declare the site counters"));
+    let mut declined = false;
     {
         let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let args = b.block_params(entry).to_vec();
+        let mut args = b.block_params(entry).to_vec();
+        if operands == Operands::Atoms {
+            let kind = b.ins().iconst(types::I64, i64::from(ValueKind::ATOM.tag()));
+            args = vec![args[0], args[1], kind, args[2], kind];
+        }
         let mut cache = CodegenCache::default();
         let scope = SiteScope {
             sites: &sites,
             function: "recipe_parity",
         };
         let mut body = CodegenFn::new(&mut b, module, &mut cache, scope);
-        let Some(Emitted::Condition(condition)) = emit_in_body(&mut body, symbol, &args) else {
-            panic!("`{symbol}` answers a condition");
+        let word = match emit_in_body(&mut body, symbol, &args) {
+            Some(Emitted::Condition(condition)) => body.b.ins().uextend(types::I64, condition),
+            Some(Emitted::Value(word)) => word,
+            None if operands == Operands::Stored => {
+                declined = true;
+                body.b.ins().iconst(types::I64, 0)
+            }
+            other => panic!("`{symbol}` answers a condition or a word, not {other:?}"),
         };
-        let word = body.b.ins().uextend(types::I64, condition);
         body.b.ins().return_(&[word]);
         b.finalize(module.target_config());
     }
@@ -2206,6 +2240,7 @@ fn compile_comparison(symbol: &str) -> CompiledComparison {
     CompiledComparison {
         code,
         imports,
+        declined,
         _backend: backend,
     }
 }
@@ -2336,6 +2371,171 @@ fn a_binary_comparison_row_imports_only_its_bytes_comparison() {
         let compiled = compile_comparison(symbol);
         assert_eq!(compiled.imports, [symbol], "`{symbol}` imports");
     }
+}
+
+// The atom rows compare two known atoms in place. Equality is one comparison of
+// the ids; ordering compares the name prefixes and calls the runtime function
+// only when the prefixes tie and the ids differ. They are proved on atoms
+// interned out of name order, so the id order is never the name order, and on
+// names that share their first eight bytes, that are shorter than eight bytes,
+// that hold a NUL or that begin with a multi-byte character.
+
+/// What a row answers for two atoms: its runtime function on their stored
+/// words and kinds.
+fn runtime_answer(symbol: &str, process: *mut Process, left: u64, right: u64) -> u64 {
+    let kind = u64::from(ValueKind::ATOM.tag());
+    let stored =
+        |function: extern "C" fn(*mut Process, u64, u64, u64, u64) -> u64| function(process, left, kind, right, kind);
+    match symbol {
+        "fz_op_eq" => stored(fz_op_eq),
+        "fz_op_neq" => stored(fz_op_neq),
+        "fz_op_identical" => stored(fz_op_identical),
+        "fz_op_not_identical" => stored(fz_op_not_identical),
+        "fz_value_cmp_ref" => fz_value_cmp_ref(process, left, kind, right, kind) as u64,
+        other => panic!("`{other}` is not an atom row"),
+    }
+}
+
+/// What a row must answer for the relation of two names.
+type AtomAnswer = fn(std::cmp::Ordering) -> u64;
+
+/// Each atom row's symbol and what it must answer for the relation of the
+/// names: a condition for the equalities, -1, 0 or 1 for the ordering.
+const ATOM_ROWS: [(&str, AtomAnswer); 5] = [
+    ("fz_op_eq", |o| u64::from(o.is_eq())),
+    ("fz_op_neq", |o| u64::from(o.is_ne())),
+    ("fz_op_identical", |o| u64::from(o.is_eq())),
+    ("fz_op_not_identical", |o| u64::from(o.is_ne())),
+    ("fz_value_cmp_ref", |o| o as i64 as u64),
+];
+
+/// A process whose atom table holds every name the rows distinguish, interned
+/// in reverse of name order and then grown past a reallocation of the table.
+/// It is leaked: compiled code reads the table through it.
+fn atom_inputs() -> (*mut Process, Vec<(String, u64)>) {
+    let process = Box::leak(Box::new(Process::new(Rc::new(RefCell::new(SchemaRegistry::new())))));
+    let names = [
+        "",
+        "a",
+        "a\0",
+        "a\0b",
+        "a\0\0",
+        "ab",
+        "b",
+        "eight888",
+        "eight888a",
+        "eight888b",
+        "eight889",
+        "seven77",
+        "z",
+        "\u{e9}",
+        "\u{e9}a",
+        "\u{7f}",
+        "false",
+        "nil",
+        "true",
+    ];
+    let mut atoms: Vec<(String, u64)> = names
+        .iter()
+        .rev()
+        .map(|name| (name.to_string(), u64::from(process.node.intern_atom(name))))
+        .collect();
+    for n in 0..2_000 {
+        process.node.intern_atom(&format!("padding_{n}"));
+    }
+    atoms.push(("runtime".to_string(), u64::from(process.node.intern_atom("runtime"))));
+    (process, atoms)
+}
+
+/// Intent: each atom row answers, for every pair of atoms, what its runtime
+/// function answers, and that is what the order of their names says, whatever
+/// order the ids were interned in.
+#[test]
+fn every_atom_row_answers_what_its_runtime_function_answers() {
+    let (process, atoms) = atom_inputs();
+    for (symbol, expected) in ATOM_ROWS {
+        let compiled = compile_atom_row(symbol);
+        for (left_name, left) in &atoms {
+            for (right_name, right) in &atoms {
+                let inline = (compiled.code)(process, *left, *right);
+                assert_eq!(
+                    inline,
+                    runtime_answer(symbol, process, *left, *right),
+                    "`{symbol}` on {left_name:?} and {right_name:?}: inline against the runtime function"
+                );
+                assert_eq!(
+                    inline,
+                    expected(left_name.as_str().cmp(right_name.as_str())),
+                    "`{symbol}` on {left_name:?} and {right_name:?}: the order of the names"
+                );
+            }
+        }
+    }
+}
+
+/// Intent: the tie symbol answers what `Node::cmp_atom_names` says of every
+/// pair of different atoms, which is the order of their names.
+#[test]
+fn the_atom_tie_symbol_answers_what_cmp_atom_names_answers() {
+    let (process, atoms) = atom_inputs();
+    for (left_name, left) in &atoms {
+        for (right_name, right) in &atoms {
+            if left == right {
+                continue;
+            }
+            let node = unsafe { &(*process).node };
+            assert_eq!(
+                fz_atom_names_cmp(process, *left, *right),
+                node.cmp_atom_names(*left as u32, *right as u32) as i64,
+                "{left_name:?} against {right_name:?}"
+            );
+            assert_eq!(
+                fz_atom_names_cmp(process, *left, *right),
+                left_name.as_str().cmp(right_name.as_str()) as i64,
+                "{left_name:?} against {right_name:?}: the order of the names"
+            );
+        }
+    }
+}
+
+/// Intent: an atom row declines unless both operands are the constant atom
+/// kind, and the ordering row declines where no body hosts its cold call.
+#[test]
+fn an_atom_row_declines_without_two_constant_atom_kinds() {
+    for (symbol, _) in ATOM_ROWS {
+        let compiled = compile_row(symbol, Operands::Stored);
+        assert!(compiled.declined, "`{symbol}` with unknown kinds is the runtime call");
+    }
+}
+
+/// Intent: the equality rows import nothing and the ordering row imports only
+/// its own runtime function, which only the cold tie block calls.
+#[test]
+fn an_atom_row_imports_only_its_own_runtime_function() {
+    for (symbol, _) in ATOM_ROWS {
+        let compiled = compile_atom_row(symbol);
+        let expected: &[&str] = if symbol == "fz_value_cmp_ref" {
+            &["fz_atom_names_cmp"]
+        } else {
+            &[]
+        };
+        assert_eq!(compiled.imports, expected, "`{symbol}` imports");
+    }
+}
+
+/// The relations the rows exist for are present in the inputs: ids out of name
+/// order, a tie of prefixes with different names, a name shorter than its
+/// prefix, a NUL, and the same atom twice.
+#[test]
+fn the_atom_inputs_hold_every_relation_the_rows_distinguish() {
+    let (_, atoms) = atom_inputs();
+    let id = |name: &str| atoms.iter().find(|(n, _)| n == name).expect("a named input").1;
+    assert!(id("z") < id("a") && "z" > "a", "ids run against the names");
+    assert!(
+        "eight888a" > "eight888" && id("eight888a") != id("eight888"),
+        "a name that extends a name of eight bytes"
+    );
+    assert!(id("a\0") != id("a"), "a NUL name is not the shorter name it pads to");
 }
 
 // The binary slice row is proved on windows of every length class and

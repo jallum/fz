@@ -438,7 +438,7 @@ fn entry_columns(b: &mut FunctionBuilder<'_>, node: ir::Value, count: ir::Value)
 }
 
 /// The address `index` words past `base`.
-fn word_at(b: &mut FunctionBuilder<'_>, base: ir::Value, index: ir::Value) -> ir::Value {
+pub(super) fn word_at(b: &mut FunctionBuilder<'_>, base: ir::Value, index: ir::Value) -> ir::Value {
     let bytes = b.ins().ishl_imm_u(index, 3);
     b.ins().iadd(base, bytes)
 }

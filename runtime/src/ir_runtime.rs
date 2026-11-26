@@ -2388,6 +2388,14 @@ pub extern "C" fn fz_value_eq_raw_const(ref_word: u64, expected_tag: u32, raw: u
     u64::from(value.tag() == expected_tag && value.storage_raw() == Ok(raw))
 }
 
+/// The order of two different atoms whose name prefixes tie, -1, 0 or 1: the
+/// names themselves are read. Compiled code calls this from the cold block of
+/// an atom comparison it has otherwise settled from the name prefixes.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_atom_names_cmp(process: *mut Process, left_id: u64, right_id: u64) -> i64 {
+    unsafe { &(*process).node }.cmp_atom_names(left_id as u32, right_id as u32) as i64
+}
+
 /// Widening language term order, borrowed from the same comparator that owns
 /// strict map-key identity. Each operand is its stored word and kind. Returns
 /// -1, 0, or 1.

@@ -11,6 +11,7 @@ pub(crate) use crate::compiler2::Ty;
 use crate::telemetry::RawSpanTelemetry;
 pub(crate) use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 
+mod atom_compare;
 mod binary_compare;
 mod binary_slice;
 mod bitstring_literal;

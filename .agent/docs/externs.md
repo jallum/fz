@@ -345,6 +345,24 @@ against its function over inline binaries, views, the literal bit, equal and
 unequal bytes, prefixes, other lengths and bitstrings that differ only in
 their padding bits.
 
+`fz_op_eq`, `fz_op_neq`, `fz_op_identical` and `fz_op_not_identical` take the
+process and two stored values (a word and its kind each). When both kind
+arguments are the constant `ValueKind::ATOM` tag (`both_atoms`, read with
+`constant_of`), the words are atom ids and each row is one `icmp` of them, a
+`Condition`: two atoms are the same atom exactly when their ids are equal, and
+`==` and `===` agree on atoms. `fz_value_cmp_ref` is an `Emit::AtomCompare` row
+under the same test. `native_codegen/atom_compare.rs` emits it: it loads both
+atoms' name prefixes through `Process::atom_name_prefixes` and, when they
+differ, answers -1 or 1 from an unsigned compare of the two words; when they
+tie it answers 0 for one atom, and otherwise calls `fz_atom_names_cmp` (the
+process and the two ids, straight to `Node::cmp_atom_names`) in a cold block. Kernel's `<`, `<=`, `>` and `>=` on atoms reach it through
+`compare(l, r)`. Every other operand pair, and a call site with no body to host
+the cold call (`emit_inline`), gets the runtime function: the rows decline.
+`recipe_test` proves every row against its function over atoms interned out of
+name order, names that share their first eight bytes, shorter names and names
+with NUL bytes, and checks that an atom row declines without two constant atom
+kinds.
+
 A row that allocates is the other kind of row (`Emit::Cell`, `Emit::Reuse`, `Emit::Struct`,
 `Emit::Closure`, `Emit::Box`): it takes the
 process as its first argument, as the runtime function does, and writes the
