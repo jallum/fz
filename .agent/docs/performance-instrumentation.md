@@ -112,11 +112,14 @@ made it but emits no `pull.product.requested`, so `requests` can exceed that
 drive's request events. `tests/distill_telemetry_test.rs` holds compiling
 `tools/distill-telemetry.exs` under ceilings: the largest drive, the total, the
 drive count, and the `derivations` and `reads_handed` its `work_graph.applied`
-events sum to. A measured value at or under its ceiling passes, and the test
-prints every measured value. A change that lowers the spend leaves its ceiling
-where it is; ceilings are lowered to develop's measured values now and then. A
-rise past a ceiling fails, naming the part and the overshoot, and is investigated
-before the ceiling moves.
+events sum to. A part's ceiling is its `CEILINGS` base plus the
+delta every `tests/distill_telemetry/ceiling_moves/<ticket>.moves` file records
+for it, one file per change, so changes in flight never edit the same line. A
+measured value at or under its ceiling passes, and the test prints every
+measured value beside its ceiling's breakdown. A rise past a ceiling fails,
+naming the part, the overshoot and the breakdown, and is investigated before a
+`.moves` file records it; a fall may record a negative delta. Folding sums the
+files into `CEILINGS` and deletes them.
 
 Fixture `01868_a_cycle_of_functions_entered_with_many_argument_shapes_compiles_in_budget`
 pins the request count of a 33-function cycle entered from 33 call sites with

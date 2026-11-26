@@ -40,7 +40,7 @@
 //! report.
 
 use std::env::temp_dir;
-use std::fs::{File, read_to_string, remove_file};
+use std::fs::{File, create_dir, read_dir, read_to_string, remove_dir_all, remove_file, write};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, id};
@@ -230,9 +230,10 @@ fn read_compile_spend(trace: &Path) -> CompileSpend {
     spend
 }
 
-/// The most the distiller's compile may spend, part by part. Each is develop's
-/// measured value when it was last lowered: a fall leaves room under it, and a
-/// rise past it is investigated before any ceiling moves.
+/// The most the distiller's compile may spend, part by part, before any change
+/// in flight moves it. Each is develop's measured value when the moves were last
+/// folded in. A change that moves the spend records the move in a file of its
+/// own under `CEILING_MOVES`, so changes in flight never edit the same lines.
 const CEILINGS: [(&str, u64); 5] = [
     // The drive `PRODUCT_DRIVE_BUDGET` (50,000) bounds: its headroom is the margin
     // before the compile stops with a budget error.
@@ -245,9 +246,92 @@ const CEILINGS: [(&str, u64); 5] = [
     ("reads handed", 136_381),
 ];
 
+/// One `<ticket>.moves` file per change: lines of `<part> <signed delta>`, and
+/// `#` lines saying why the spend moved and who accepted a rise.
+const CEILING_MOVES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/distill_telemetry/ceiling_moves");
+
+/// One change's movement of the ceilings, read from its `.moves` file.
+struct CeilingMove {
+    ticket: String,
+    deltas: Vec<(String, i64)>,
+}
+
+impl CeilingMove {
+    fn delta_of(&self, part: &str) -> Option<i64> {
+        self.deltas
+            .iter()
+            .find_map(|(moved, delta)| (moved == part).then_some(*delta))
+    }
+}
+
+fn read_ceiling_moves(dir: &Path) -> Vec<CeilingMove> {
+    let mut files: Vec<PathBuf> = read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("ceiling_moves entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "moves"))
+        .collect();
+    // Sorted so the printed breakdown reads the same on every machine.
+    files.sort();
+    files.iter().map(|file| read_ceiling_move(file)).collect()
+}
+
+fn read_ceiling_move(file: &Path) -> CeilingMove {
+    let ticket = file
+        .file_stem()
+        .expect("a .moves file has a stem")
+        .to_string_lossy()
+        .into_owned();
+    let text = read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+    let mut deltas: Vec<(String, i64)> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (part, delta) = parse_delta(&ticket, line);
+        assert!(
+            CEILINGS.iter().any(|(known, _)| *known == part),
+            "{ticket}.moves moves {part:?}, which is not a ceiling"
+        );
+        assert!(
+            deltas.iter().all(|(moved, _)| *moved != part),
+            "{ticket}.moves moves {part:?} twice"
+        );
+        deltas.push((part, delta));
+    }
+    CeilingMove { ticket, deltas }
+}
+
+fn parse_delta(ticket: &str, line: &str) -> (String, i64) {
+    let (part, delta) = line
+        .rsplit_once(char::is_whitespace)
+        .unwrap_or_else(|| panic!("{ticket}.moves line {line:?} is not `<part> <signed delta>`"));
+    let delta = delta
+        .parse::<i64>()
+        .unwrap_or_else(|e| panic!("{ticket}.moves line {line:?}: delta {delta:?}: {e}"));
+    (part.trim().to_string(), delta)
+}
+
+/// A part's ceiling: its base plus every change's move, with the breakdown the
+/// test prints beside it.
+fn ceiling_of(part: &str, base: u64, moves: &[CeilingMove]) -> (u64, String) {
+    let mut limit = i128::from(base);
+    let mut breakdown = base.to_string();
+    for (ticket, delta) in moves
+        .iter()
+        .filter_map(|change| change.delta_of(part).map(|delta| (&change.ticket, delta)))
+    {
+        limit += i128::from(delta);
+        breakdown.push_str(&format!(" {delta:+} {ticket}"));
+    }
+    let limit = u64::try_from(limit).unwrap_or_else(|_| panic!("{part}'s ceiling {breakdown} is below zero"));
+    (limit, breakdown)
+}
+
 /// Compiling the distiller spends no more of the product stack and of the
 /// World's completions than its ceilings allow. The test prints what it
-/// measured, so lowering a ceiling is copying a figure from its output.
+/// measured beside each ceiling's breakdown, so a move is the difference
+/// between the measured figure and the ceiling, copied into the change's own
+/// `.moves` file.
 #[test]
 fn the_distiller_compiles_inside_its_ceilings() {
     let trace = unique_temp_path("fz2_distiller_compile", ".jsonl");
@@ -269,12 +353,14 @@ fn the_distiller_compiles_inside_its_ceilings() {
         spend.derivations,
         spend.reads_handed,
     ];
+    let moves = read_ceiling_moves(Path::new(CEILING_MOVES));
     let mut overshoots = Vec::new();
-    for ((part, ceiling), value) in CEILINGS.into_iter().zip(measured) {
-        println!("{part}: {value} (ceiling {ceiling})");
+    for ((part, base), value) in CEILINGS.into_iter().zip(measured) {
+        let (ceiling, breakdown) = ceiling_of(part, base, &moves);
+        println!("{part}: {value} (ceiling {ceiling} = {breakdown})");
         if value > ceiling {
             overshoots.push(format!(
-                "{part} is {value}, {} over its ceiling of {ceiling}",
+                "{part} is {value}, {} over its ceiling of {ceiling} ({breakdown})",
                 value - ceiling
             ));
         }
@@ -285,4 +371,41 @@ fn the_distiller_compiles_inside_its_ceilings() {
          before a ceiling moves.",
         overshoots.join("; ")
     );
+}
+
+fn ceiling_moves_dir(files: &[(&str, &str)]) -> PathBuf {
+    let dir = unique_temp_path("fz2_ceiling_moves", "");
+    create_dir(&dir).expect("create ceiling_moves dir");
+    for (name, text) in files {
+        write(dir.join(name), text).expect("write a moves file");
+    }
+    dir
+}
+
+/// Two changes in flight each record their own move in a file of their own,
+/// and the ceiling is the base plus both: neither edits a line the other does.
+#[test]
+fn moves_from_changes_in_flight_add_to_the_base() {
+    let dir = ceiling_moves_dir(&[
+        ("fz-a.moves", "# a rise the user accepted\nderivations +2\n"),
+        ("fz-b.moves", "derivations -1\ndrives +1\n"),
+        ("README.md", "derivations +1000\n"),
+    ]);
+    let moves = read_ceiling_moves(&dir);
+    let _ = remove_dir_all(&dir);
+    assert_eq!(
+        ceiling_of("derivations", 100, &moves),
+        (101, "100 +2 fz-a -1 fz-b".to_string())
+    );
+    assert_eq!(ceiling_of("drives", 25, &moves), (26, "25 +1 fz-b".to_string()));
+    assert_eq!(ceiling_of("reads handed", 7, &moves), (7, "7".to_string()));
+}
+
+/// A move must name a ceiling that exists, so a misspelt part fails loudly
+/// instead of moving nothing.
+#[test]
+#[should_panic(expected = "which is not a ceiling")]
+fn a_move_of_a_part_that_is_not_a_ceiling_is_refused() {
+    let dir = ceiling_moves_dir(&[("fz-c.moves", "derivation +5\n")]);
+    read_ceiling_moves(&dir);
 }
