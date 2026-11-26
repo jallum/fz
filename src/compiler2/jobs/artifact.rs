@@ -1703,13 +1703,18 @@ pub(super) fn abi_layout_contract(world: &mut World, layout: TransportLayout) ->
         .into_iter()
         .map(|physical| {
             let ty = world.lane(physical.lane).ty;
-            let repr = match physical.source {
-                PhysicalLaneSource::Structural => AbiValueRepr::for_ty(world, ty),
-                PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
-            };
-            (ty, repr)
+            (ty, physical_lane_repr(world, physical.source, ty))
         })
         .collect()
+}
+
+/// The form one physical lane travels in: a carrier is always the boxed word,
+/// a structural lane takes the form its type gives.
+pub(super) fn physical_lane_repr(world: &mut World, source: PhysicalLaneSource, ty: Ty) -> AbiValueRepr {
+    match source {
+        PhysicalLaneSource::Structural => AbiValueRepr::for_ty(world, ty),
+        PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
+    }
 }
 
 /// A tail-position direct call whose callsite settled on no reachable target.

@@ -1578,7 +1578,15 @@ impl AbiValueRepr {
     /// The physical form a value of this type travels in. Only a scalar has a
     /// raw form; everything else -- a callable, a tuple, a list, a map -- is
     /// one boxed word. This is the single rule every lane repr is read from.
+    ///
+    /// The empty type is a subtype of every scalar, so subtyping alone would
+    /// hand it a raw lane. No value of it ever exists, so it names no scalar
+    /// kind and rides as the boxed word, which every raw lane converts to and
+    /// from.
     pub(crate) fn for_ty(world: &mut super::world::World, ty: Ty) -> Self {
+        if world.types().is_empty(&ty) {
+            return Self::ValueRef;
+        }
         if world.types().is_floating(&ty) {
             return Self::RawF64;
         }
