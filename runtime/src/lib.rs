@@ -7,6 +7,8 @@
 //! binaries link against this crate as a staticlib; the fz binary
 //! links against it as an rlib.
 
+#[cfg(test)]
+pub(crate) mod alloc_probe;
 pub mod alloc_site;
 pub mod any_value;
 pub mod aot_shim;
@@ -30,6 +32,7 @@ pub mod off_heap;
 pub mod output;
 pub mod park;
 pub mod pinned_abi;
+pub mod proc_table;
 pub mod process;
 pub mod process_abi;
 pub mod quoted_ast;

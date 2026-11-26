@@ -52,8 +52,8 @@ owns packing, projection, and the platform difference behind the word.
   whether the ref word carries the value or points at a box; `is_opaque_word()` is
   the pid and reference kinds, whose one word is meaningless as an integer: a
   pid is not `1`, and `self() == 1` is false. `debug::render_opaque_word`
-  prints them as Elixir does: `#PID<0.N.S>` (the pid's low 15 bits and the
-  serial above them) and `#Reference<0.0.A.B>` (the counter's high and low
+  prints them as Elixir does: `#PID<0.N.S>` (the pid's slot and its
+  generation, the 20 and 12 bits of `proc_table`) and `#Reference<0.0.A.B>` (the counter's high and low
   halves), in `inspect/1`, `dbg/1` and inside any container.
 - **`AnyValue`**: the by-value enum a host caller decodes a ref into —
   `Null`, `EmptyList`, `Int(i64)`, `Opaque(ValueKind, u64)` (a pid or a

@@ -1673,9 +1673,12 @@ fn a_pid_and_a_reference_render_in_elixir_shapes() {
         assert_eq!(render_value(process_ptr, pid), "#PID<0.7.0>");
         assert_eq!(render_value(process_ptr, reference), "#Reference<0.0.3.9>");
         assert_eq!(
-            render_value(process_ptr, AnyValue::Opaque(ValueKind::PID, (2 << 15) | 5)),
+            render_value(
+                process_ptr,
+                AnyValue::Opaque(ValueKind::PID, (2 << crate::proc_table::SLOT_BITS) | 5)
+            ),
             "#PID<0.5.2>",
-            "a pid past 15 bits carries its serial"
+            "a pid's generation is its serial"
         );
 
         let tail = process.heap.alloc_list_cons_slot(reference, EMPTY_LIST_BITS);

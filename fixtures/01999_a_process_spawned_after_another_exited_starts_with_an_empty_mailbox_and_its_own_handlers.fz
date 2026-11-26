@@ -1,0 +1,54 @@
+#---
+# purpose: "a process spawned after another exited, holding unreceived messages and a large live heap, starts with an empty mailbox, rescues a raise of its own and builds its own data"
+# oracle: self
+# oracle.stamp: 8186d188cbc5bae5
+#---
+#
+# The first process leaves with three messages it never received and a
+# five-thousand-element list on its heap. The next process is spawned only after
+# the first has exited, so a runtime that reuses the first one's storage must
+# hand it over empty: no message, no handler, a heap of its own.
+defmodule Main do
+  def hoard(parent) do
+    data = Enum.to_list(1..5000)
+
+    receive do
+      :stop -> send(parent, {:exited, length(data)})
+    end
+  end
+
+  def fresh(parent) do
+    mailbox = receive do
+      message -> {:got, message}
+    after
+      0 -> :empty
+    end
+
+    rescued = try do
+      raise ArgumentError, "mine"
+    rescue
+      error in ArgumentError -> error.message
+    end
+
+    send(parent, {mailbox, rescued, Enum.sum(1..1000)})
+  end
+
+  def main() do
+    me = self()
+    first = spawn(fn -> hoard(me) end)
+    for junk <- [:one, :two, :three], do: send(first, junk)
+    send(first, :stop)
+
+    receive do
+      {:exited, count} -> IO.inspect(count)
+    end
+
+    spawn(fn -> fresh(me) end)
+
+    receive do
+      answer -> IO.inspect(answer)
+    end
+  end
+end
+
+Main.main()

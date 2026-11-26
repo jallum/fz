@@ -67,8 +67,8 @@ build leg's deadline starts when the binary is spawned.
 
 `sched_core::end_quantum` observes `RuntimeEvent::ProcessExited` for a halted
 process once its destructors have run, on every scheduler. `emit_runtime_event`
-raises it with the process's pid and the live `Process`; the event carries no
-derived process fields:
+raises it with the process's pid and the `Process` before it is retired (its heap is
+released right after the event); the event carries no derived process fields:
 
 ```text
 raw event:    fz.runtime.process_exited
@@ -290,9 +290,9 @@ processes.
 ## `fz.runtime.run_ended`
 
 `RunEnded::sample` (`runtime/src/telemetry.rs`) reads the census and
-`emit_runtime_event` raises it. The JIT `Runtime` observes it from its `Drop`, after clearing the task registry (exited and parked
-tasks stay in the registry until then, so their heaps and any gifts still
-queued on them are dropped first). The interpreter observes it in
+`emit_runtime_event` raises it. The JIT `Runtime` observes it from its `Drop`, after dropping the process table (an exited process's
+heap is released at its exit, so what the drop releases is the parked processes' heaps and any gifts still
+queued on them). The interpreter observes it in
 `run_backend_main` after dropping its `IrInterpRuntime`.
 
 ```text

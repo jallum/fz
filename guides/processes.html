@@ -146,7 +146,9 @@ pid via <code>self()</code>:</p>
 <p>The very first process (the one that runs <code>main</code>) gets
 pid <code>#PID&lt;0.1.0&gt;</code>. Each subsequent <code>spawn</code> gives
 out the next number: <code>#PID&lt;0.2.0&gt;</code>, <code>#PID&lt;0.3.0&gt;</code>,
-and so on. Pids are not recycled within one run. A pid is not an integer:
+and so on. When a process exits its number is reused by a later process, with the
+second number counting how many processes have left it; a message sent to the
+pid of an exited process is dropped and never reaches the later process. A pid is not an integer:
 <code>self() == 1</code> is false, <code>send/2</code> raises
 <code>ArgumentError</code> for a destination that is not a pid, and a
 reference from <code>make_ref/0</code> is a kind of its own in the same way

@@ -74,6 +74,13 @@ impl Delivery {
         self.in_queue.pop_front()
     }
 
+    /// Forget the park record and give back every queued gift, keeping the
+    /// queue's storage.
+    pub fn clear(&mut self) {
+        self.park = None;
+        self.in_queue.clear();
+    }
+
     pub fn queued_gifts(&self) -> impl Iterator<Item = &Gift> {
         self.in_queue.iter()
     }
@@ -89,6 +96,14 @@ impl DeliveryLock {
     pub fn lock(&self) -> MutexGuard<'_, Delivery> {
         self.inner
             .lock()
+            .expect("a panic while holding the delivery lock poisons it")
+    }
+
+    /// The delivery state through exclusive access: nobody can hold the lock,
+    /// so nothing is locked.
+    pub fn get_mut(&mut self) -> &mut Delivery {
+        self.inner
+            .get_mut()
             .expect("a panic while holding the delivery lock poisons it")
     }
 

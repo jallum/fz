@@ -2428,11 +2428,16 @@ pub mod debug {
 
     /// A pid or a reference, rendered the way Elixir's `inspect/1` renders one:
     /// `#PID<0.N.S>` and `#Reference<0.A.B.C>`. A pid's word is split into the
-    /// 15-bit number and the serial Erlang prints; a reference's counter fills
+    /// slot and the generation of the process table (`crate::proc_table`), which
+    /// are the number and the serial Erlang prints; a reference's counter fills
     /// the last two of its three words.
     pub fn render_opaque_word(kind: ValueKind, word: u64) -> String {
         match kind {
-            ValueKind::PID => format!("#PID<0.{}.{}>", word & 0x7fff, word >> 15),
+            ValueKind::PID => format!(
+                "#PID<0.{}.{}>",
+                crate::proc_table::pid_slot(word as u32),
+                crate::proc_table::pid_generation(word as u32)
+            ),
             ValueKind::REF => format!("#Reference<0.0.{}.{}>", word >> 32, word & 0xffff_ffff),
             _ => panic!("a value of kind {kind:?} is not a pid or a reference"),
         }

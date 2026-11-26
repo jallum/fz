@@ -131,7 +131,7 @@ pub(crate) fn run_backend_main<T: Telemetry + ?Sized>(
             BackendRun::Program,
         )?;
         RunFailure::from_main_status(runtime.core.halted().unwrap_or(0))?;
-        Ok(runtime.process_ref(MAIN_PID).map_or(0, |main| main.halt_value))
+        Ok(runtime.core.main_value().unwrap_or(0))
     })();
     output.flush();
     let counts = runtime.counts;
@@ -215,7 +215,7 @@ impl IrInterpRuntime {
         args: Lanes,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
-        if !self.tasks.contains_key(&pid) {
+        if self.tasks.get_ptr(pid).is_none() {
             return Err(format!("enqueue_backend_entry: unknown pid {}", pid));
         }
         self.backend_resume.insert(
@@ -239,7 +239,7 @@ impl IrInterpRuntime {
         env: Frame,
         continuations: Vec<BackendContinuation>,
     ) -> Result<(), String> {
-        if !self.tasks.contains_key(&pid) {
+        if self.tasks.get_ptr(pid).is_none() {
             return Err(format!("enqueue_backend_local_entry: unknown pid {}", pid));
         }
         self.backend_resume.insert(
@@ -268,15 +268,14 @@ impl IrInterpRuntime {
         if sender.is_null() {
             return Err("spawn: no sender process".to_string());
         }
-        let pid = self.next_pid();
         let user_schemas = self.schemas();
         let node = Rc::clone(&self.node);
-        let mut child = Box::new(Process::with_node(
-            node,
-            user_schemas,
-            pid,
-            DEFAULT_REDUCTIONS_PER_QUANTUM,
-        ));
+        let child = self
+            .tasks
+            .spawn(node, user_schemas, DEFAULT_REDUCTIONS_PER_QUANTUM)
+            .map_err(|full| full.to_string())?;
+        let child = unsafe { &mut *child };
+        let pid = child.pid;
         let sender_view = unsafe { &*sender }.heap.view();
         let args = args
             .into_iter()
@@ -288,7 +287,6 @@ impl IrInterpRuntime {
                 value => Ok(value),
             })
             .collect::<Result<Lanes, _>>()?;
-        self.insert_task(pid, child);
         self.enqueue_backend_entry(pid, executable, args)?;
         Ok(pid)
     }
@@ -341,10 +339,7 @@ impl IrInterpRuntime {
         receiver_pid: &u32,
         msg: Stored,
     ) -> Result<(), String> {
-        let Some(receiver) = self.tasks.get(receiver_pid) else {
-            return Ok(());
-        };
-        if receiver.state == ProcessState::Exited {
+        if self.tasks.get(*receiver_pid).is_none() {
             return Ok(());
         }
         let sender = unsafe { &mut *self.cur_proc() };
@@ -533,6 +528,15 @@ impl<T: Telemetry + ?Sized> Scheduler for BackendSchedulerAdapter<T> {
 
     fn observe(&mut self, event: RuntimeEvent<'_>) {
         emit_runtime_event(unsafe { &*self.tel }, event);
+    }
+
+    fn retire(&mut self, process: &mut Process) {
+        let runtime = unsafe { &mut *self.runtime };
+        debug_assert!(
+            !runtime.backend_resume.contains_key(&process.pid) && !runtime.backend_parked.contains_key(&process.pid),
+            "an exited interpreted process has nothing left to resume or park"
+        );
+        runtime.tasks.retire(process.pid);
     }
 
     /// Collect `process` with the heap refs of its parked receive as the
