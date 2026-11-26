@@ -93,10 +93,10 @@ fn a_receive_value_is_refused_by_a_reader_of_another_lane() {
     let float = b.ins().f64const(1.5);
     let mut body = DispatchBody::new(&mut b, &mut module);
 
-    assert!(receive_value_int(&mut body, ReceiveValue::Int(int)).is_ok());
-    assert!(receive_value_float(&mut body, ReceiveValue::Float(float)).is_ok());
-    assert!(receive_value_int(&mut body, ReceiveValue::Float(float)).is_err());
-    assert!(receive_value_int(&mut body, ReceiveValue::Atom(int)).is_err());
-    assert!(receive_value_float(&mut body, ReceiveValue::Int(int)).is_err());
-    assert!(receive_value_float(&mut body, ReceiveValue::Atom(int)).is_err());
+    assert!(receive_value_int(&mut body, CodegenValue::RawInt(int)).is_ok());
+    assert!(receive_value_float(&mut body, CodegenValue::RawF64(float)).is_ok());
+    assert!(receive_value_int(&mut body, CodegenValue::RawF64(float)).is_err());
+    assert!(receive_value_int(&mut body, CodegenValue::RawAtom(int)).is_err());
+    assert!(receive_value_float(&mut body, CodegenValue::RawInt(int)).is_err());
+    assert!(receive_value_float(&mut body, CodegenValue::RawAtom(int)).is_err());
 }

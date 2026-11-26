@@ -430,6 +430,13 @@ pub extern "C" fn fz_halt_implicit_ref(process: *mut Process, ref_word: u64) {
         halt_value_from_slot(any_value_from_ref_word(ref_word, "fz_halt_implicit_ref"));
 }
 
+/// Halt with a value held as its stored word and kind.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_halt_implicit_stored(process: *mut Process, word: u64, kind: u64) {
+    (unsafe { &mut *process }).halt_value =
+        halt_value_from_slot(Stored { word, kind }.value("fz_halt_implicit_stored"));
+}
+
 fn halt_value_from_slot(value: AnyValue) -> i64 {
     match value.kind() {
         ValueKind::INT => value.raw() as i64,
@@ -2064,37 +2071,22 @@ pub extern "C" fn fz_list_cons_any(process: *mut Process, head_ref_word: u64, ta
     list_cons(process, head, tail_word, tail_kind, "fz_list_cons_any tail")
 }
 
+/// A cell holding the head given as its stored word and kind, in front of the
+/// tail given the same way. Nothing is boxed to carry either.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_word: u64, tail_kind: u64) -> u64 {
-    list_cons(
-        process,
-        AnyValue::int(head),
-        tail_word,
-        tail_kind,
-        "fz_list_cons_int tail",
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_word: u64, tail_kind: u64) -> u64 {
-    list_cons(
-        process,
-        AnyValue::float(head),
-        tail_word,
-        tail_kind,
-        "fz_list_cons_float tail",
-    )
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_atom(process: *mut Process, atom_id: u64, tail_word: u64, tail_kind: u64) -> u64 {
-    list_cons(
-        process,
-        AnyValue::atom(atom_id as u32),
-        tail_word,
-        tail_kind,
-        "fz_list_cons_atom tail",
-    )
+pub extern "C" fn fz_list_cons_stored(
+    process: *mut Process,
+    head_word: u64,
+    head_kind: u64,
+    tail_word: u64,
+    tail_kind: u64,
+) -> u64 {
+    let head = Stored {
+        word: head_word,
+        kind: head_kind,
+    }
+    .value("fz_list_cons_stored head");
+    list_cons(process, head, tail_word, tail_kind, "fz_list_cons_stored tail")
 }
 
 // Reading a list head/tail is a pure dereference of the self-describing list

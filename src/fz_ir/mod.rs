@@ -577,13 +577,15 @@ pub struct SlotStore<V> {
     pub value: V,
 }
 
-/// The physical form of one body-frame slot: one boxed word, or a raw scalar.
+/// The physical form of one body-frame slot: one boxed word, a raw scalar, or
+/// a stored word with the kind it is read as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FrameLane {
     Ref,
     Int,
     Float,
     Atom,
+    Stored,
 }
 
 #[derive(Debug, Clone, PartialEq)]

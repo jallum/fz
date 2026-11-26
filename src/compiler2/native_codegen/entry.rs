@@ -4,7 +4,6 @@ use super::*;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::FnIr;
 use cranelift_codegen::ir;
-use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module as ClModule;
 
 pub(crate) struct EntryHarnessOut {
@@ -45,7 +44,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
         self_ref = Some(own);
         outer
     } else {
-        harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
+        harness_plain_native(entry_blk, &params, my_param_reprs, &mut var_env)
     };
     EntryHarnessOut {
         var_env,
@@ -91,7 +90,7 @@ fn harness_cont_fn<M: ClModule>(
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
         let repr = my_param_reprs[i];
-        var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
+        var_env.insert(p.0, take_param_binding(params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
     let slot_count = 1 + entry_blk.params.len() - extras_count;
@@ -129,7 +128,6 @@ fn harness_cont_fn<M: ClModule>(
 ///
 /// Returns the trailing cont SSA value.
 fn harness_plain_native(
-    b: &mut FunctionBuilder<'_>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
@@ -138,7 +136,7 @@ fn harness_plain_native(
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().enumerate() {
         let repr = my_param_reprs[i];
-        var_env.insert(p.0, take_param_binding(b, params, &mut param_cursor, repr));
+        var_env.insert(p.0, take_param_binding(params, &mut param_cursor, repr));
     }
     let cont_idx = param_cursor;
     params[cont_idx]

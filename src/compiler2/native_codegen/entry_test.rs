@@ -4,7 +4,7 @@
 use super::*;
 use crate::fz_ir::{Block, BlockId, Term, Var};
 use cranelift_codegen::ir::{InstBuilder, InstructionData, Opcode, types};
-use cranelift_frontend::FunctionBuilderContext;
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use fz_runtime::any_value::closure_size_for_count;
 
 /// User captures of the frame under test, behind the outer continuation.

@@ -207,7 +207,7 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
 }
 
 /// The bodies codegen emits itself and then calls or takes the address of:
-/// the four halt-cont bodies, the entry thunk, the main trampoline and the
+/// the five halt-cont bodies, the entry thunk, the main trampoline and the
 /// dtor-drain entry. They are declared `Local` with written-out signatures
 /// because they are not Rust functions — there is no item to read a signature
 /// off, so their calling conventions are chosen here: `Tail` for the bodies fz
@@ -216,15 +216,27 @@ fn emit_callable_boundary_bodies<M: cranelift_module::Module>(
 #[derive(Clone, Copy)]
 pub(crate) struct LocalBodies {
     /// Halt-cont bodies, indexed by halt kind: ValueRef, RawInt, RawF64,
-    /// RawAtom.
-    pub(crate) halt_cont_body_ids: [FuncId; 4],
+    /// RawAtom, Stored.
+    pub(crate) halt_cont_body_ids: [FuncId; HALT_KINDS],
     /// The read-only halt continuation closures, indexed like
     /// `halt_cont_body_ids` and pointing at the bodies above.
-    pub(crate) halt_cont_data_ids: [DataId; 4],
+    pub(crate) halt_cont_data_ids: [DataId; HALT_KINDS],
     pub(crate) entry_thunk_id: FuncId,
     pub(crate) main_trampoline_id: FuncId,
     pub(crate) drain_dtor_entry_id: FuncId,
 }
+
+/// The returns a task can halt with, one halt continuation each.
+const HALT_KINDS: usize = 5;
+
+/// The returns a halt continuation takes, indexed by halt kind.
+const HALT_REPRS: [ArgRepr; HALT_KINDS] = [
+    ArgRepr::ValueRef,
+    ArgRepr::RawInt,
+    ArgRepr::RawF64,
+    ArgRepr::RawAtom,
+    ArgRepr::Stored,
+];
 
 impl LocalBodies {
     /// The body a return repr halts through. A halt kind indexes both the
@@ -258,6 +270,7 @@ fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalB
     let i64_id = declare("fz_halt_cont_body_i64", halt_cont_sig(ArgRepr::RawInt))?;
     let f64_id = declare("fz_halt_cont_body_f64", halt_cont_sig(ArgRepr::RawF64))?;
     let atom_id = declare("fz_halt_cont_body_atom", halt_cont_sig(ArgRepr::RawAtom))?;
+    let stored_id = declare("fz_halt_cont_body_stored", halt_cont_sig(ArgRepr::Stored))?;
 
     // The entry thunk is resumed like any continuation, so it has the
     // resume-shaped closure-target signature `(self) -> i64`.
@@ -275,7 +288,7 @@ fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalB
     // The scheduler calls the drain entry per pending dtor at task exit.
     let drain_dtor_entry_id = declare("fz_drain_dtor_entry", drain_sig)?;
 
-    let halt_cont_body_ids = [strict_id, i64_id, f64_id, atom_id];
+    let halt_cont_body_ids = [strict_id, i64_id, f64_id, atom_id, stored_id];
     let halt_cont_data_ids = define_halt_conts(m, halt_cont_body_ids)?;
 
     Ok(LocalBodies {
@@ -287,20 +300,20 @@ fn declare_local_bodies<M: cranelift_module::Module>(m: &mut M) -> Result<LocalB
     })
 }
 
-/// Define the four halt continuation closures, one per halt kind. A
-/// continuation is applied to exactly the one value it receives, so its arity
-/// is 1.
+/// Define the halt continuation closures, one per halt kind. A continuation
+/// is applied to exactly the one value it receives, so its arity is 1.
 fn define_halt_conts<M: cranelift_module::Module>(
     m: &mut M,
-    halt_cont_body_ids: [FuncId; 4],
-) -> Result<[DataId; 4], CodegenError> {
-    const NAMES: [&str; 4] = [
+    halt_cont_body_ids: [FuncId; HALT_KINDS],
+) -> Result<[DataId; HALT_KINDS], CodegenError> {
+    const NAMES: [&str; HALT_KINDS] = [
         "fz_halt_cont_strict",
         "fz_halt_cont_i64",
         "fz_halt_cont_f64",
         "fz_halt_cont_atom",
+        "fz_halt_cont_stored",
     ];
-    let mut data_ids = Vec::with_capacity(4);
+    let mut data_ids = Vec::with_capacity(HALT_KINDS);
     for (kind, body_id) in halt_cont_body_ids.into_iter().enumerate() {
         data_ids.push(define_static_closure(
             m,
@@ -311,7 +324,7 @@ fn define_halt_conts<M: cranelift_module::Module>(
             body_id,
         )?);
     }
-    Ok(data_ids.try_into().expect("four halt kinds"))
+    Ok(data_ids.try_into().expect("one halt continuation per halt kind"))
 }
 
 /// Emit fz_main_trampoline. The closure-target body for a main-style
@@ -436,7 +449,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
 ///
 /// Closure header (word 0, see `closure_header_word`): the low 32 bits hold
 /// four clear bits, then flags, then arity; the high 32 bits hold the
-/// denotation. Flags low 14 bits = captured_count; high 2 bits = halt_kind.
+/// denotation. Flags low 13 bits = captured_count; high 3 bits = halt_kind.
 fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -467,19 +480,15 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
         let zero_idx = cg.b.ins().iconst(types::I64, 0);
         let closure = cg.closure_capture_ref(self_cl, zero_idx, CaptureCount::Compiled(1));
         let kind = cg.closure_halt_kind_ref(closure);
-        // Select the halt continuation by kind. Branchless via four
-        // addresses + a tiny dispatch — keeps the thunk a leaf.
-        let [a_strict, a_i64, a_f64, a_atom] = [ArgRepr::ValueRef, ArgRepr::RawInt, ArgRepr::RawF64, ArgRepr::RawAtom]
-            .map(|repr| data_addr(cg.jmod, locals.halt_cont_data_id(repr), cg.b));
-        let one = cg.b.ins().iconst(types::I32, 1);
-        let two = cg.b.ins().iconst(types::I32, 2);
-        let three = cg.b.ins().iconst(types::I32, 3);
-        let is_i64 = cg.b.ins().icmp(IntCC::Equal, kind, one);
-        let is_f64 = cg.b.ins().icmp(IntCC::Equal, kind, two);
-        let is_atom = cg.b.ins().icmp(IntCC::Equal, kind, three);
-        let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
-        let pick_f64 = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
-        let hcb_addr = cg.b.ins().select(is_atom, a_atom, pick_f64);
+        // Select the halt continuation by kind. Branchless via one address
+        // per kind and a select each — keeps the thunk a leaf.
+        let mut hcb_addr = data_addr(cg.jmod, locals.halt_cont_data_id(HALT_REPRS[0]), cg.b);
+        for repr in &HALT_REPRS[1..] {
+            let addr = data_addr(cg.jmod, locals.halt_cont_data_id(*repr), cg.b);
+            let this_kind = cg.b.ins().iconst(types::I32, i64::from(repr.halt_kind()));
+            let is_kind = cg.b.ins().icmp(IntCC::Equal, kind, this_kind);
+            hcb_addr = cg.b.ins().select(is_kind, addr, hcb_addr);
+        }
         let halt_cl = cg.literal_ref_word_from_addr(hcb_addr, ValueKind::CLOSURE);
         // Read inner closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
@@ -496,16 +505,16 @@ fn emit_entry_thunk<M: cranelift_module::Module>(
     .map_err(|e| CodegenError::new(format!("define fz_entry_thunk: {}", e)))
 }
 
-/// Emit four fz_halt_cont_body fns, one per repr. Generic ValueRef
+/// Emit one fz_halt_cont_body fn per halt kind. Generic ValueRef
 /// bodies receive `(value_ref, self)`; RawInt / RawF64 / RawAtom variants stay
-/// narrow as `(value, self)`.
+/// narrow as `(value, self)`; the Stored variant takes `(word, kind, self)`.
 fn emit_halt_cont_bodies<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     sites: &RefCell<SiteTable>,
     locals: &LocalBodies,
 ) -> Result<(), CodegenError> {
-    for repr in [ArgRepr::ValueRef, ArgRepr::RawInt, ArgRepr::RawF64, ArgRepr::RawAtom] {
+    for repr in HALT_REPRS {
         let mut sig = Signature::new(CallConv::Tail);
         push_repr_param(&mut sig, repr);
         sig.params.push(AbiParam::new(types::I64));
@@ -515,7 +524,7 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
-            let value = b.block_params(entry)[0];
+            let values = b.block_params(entry).to_vec();
             let mut shim_cache = CodegenCache::default();
             let mut cg = CodegenFn::new(
                 b,
@@ -526,7 +535,10 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
                     function: "fz_halt_cont_body",
                 },
             );
-            cg.halt_implicit(repr, value);
+            match repr {
+                ArgRepr::Stored => cg.halt_implicit_stored(values[0], values[1]),
+                _ => cg.halt_implicit(repr, values[0]),
+            }
             let zero = cg.b.ins().iconst(types::I64, 0);
             cg.b.ins().return_(&[zero]);
         })
@@ -769,7 +781,9 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let mut ref_slots: Vec<usize> = Vec::new();
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
                 match arg_shape {
-                    MidFlightArgShape::Value(repr @ (ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom)) => {
+                    MidFlightArgShape::Value(
+                        repr @ (ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom | ArgRepr::Stored),
+                    ) => {
                         let binding = cg.closure_capture_as_binding(self_bits, i, *repr, count);
                         arg_shape.replay_from_capture(&mut cg, binding, &mut args);
                     }

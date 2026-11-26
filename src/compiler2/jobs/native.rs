@@ -3551,7 +3551,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             AbiValueRepr::RawInt => ValueKind::INT,
             AbiValueRepr::RawF64 => ValueKind::FLOAT,
             AbiValueRepr::RawAtom => ValueKind::ATOM,
-            AbiValueRepr::ValueRef => return None,
+            AbiValueRepr::ValueRef | AbiValueRepr::Stored => return None,
         };
         predicate.settled_for_scalar_lane(kind)
     }

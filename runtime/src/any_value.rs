@@ -663,11 +663,11 @@ impl Stored {
 // `any_value.rs` does not own bitstring layout; render uses the binview
 // helpers like every other read site.
 
-// Closure `flags` packing. Low 14 bits hold captured_count; high 2 bits hold
-// halt_kind (0=ValueRef, 1=RawInt, 2=RawF64). 14 bits = 16K captures, far
-// above any realistic program.
-pub const CLOSURE_FLAGS_CAPTURED_MASK: u16 = 0x3FFF;
-pub const CLOSURE_FLAGS_HALT_KIND_SHIFT: u16 = 14;
+// Closure `flags` packing. Low 13 bits hold captured_count; high 3 bits hold
+// halt_kind (0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom, 4=Stored). 13 bits =
+// 8K captures, far above any realistic program.
+pub const CLOSURE_FLAGS_CAPTURED_MASK: u16 = 0x1FFF;
+pub const CLOSURE_FLAGS_HALT_KIND_SHIFT: u16 = 13;
 
 /// A closure with more captures than the header's `captured_count` field holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -706,7 +706,7 @@ pub fn closure_flags_pack(captured_count: u16, halt_kind: u16) -> u16 {
             count: captured_count as usize
         }
     );
-    assert!(halt_kind <= 0b11, "closure halt_kind {} out of range", halt_kind);
+    assert!(halt_kind <= 0b111, "closure halt_kind {} out of range", halt_kind);
     captured_count | (halt_kind << CLOSURE_FLAGS_HALT_KIND_SHIFT)
 }
 

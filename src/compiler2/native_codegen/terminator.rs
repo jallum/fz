@@ -393,14 +393,12 @@ impl GotoEdges<'_> {
                 params.len()
             )));
         }
-        let arg_vals: Vec<BlockArg> = args
-            .iter()
-            .zip(params)
-            .map(|(arg, param)| {
-                let binding = *var_env.get(&arg.0).expect("unbound goto arg");
-                BlockArg::Value(body.goto_arg_value(binding, block_param_repr(self.native_body, param)))
-            })
-            .collect();
+        let mut arg_vals = Vec::with_capacity(args.len());
+        for (arg, param) in args.iter().zip(params) {
+            let binding = *var_env.get(&arg.0).expect("unbound goto arg");
+            body.push_binding_as_abi_arg(&mut arg_vals, binding, block_param_repr(self.native_body, param));
+        }
+        let arg_vals: Vec<BlockArg> = arg_vals.into_iter().map(BlockArg::Value).collect();
         body.b.ins().jump(successor, &arg_vals);
         Ok(())
     }
@@ -825,7 +823,7 @@ pub(super) fn define_back_edge_yield_stub<M: cranelift_module::Module>(
         let roots: Vec<CodegenValue> = arg_shapes
             .iter()
             .map(|shape| {
-                let root = shape.capture_from_args(body.b, native_args, abi_cursor);
+                let root = shape.capture_from_args(native_args, abi_cursor);
                 abi_cursor += shape.abi_arity();
                 root
             })
@@ -867,10 +865,6 @@ fn emit_call_closure<M: cranelift_module::Module>(
     // through the runtime ABI and call it with args, self, and cont.
     let closure_binding = *var_env.get(&closure.0).expect("unbound callclosure closure");
     let cl_val = body.value_as_any_ref(closure_binding);
-    let arg_vals: Vec<ir::Value> = args
-        .iter()
-        .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
-        .collect();
     let cont_sid = resolve_cont_sid(env, blk);
     let cf = hand_continuation_on(body, env, var_env, cont_param, cont_sid, &continuation.captured);
     // Load body address from the closure and
@@ -880,16 +874,16 @@ fn emit_call_closure<M: cranelift_module::Module>(
     // return_call_indirect).
     let body_fp = body.closure_code_ref(cl_val);
     let mut sig = Signature::new(CallConv::Tail);
-    for _ in &arg_vals {
+    for _ in args {
         push_repr_param(&mut sig, ArgRepr::ValueRef);
     }
     sig.params.push(AbiParam::new(types::I64)); // self
     sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(types::I64));
     let sig_ref = body.b.func.import_signature(sig);
-    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-    for (i, _v) in arg_vals.iter().enumerate() {
-        let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
+    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 2);
+    for arg in args {
+        let binding = *var_env.get(&arg.0).expect("unbound callclosure arg");
         body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::ValueRef);
     }
     indirect_args.push(cl_val);
@@ -910,23 +904,19 @@ fn emit_tail_call_closure<M: cranelift_module::Module>(
     // target sig `(args..., self, cont) -> i64 tail`.
     let closure_binding = *var_env.get(&closure.0).expect("unbound tailcallclosure closure");
     let cl_val = body.value_as_any_ref(closure_binding);
-    let arg_vals: Vec<ir::Value> = args
-        .iter()
-        .map(|v| var_env.get(&v.0).expect("unbound tailcallclosure arg").value())
-        .collect();
 
     let body_fp = body.closure_code_ref(cl_val);
     let mut sig = Signature::new(CallConv::Tail);
-    for _ in &arg_vals {
+    for _ in args {
         push_repr_param(&mut sig, ArgRepr::ValueRef);
     }
     sig.params.push(AbiParam::new(types::I64)); // self
     sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(types::I64));
     let sig_ref = body.b.func.import_signature(sig);
-    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-    for (i, _v) in arg_vals.iter().enumerate() {
-        let binding = *var_env.get(&args[i].0).expect("unbound tailcallclosure arg");
+    let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 2);
+    for arg in args {
+        let binding = *var_env.get(&arg.0).expect("unbound tailcallclosure arg");
         body.push_binding_as_abi_arg(&mut indirect_args, binding, ArgRepr::ValueRef);
     }
     indirect_args.push(cl_val);
@@ -1060,7 +1050,7 @@ fn build_park_record<M: cranelift_module::Module>(
         frame_captures.push(closure_capture_for_var(body, var_env, capture.0));
     }
     for pinned_var in pinned {
-        frame_captures.push(ClosureCapture::RefWord(body.tagged_var(var_env, pinned_var.0)));
+        frame_captures.push(closure_capture_for_var(body, var_env, pinned_var.0));
     }
     let frame = build_cont_closure(body, cont_param, frame_code, &frame_captures, 0);
 

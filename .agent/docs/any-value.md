@@ -413,14 +413,15 @@ object-local layout, with no detour through a built scalar ref:
 
 ```text
 fz_map_put(process, map, key_word, key_kind, value_word, value_kind)
-fz_list_cons_int(process, head_i64, tail_word, tail_kind)
+fz_list_cons_stored(process, head_word, head_kind, tail_word, tail_kind)
 ```
 
-Compiled code calls `fz_list_cons_*` only for a tail that may not be a list: for
-a list tail it writes the cell itself from
+Compiled code calls `fz_list_cons_stored` and `fz_list_cons_any` only for a
+tail that may not be a list: for a list tail it writes the cell itself from
 the same definition (`native_codegen/list_cell.rs`, a row of the recipe table;
 see [externs](externs.md), "Inline recipes"), and the functions stay as the
-definition the recipe's test compares against.
+definition the recipe's test compares against. An int, a float or an atom the
+call site holds unboxed is handed to `fz_list_cons_stored` with a constant kind.
 
 The `*_put_ref` / `Heap::alloc_list_cons_ref` paths are for already-dynamic
 refs. They call `reject_scalar_ref_write` and panic on a scalar ref, so a
@@ -460,18 +461,25 @@ ValueRef  // one AnyValueRef word; the only `any`-shaped lane
 RawInt    // proven i64
 RawF64    // proven f64
 RawAtom   // proven atom id
+Stored    // a stored word and its kind: a value that may be a number beside another kind
 Condition // raw i1 from a comparison/type-test whose result is only branched on
 ```
 
 compiler2 picks each lane (`AbiValueRepr`) and codegen copies it with
 `arg_repr_from_compiler2`: the empty type `none` -> `ValueRef` (it is a
 subtype of every scalar but no value of it exists, so it never gets a raw
-lane), float -> `RawF64`, integer -> `RawInt`, atom-subtype -> `RawAtom`, else
-`ValueRef`. Entry captures and layout lanes choose through the same
-`AbiValueRepr::for_ty`. `CodegenValue` adds `AnyRef` (an
-`any` ref value) and `Known { payload, kind }` (a compile-time-constant scalar);
-both report `ArgRepr::ValueRef`. Every lane has `abi_arity() == 1`: a value is
-always one machine word across a call boundary, never split into payload + kind.
+lane), float -> `RawF64`, integer -> `RawInt`, atom-subtype -> `RawAtom`, a type
+that admits an integer or a float alongside another kind (`int | atom`,
+`int | nil`, `float | int`, `any`) -> `Stored`, else `ValueRef`. Entry captures
+and layout lanes choose through the same `AbiValueRepr::for_ty`. `CodegenValue`
+adds `AnyRef` (an `any` ref value) and `Known { payload, kind }` (a
+compile-time-constant scalar); both report `ArgRepr::ValueRef`. Every lane has
+`abi_arity() == 1` except `Stored`, whose `abi_arity()` is 2: a call, a return, a
+continuation, a block parameter, a frame slot or a closure capture carries its
+stored word and its kind as two words, and no box is allocated to join them. The
+stored word is the payload a container holds: the integer, the float's bits, the
+atom id, or a heap object's address field; the kind rebuilds the ref
+(`kind << tag_shift | word`) for a heap kind.
 
 A boundary crossing allocates only for an int or float. Compiled code places
 that one-word box itself with `emit_place` and stores the payload; the runtime
@@ -489,6 +497,9 @@ RawInt   -> ValueRef : box_int_for_any   (placed in place: native_codegen/scalar
 RawF64   -> ValueRef : box_float_for_any (placed in place when finite)
 RawAtom  -> ValueRef : box_atom_for_any (one `or` of the id with the atom tag)
 Condition-> ValueRef : select true/false atom, then box
+Stored   -> ValueRef : fz_stored_ref (boxes an int or float; a heap kind is its rebuilt ref)
+RawInt/RawF64/RawAtom -> Stored : the word and a constant kind; no box
+ValueRef -> Stored : the ref's payload and kind, read from the ref
 ValueRef -> RawInt/RawF64/RawAtom : unbox via the ref API
 matching lanes : pass through
 ```

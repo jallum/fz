@@ -1,0 +1,31 @@
+#---
+# purpose: appending to a list whose heads are numbers or atoms of a kind known only at run time stores each head as the word and kind it carries, without boxing a scalar
+# kind: run
+#---
+#
+# The list and what it is appended to come back from a receive, so the compiler
+# knows nothing of the heads and the result may end in a value that is not a
+# list. `app` rebuilds each cell with the head it read, which arrives as a
+# stored word and its kind. The program prints the appended list, then appends
+# to a thousand such lists and checks that none of the heads was boxed.
+defmodule P do
+  def opaque(x) do
+    send(self(), x)
+
+    receive do
+      value -> value
+    end
+  end
+
+  def app([], rest), do: rest
+  def app([head | tail], rest), do: [head | app(tail, rest)]
+end
+
+dbg(P.app(P.opaque([1, 2.5, :a, 7]), P.opaque(:end)))
+
+list = P.opaque([1, 2.5, :a, 7])
+before = System.alloc_stats()[:scalar_box_allocs]
+total = Enum.reduce(1..1000, 0, fn n, acc -> acc + length(P.app(P.opaque(list), P.opaque([n]))) end)
+boxes = System.alloc_stats()[:scalar_box_allocs] - before
+dbg(total)
+boxes == 0 || raise("a head of unknown kind is stored as its word and kind, so appending boxes no scalar")
