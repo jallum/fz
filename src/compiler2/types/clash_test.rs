@@ -99,9 +99,11 @@ fn a_new_head_under_a_different_head_is_ordinary_growth() {
 }
 
 #[test]
-fn a_node_the_ancestor_does_not_contain_joins_the_ancestor() {
-    // The ancestor `int | {int}` covers the clashing node's functors, but the
-    // node `int | {binary}` holds a value (`{binary}`) the ancestor never did.
+fn a_node_holding_a_value_the_ancestor_never_held_is_ordinary_growth() {
+    // `int | {int}` growing to `int | {int | {binary}}`: the slot gains
+    // `{binary}`, a value no ancestor iterate held, so nothing has come back
+    // and there is nothing to close on. The iterate is left to grow; the slot
+    // closes once its whole value lies inside an ancestor's.
     let mut t = Types::new();
     let (int, bin) = (t.int(), t.str_t());
     let old = nest(&mut t, int, tuple_of, 1);
@@ -109,24 +111,9 @@ fn a_node_the_ancestor_does_not_contain_joins_the_ancestor() {
     let slot = t.union(int, inner);
     let grown = t.tuple(&[slot]);
     let new = t.union(int, grown);
-    let folded = t
-        .clash_fold(old, new)
-        .expect("the node clashes under a covering ancestor");
-    let joined = t.recursive(1, |t, me| {
-        let wrapped = t.tuple(&[me[0]]);
-        let some = t.union(int, inner);
-        vec![t.union(some, wrapped)]
-    })[0];
-    assert_eq!(
-        folded, joined,
-        "μX. int | {{binary}} | {{X}}: the ancestor takes the node's values in"
-    );
-    assert!(t.is_subtype(&new, &folded));
-    assert_eq!(
-        t.take_clash_folds()[0].kind,
-        ClashKind::Replace,
-        "the node holds a value the ancestor never did"
-    );
+    let before = t.interning_work_stats().inserted;
+    assert!(t.clash_fold(old, new).is_none());
+    assert_eq!(t.interning_work_stats().inserted, before);
 }
 
 #[test]
@@ -144,28 +131,10 @@ fn folding_is_idempotent() {
 }
 
 #[test]
-fn a_tagged_head_is_covered_by_the_untagged_head_of_its_arity() {
-    let mut t = Types::new();
-    let int = t.int();
-    let tag = t.atom_lit("l");
-    let any = t.any();
-    let untagged = t.tuple(&[any, int]);
-    let tagged = t.tuple(&[tag, int]);
-    let (wide, narrow) = (Pf::of(&t, &[untagged]), Pf::of(&t, &[tagged]));
-    assert!(
-        wide.covers(&t, &narrow),
-        "an untagged head stands for every tuple of its arity"
-    );
-    assert!(
-        !narrow.covers(&t, &wide),
-        "a tagged head does not stand for the untagged one"
-    );
-}
-
-#[test]
-fn two_tags_under_an_untagged_ancestor_fold() {
+fn a_second_tag_under_an_untagged_ancestor_is_ordinary_growth() {
     // The outer pair's first slot holds `:a | {:l, :a}` and then also
-    // `{:r, :a}`: a second tag of the arity the untagged outer head names.
+    // `{:r, :a}`. The new tagged pair is no value of the outer `{_, int}` head
+    // (its second element is an atom), so no ancestor value has come back.
     let mut t = Types::new();
     let int = t.int();
     let (a, l, r) = (t.atom_lit("a"), t.atom_lit("l"), t.atom_lit("r"));
@@ -178,17 +147,9 @@ fn two_tags_under_an_untagged_ancestor_fold() {
         t.union(a, outer)
     };
     let (old, new) = (pair(&mut t, before), pair(&mut t, after));
-    let folded = t
-        .clash_fold(old, new)
-        .expect("the outer untagged head covers the second tag");
-    let named = t.recursive(1, |t, me| {
-        let outer = t.tuple(&[me[0], int]);
-        let tagged = t.union(left, right);
-        let some = t.union(a, tagged);
-        vec![t.union(some, outer)]
-    })[0];
-    assert_eq!(folded, named, "the grown slot is a back edge to its ancestor");
-    assert_eq!(t.take_clash_folds().len(), 1, "one slot grew, so one fold is noted");
+    let before_work = t.interning_work_stats().inserted;
+    assert!(t.clash_fold(old, new).is_none());
+    assert_eq!(t.interning_work_stats().inserted, before_work);
 }
 
 /// `insert` into a binary search tree `T = μT. nil | {int, T, T}` returns a
@@ -306,4 +267,164 @@ fn a_recursive_member_that_comes_back_beneath_its_ancestor_folds() {
         "{} is μt. int | {{t, t}} | {{:{{}}, [], [R]}} | [t]",
         t.display(&folded)
     );
+}
+
+#[test]
+fn a_tree_insert_iterated_through_the_fold_settles_at_the_tree() {
+    // The iterates of a binary-tree insert (a node rebuilt around the recursive
+    // call's result on either side) close on `{int, T, T}` with `T = nil | {int, T, T}`.
+    let mut t = Types::new();
+    let (int, nil) = (t.int(), t.atom_lit("nil"));
+    let tree = t.recursive(1, |t, me| {
+        let node = t.tuple(&[int, me[0], me[0]]);
+        vec![t.union(nil, node)]
+    })[0];
+    let step = |t: &mut Types, r: Ty| {
+        let leaf = t.tuple(&[int, nil, nil]);
+        let left = t.tuple(&[int, r, tree]);
+        let right = t.tuple(&[int, tree, r]);
+        let some = t.union(leaf, left);
+        t.union(some, right)
+    };
+    let first = t.tuple(&[int, nil, nil]);
+    let mut old = step(&mut t, first);
+    let mut new = step(&mut t, old);
+    let answer = t.tuple(&[int, tree, tree]);
+    for _ in 0..8 {
+        let Some(folded) = t.clash_fold(old, new) else { break };
+        let joined = t.union(folded, new);
+        (old, new) = (folded, step(&mut t, joined));
+        if t.is_subtype(&new, &old) {
+            break;
+        }
+    }
+    assert!(t.is_subtype(&new, &old), "the iterates settle");
+    assert!(
+        t.is_subtype(&old, &answer) && t.is_subtype(&answer, &old),
+        "{}",
+        t.display(&old)
+    );
+}
+
+/// `R = μt. int | [t]` closes a slot, and the next iterate holds `R` beside a
+/// list whose elements are `R` or `:ok`. That list is not inside `R`, yet it
+/// has `R`'s own shape, so the slot becomes its own equation taking `R`'s body
+/// in. One step covers the grown iterate and stays within the closure
+/// `μt. int | [t | :ok]`; the next round re-folds what it still lacks.
+#[test]
+fn a_slot_holding_a_closed_member_and_a_longer_list_of_it_reopens_within_the_wider_list() {
+    let mut t = Types::new();
+    let (int, ok) = (t.int(), t.atom_lit("ok"));
+    let member = t.recursive(1, |t, me| {
+        let deeper = t.list(me[0]);
+        vec![t.union(int, deeper)]
+    })[0];
+    let old = tuple_of(&mut t, member);
+    let element = t.union(member, ok);
+    let rung = t.list(element);
+    let grown = t.union(member, rung);
+    let new = tuple_of(&mut t, grown);
+    let reopened = t.clash_fold(old, new).expect("the slot's member has been outgrown");
+    let notes = t.take_clash_folds();
+    assert_eq!(notes.len(), 1, "one slot is reopened");
+    assert_eq!(notes[0].kind, ClashKind::Replace, "a reopened slot replaces the member");
+    let wide = t.recursive(1, |t, me| {
+        let element = t.union(me[0], ok);
+        let deeper = t.list(element);
+        vec![t.union(int, deeper)]
+    })[0];
+    let hand = tuple_of(&mut t, wide);
+    assert!(
+        t.is_subtype(&new, &reopened),
+        "{} covers the iterate",
+        t.display(&reopened)
+    );
+    assert!(
+        t.is_subtype(&reopened, &hand),
+        "{} stays within {{μt. int | [t | :ok]}}",
+        t.display(&reopened)
+    );
+}
+
+/// The slot holds `int | :a` beside the tuple rung it repeats. The rung closes
+/// onto the ancestor and the `int | :a` stays beside the back edge: the head is
+/// cut, not dropped, so the answer is `{μt. int | :a | {t}}`.
+#[test]
+fn a_value_beside_a_repeated_rung_stays_beside_the_back_edge() {
+    let mut t = Types::new();
+    let (int, a) = (t.int(), t.atom_lit("a"));
+    let base = t.union(int, a);
+    let rung = |t: &mut Types, below: Ty| {
+        let slot = t.union(base, below);
+        tuple_of(t, slot)
+    };
+    let first = tuple_of(&mut t, base);
+    let second = rung(&mut t, first);
+    let third = rung(&mut t, second);
+    let folded = t.clash_fold(second, third).expect("the third rung repeats the second");
+    let closed = t.recursive(1, |t, me| {
+        let deeper = tuple_of(t, me[0]);
+        vec![t.union(base, deeper)]
+    })[0];
+    let hand = tuple_of(&mut t, closed);
+    assert!(
+        t.is_subtype(&folded, &hand) && t.is_subtype(&hand, &folded),
+        "{} is {{μt. int | :a | {{t}}}}",
+        t.display(&folded)
+    );
+}
+
+/// The element slot of `[int]` grows to `int | [int]`: the slot's old value
+/// `int` is not inside the list the slot sits in, so one rung is ordinary
+/// growth and nothing is folded.
+#[test]
+fn a_slot_whose_old_value_lies_outside_the_ancestor_is_ordinary_growth() {
+    let mut t = Types::new();
+    let int = t.int();
+    let old = t.list(int);
+    let inner = t.list(int);
+    let element = t.union(int, inner);
+    let new = t.list(element);
+    assert!(t.clash_fold(old, new).is_none());
+    assert!(t.take_clash_folds().is_empty());
+}
+
+/// The iterates `int | [int]` and `int | [[int]] | [int]` of a decoder's
+/// value are proper lists all the way down; the fold is the proper-list
+/// closure `μt. int | [t]`, with no terminator other than `[]`.
+#[test]
+fn nested_proper_lists_fold_to_the_proper_list_closure() {
+    let mut t = Types::new();
+    let int = t.int();
+    let flat = t.list(int);
+    let old = t.union(int, flat);
+    let nested = t.list(flat);
+    let new = t.union(old, nested);
+    let folded = t.clash_fold(old, new).expect("the nested list repeats the flat one");
+    let hand = t.recursive(1, |t, me| {
+        let deeper = t.list(me[0]);
+        vec![t.union(int, deeper)]
+    })[0];
+    assert!(
+        t.is_subtype(&folded, &hand) && t.is_subtype(&hand, &folded),
+        "{} is μt. int | [t]",
+        t.display(&folded)
+    );
+}
+
+/// A list that was never empty becoming possibly empty is growth by `[]` alone,
+/// not a rung of a ladder: the element's old and new values are the same
+/// shape, so nothing is folded and the type keeps its depth.
+#[test]
+fn a_slot_that_only_gains_the_empty_list_is_ordinary_growth() {
+    let mut t = Types::new();
+    let (int, empty) = (t.int(), t.empty_list());
+    let nonempty = t.cons(int, empty);
+    let possibly_empty = t.list(int);
+    let old_element = t.union(int, nonempty);
+    let new_element = t.union(int, possibly_empty);
+    let old = t.list(old_element);
+    let new = t.list(new_element);
+    assert!(t.clash_fold(old, new).is_none());
+    assert!(t.take_clash_folds().is_empty());
 }

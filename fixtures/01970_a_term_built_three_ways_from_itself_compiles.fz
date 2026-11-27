@@ -1,0 +1,25 @@
+#---
+# purpose: "A term built three ways from itself, one function with three recursive branches, compiles and matches Elixir"
+# oracle: self
+# oracle.stamp: 50cfd7e12e46ea04
+#---
+defmodule M do
+  def term(0), do: :leaf
+
+  def term(d) do
+    case rem(d, 3) do
+      1 -> [term(d - 1)]
+      2 -> [{:k, term(d - 1)}]
+      0 -> {:w, [], [term(d - 1)]}
+    end
+  end
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(M.term(3))
+    IO.inspect(M.term(7))
+  end
+end
+
+Main.main()
