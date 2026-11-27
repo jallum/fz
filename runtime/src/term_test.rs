@@ -918,3 +918,37 @@ fn a_scalar_pair_is_answered_from_its_words_as_the_comparator_answers_it() {
         "{answered} answered, {declined} declined"
     );
 }
+
+/// Intent: a map key compare that misses the same-kind scalar answer still
+/// agrees with the term order for the mixed pairs a map meets, and orders a
+/// pair from different classes by class alone.
+#[test]
+fn key_order_of_mixed_kinds_agrees_with_the_term_order() {
+    let pool = Pool::mixed();
+    let atom = pool.atom("owner");
+    let binary = pool
+        .values
+        .iter()
+        .copied()
+        .find(|v| v.kind().is_binary_repr())
+        .expect("a binary");
+    let registry = pool.schemas.borrow();
+    let cmp = TermComparator::new(&pool.node, &registry);
+    let pairs = [
+        (AnyValue::int(7), atom),
+        (binary, atom),
+        (AnyValue::float(1.5), AnyValue::int(2)),
+        (AnyValue::int(7), binary),
+    ];
+    for (a, b) in pairs {
+        for (a, b) in [(a, b), (b, a)] {
+            assert_eq!(
+                key_order_of(&cmp, a, b),
+                cmp.compare(a, b, NumericMode::Strict),
+                "{a:?} vs {b:?}"
+            );
+        }
+    }
+    assert_eq!(key_order_of(&cmp, AnyValue::int(7), atom), Ordering::Less);
+    assert_eq!(key_order_of(&cmp, binary, atom), Ordering::Greater);
+}
