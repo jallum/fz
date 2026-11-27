@@ -193,4 +193,21 @@ where
         };
         Some(types.is_subtype(&literal, ty))
     }
+
+    /// The bodies some input can reach: the typed reachability calculator asked
+    /// about inputs of any type. A `c_pointer` is left out of those inputs:
+    /// an integer literal also admits one, so with it every clause an integer
+    /// guard covers would still look reachable.
+    fn reachable_bodies(&mut self, plan: &PatternDispatchPlan<Ty>) -> std::collections::BTreeSet<PatternBodyId> {
+        let types = self.world.types_mut();
+        let (any, c_pointer) = (types.any(), types.c_pointer());
+        let any_but_c_pointer = types.difference(any, c_pointer);
+        let inputs = vec![any_but_c_pointer; plan.input_count];
+        let pins = vec![None; plan.pinned.len()];
+        super::dispatch_reachability::calculate_dispatch_reachability(types, plan, &inputs, &pins)
+            .outcomes
+            .into_iter()
+            .filter_map(|outcome| plan.outcome(outcome).map(|o| o.body_id))
+            .collect()
+    }
 }

@@ -1,0 +1,7 @@
+#---
+# purpose: File.open of a path fopen refuses returns {:error, :io}, so a null stream pointer is told apart from a real one
+#---
+def main() do
+  File.open("fz-file-open-direct-missing-dir/missing") == {:error, :io} || raise("a null stream takes the error arm")
+  File.open("fz-file-open-direct-missing-dir/missing", [:write]) == {:error, :io} || raise("a null write stream takes the error arm")
+end

@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use crate::ast::{Expr, Pattern, Spanned, Var};
-use crate::dispatch_matrix::DispatchNode;
 use crate::source::Span;
 
 use super::{PatternDispatchPlan, PatternPinnedInput, PatternSubjectRef, PinnedKind};
@@ -318,7 +317,7 @@ pub(crate) fn find_redundant_rows_with_resolver<TypeHandle: Clone + PartialEq + 
 ) -> Vec<RedundantRow> {
     let row_bodies: BTreeSet<PatternBodyId> = patterns.rows.iter().map(|r| r.body_id).collect();
     let mut reached = BTreeSet::new();
-    collect_reachable_bodies_from_graph(plan, &mut reached);
+    reached.extend(resolver.reachable_bodies(plan));
     row_bodies
         .difference(&reached)
         .map(|&body_id| RedundantRow {
@@ -348,26 +347,11 @@ fn earliest_row_that_already_matches<TypeHandle: Clone + PartialEq + Eq>(
         let plan =
             super::pattern_dispatch_from_rows(patterns.input_count, &patterns.prematch, None, candidate, resolver)
                 .expect("a prefix of already-compiled rows must still compile");
-        let mut reached = BTreeSet::new();
-        collect_reachable_bodies_from_graph(&plan, &mut reached);
-        if !reached.contains(&body_id) {
+        if !resolver.reachable_bodies(&plan).contains(&body_id) {
             return patterns.rows[prefix_end].body_id;
         }
     }
     unreachable!("row {body_id} was proved unreachable against the full row set, so some earlier prefix must too")
-}
-
-fn collect_reachable_bodies_from_graph<TypeHandle>(
-    plan: &PatternDispatchPlan<TypeHandle>,
-    out: &mut BTreeSet<PatternBodyId>,
-) {
-    for node in plan.graph.reachable() {
-        if let Some(DispatchNode::Outcome { outcome, .. }) = plan.graph.node(node)
-            && let Some(outcome) = plan.outcome(*outcome)
-        {
-            out.insert(outcome.body_id);
-        }
-    }
 }
 
 #[cfg(test)]

@@ -417,6 +417,13 @@ impl PredicateTarget {
     }
 }
 
+fn narrows(ty: Ty) -> PredicateTarget {
+    PredicateTarget {
+        ty,
+        kind: TargetKind::Narrows,
+    }
+}
+
 fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateTarget> {
     let ty = match region {
         Region::Type(ty) => *ty,
@@ -424,7 +431,14 @@ fn predicate_target(types: &mut Types, region: &Region<Ty>) -> Option<PredicateT
             DispatchShape::Atom(name) => types.atom_lit(name),
             DispatchShape::Bool(value) => types.bool_lit(value),
             DispatchShape::Nil => types.nil(),
-            DispatchShape::Int(_) | DispatchShape::Float(_) | DispatchShape::Utf8Binary(_) => return None,
+            DispatchShape::Int(_) => {
+                // A null `c_pointer` is matched by the literal `0` in lib/file.fz,
+                // so an integer literal can also match a `c_pointer`.
+                let (int, word) = (types.int(), types.c_pointer());
+                return Some(narrows(types.union(int, word)));
+            }
+            DispatchShape::Float(_) => return Some(narrows(types.float())),
+            DispatchShape::Utf8Binary(_) => return None,
         },
         Region::Equal(ComparisonValue::Pinned(_) | ComparisonValue::Subject(_))
         | Region::Guard(_)

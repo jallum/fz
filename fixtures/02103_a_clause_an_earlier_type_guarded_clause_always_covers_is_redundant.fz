@@ -1,0 +1,45 @@
+#---
+# purpose: a clause that an earlier clause guarded by a type test always covers is redundant, while a guard that is more than a type test covers nothing
+#---
+defmodule M do
+  def typed(x) when is_integer(x), do: :integer
+  def typed(1), do: :one
+  def typed(_), do: :other
+
+  def atoms(x) when is_atom(x), do: :atom
+  def atoms(:a), do: :a
+  def atoms(_), do: :other
+
+  def second(x, _y) when is_integer(x), do: :integer
+  def second(1, _y), do: :one
+  def second(_x, _y), do: :other
+
+  def ranged(x) when x > 0, do: :positive
+  def ranged(1), do: :one
+  def ranged(_), do: :other
+
+  def partly(x) when is_integer(x) and x > 0, do: :positive
+  def partly(1), do: :one
+  def partly(_), do: :other
+
+  def tuple_and_map({:a, x}, %{k: _}), do: x
+  def tuple_and_map({y, x}, m), do: {y, x, m}
+
+  def int_and_atom(x, y) when is_integer(x) and is_atom(y), do: 1
+  def int_and_atom(1, %{}), do: 2
+
+  def tuple_and_missing_key({:a, _}, %{k: _}), do: 1
+  def tuple_and_missing_key({:a, _}, %{}), do: 2
+end
+
+def main() do
+  M.typed(1) == :integer || raise("the type-guarded clause matches an integer before the literal is tried")
+  M.atoms(:a) == :atom || raise("the type-guarded clause matches an atom before the literal is tried")
+  M.second(1, 2) == :integer || raise("the type-guarded clause matches on the first argument")
+  M.ranged(1) == :positive || raise("a comparison guard is no type test, but it matches first")
+  M.ranged(0) == :other || raise("a literal behind a comparison guard stays reachable for other values")
+  M.partly(1) == :positive || raise("a guard that is a type test and a comparison matches first")
+  M.tuple_and_map({:a, 1}, %{}) == {:a, 1, %{}} || raise("the later clause takes a map the earlier clause's key test refuses")
+  M.int_and_atom(1, %{}) == 2 || raise("the later clause takes the integer whose other argument is no atom")
+  M.tuple_and_missing_key({:a, 1}, %{}) == 2 || raise("the later clause takes a map without the key")
+end
