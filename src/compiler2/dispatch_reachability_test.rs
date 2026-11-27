@@ -961,3 +961,61 @@ fn a_pattern_with_a_pinned_key_reads_the_type_the_scope_holds_it_at() {
         types.display(&untyped)
     );
 }
+
+/// An arm that binds a value that cannot exist can never run, whichever way the
+/// pattern names the key. The map type below admits a key of the asked kind
+/// only with the value type `none`, so the key is never present.
+fn arm_survives(types: &mut Types, input: Ty, key: Pattern, scope_pins: &[Option<Ty>]) -> bool {
+    let plan = map_pattern(key);
+    let reachability = calculate_dispatch_reachability(types, &plan, &[input], scope_pins);
+    !reachability.outcomes.is_empty()
+}
+
+#[test]
+fn an_arm_whose_pinned_key_can_hold_only_none_is_dead() {
+    let mut types = Types::new();
+    let (binary, none) = (types.str_t(), types.none());
+    let input = binary_domain_map(&mut types, none);
+
+    assert!(
+        !arm_survives(&mut types, input, Pattern::Pinned(Var::user("k")), &[Some(binary)]),
+        "a pinned binary key on a map whose binary domain holds `none` binds nothing"
+    );
+}
+
+#[test]
+fn an_arm_whose_binary_key_can_hold_only_none_is_dead() {
+    let mut types = Types::new();
+    let none = types.none();
+    let input = binary_domain_map(&mut types, none);
+
+    assert!(!arm_survives(&mut types, input, Pattern::Binary(b"a".to_vec()), &[]));
+}
+
+#[test]
+fn an_arm_whose_atom_key_can_hold_only_none_is_dead() {
+    let mut types = Types::new();
+    let none = types.none();
+    let optional = MapTypeEntry {
+        key: MapTypeKey::Literal(MapKey::Atom("a".to_string())),
+        optional: true,
+        value: none,
+    };
+    let input = types.map_of_entries(&[optional]);
+
+    assert!(!arm_survives(&mut types, input, Pattern::Atom("a".to_string()), &[]));
+}
+
+#[test]
+fn an_arm_whose_pinned_key_can_hold_a_value_survives() {
+    let mut types = Types::new();
+    let (binary, int) = (types.str_t(), types.int());
+    let input = binary_domain_map(&mut types, int);
+
+    assert!(arm_survives(
+        &mut types,
+        input,
+        Pattern::Pinned(Var::user("k")),
+        &[Some(binary)]
+    ));
+}

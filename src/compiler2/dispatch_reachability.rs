@@ -254,6 +254,9 @@ impl ReachabilityCalculator<'_> {
     ) -> Option<Cow<'s, ReachabilityState>> {
         let subject = predicate.subject;
         self.record_list_shape(&mut state, predicate, subject, sense)?;
+        if sense == ProofSense::Holds && self.key_present_holds_nothing(&state, predicate) {
+            return None;
+        }
         let Some(target) = predicate_target(self.types, &predicate.region) else {
             return Some(state);
         };
@@ -315,6 +318,25 @@ impl ReachabilityCalculator<'_> {
             state.to_mut().roots[ordinal] = selected;
         }
         Some(state)
+    }
+
+    /// A key found present binds the value the map holds there, and a map that
+    /// can hold nothing at the key has no such value: the edge that finds the
+    /// key is dead. A key written as an atom already says so through its
+    /// target type (`%{a => any}` meets no map whose `a` is `none`); a key
+    /// known only by type, a binary or a pinned variable's, has no target
+    /// type, so the question is asked of the value the map holds at it.
+    fn key_present_holds_nothing(&mut self, state: &ReachabilityState, predicate: &RegionPredicate<Ty>) -> bool {
+        let Region::MapKeyPresent { key } = &predicate.region else {
+            return false;
+        };
+        let Some(key_at) = map_value_key(self.types, self.plan, &state.roots, self.scope_pins, key) else {
+            return false;
+        };
+        let map = project_subject(self.types, self.plan, &state.roots, self.scope_pins, predicate.subject);
+        self.types
+            .value_at(&map, &key_at)
+            .is_some_and(|held| self.types.is_empty(&held))
     }
 
     fn record_list_shape(
