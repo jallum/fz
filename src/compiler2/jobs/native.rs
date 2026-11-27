@@ -929,7 +929,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             )
             .collect::<Result<Vec<_>, _>>()?;
         let bindings = self.lower_argument_bindings(ctx, dispatch.plan(), &inputs)?;
-        let roots = executable.key.activation.inputs(self.world.types()).to_vec();
+        let roots = self
+            .world
+            .activation_inputs_joined(&executable.key.activation)
+            .expect("a lowered executable's activation has settled input evidence")
+            .to_vec();
         let mut state = DispatchState::new(inputs, entry_vars.to_vec(), bindings)
             .proven(roots)
             .reading(handed);
@@ -3374,9 +3378,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let (prim, ty) = match value {
             GroundValue::Int(value) => (Const::Int(*value), self.world.types_mut().int()),
             GroundValue::Float(bits) => (Const::Float(f64::from_bits(*bits)), self.world.types_mut().float()),
-            GroundValue::Atom(name) => (Const::Atom(self.atom_id(name)), self.world.types_mut().atom()),
-            GroundValue::Bool(true) => (Const::True, self.world.types_mut().bool()),
-            GroundValue::Bool(false) => (Const::False, self.world.types_mut().bool()),
+            GroundValue::Atom(name) => (Const::Atom(self.atom_id(name)), self.world.types_mut().atom_lit(name)),
+            GroundValue::Bool(true) => (Const::True, self.world.types_mut().bool_lit(true)),
+            GroundValue::Bool(false) => (Const::False, self.world.types_mut().bool_lit(false)),
             GroundValue::Nil => (Const::Nil, self.world.types_mut().nil()),
             GroundValue::Binary(bytes) | GroundValue::Utf8Binary(bytes) => {
                 return ctx
@@ -3385,7 +3389,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             }
         };
         let var = ctx.emit_let(Prim::Const(prim)).0;
-        ctx.value_types.insert(var, ty);
+        ctx.record_value_type(var, ty);
         var
     }
 
@@ -3724,7 +3728,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         let (bit_len, _) = ctx.emit_let(Prim::BinaryBitLen(source));
         let int = self.world.types_mut().int();
-        ctx.value_types.insert(bit_len, int);
+        ctx.record_value_type(bit_len, int);
         let rest = BitMatchField {
             ty: BitType::Binary,
             size: None,
@@ -3739,12 +3743,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             field: rest,
         });
         let bool_ty = self.world.types_mut().bool();
-        ctx.value_types.insert(whole_bytes, bool_ty);
+        ctx.record_value_type(whole_bytes, bool_ty);
         if admitted.whole_bytes {
             return Ok(DispatchAnswer::Runtime(whole_bytes));
         }
         let (partial_byte, _) = ctx.emit_let(Prim::UnOp(IrUnOp::Not, whole_bytes));
-        ctx.value_types.insert(partial_byte, bool_ty);
+        ctx.record_value_type(partial_byte, bool_ty);
         Ok(DispatchAnswer::Runtime(partial_byte))
     }
 
@@ -3883,7 +3887,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             vec![ExternArg::fixed(subject, ExternTy::Any)],
         ));
         let int = self.world.types_mut().int();
-        ctx.value_types.insert(property, int);
+        ctx.record_value_type(property, int);
         let (expected, _) = ctx.emit_let(Prim::Const(Const::Int(i64::from(size))));
         let (is_size, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, property, expected));
         Ok(is_size)
@@ -3927,7 +3931,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             PatternGuardExpr::EmptyList => {
                 let empty = ctx.emit_let(Prim::MakeList(Vec::new(), None, None)).0;
                 let ty = self.world.types_mut().empty_list();
-                ctx.value_types.insert(empty, ty);
+                ctx.record_value_type(empty, ty);
                 empty
             }
             PatternGuardExpr::Subject(subject) => self.dispatch_subject_var(ctx, plan, state, *subject)?,
@@ -3972,7 +3976,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
 
     fn record_guard_boolean(&mut self, ctx: &mut NativeFnCtx, answer: Var) {
         let boolean = self.world.types_mut().bool();
-        ctx.value_types.insert(answer, boolean);
+        ctx.record_value_type(answer, boolean);
     }
 
     /// An operand of `and`, `or` or `not`. In a guard an error fails the
@@ -4106,15 +4110,15 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         match lane {
             ExternTy::I64 => {
                 let int = self.world.types_mut().int();
-                ctx.value_types.insert(var, int);
+                ctx.record_value_type(var, int);
             }
             ExternTy::F64 => {
                 let float = self.world.types_mut().float();
-                ctx.value_types.insert(var, float);
+                ctx.record_value_type(var, float);
             }
             ExternTy::Bool => {
                 let boolean = self.world.types_mut().bool();
-                ctx.value_types.insert(var, boolean);
+                ctx.record_value_type(var, boolean);
             }
             ExternTy::Opaque(kind) => {
                 let opaque = match kind {
@@ -4122,7 +4126,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ValueKind::REF => self.world.types_mut().reference(),
                     other => unreachable!("an opaque extern lane is a pid or a reference, not {other:?}"),
                 };
-                ctx.value_types.insert(var, opaque);
+                ctx.record_value_type(var, opaque);
             }
             _ => {}
         }
@@ -4219,7 +4223,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             },
         )?;
         if let Some(ty) = self.join_type(ctx, &answers) {
-            ctx.value_types.insert(done_value, ty);
+            ctx.record_value_type(done_value, ty);
         }
         ctx.current_block = done_b;
         Ok(done_value)
@@ -4321,7 +4325,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             Some(position) => (position, FieldStart::PastCursor(Some(0))),
             None => {
                 let (zero, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
-                ctx.value_types.insert(zero, int);
+                ctx.record_value_type(zero, int);
                 (zero, FieldStart::Fixed(0))
             }
         };
@@ -4414,7 +4418,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         if shape.require_done {
             let (exhausted, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Identical, pos, bit_len));
             let bool_ty = self.world.types_mut().bool();
-            ctx.value_types.insert(exhausted, bool_ty);
+            ctx.record_value_type(exhausted, bool_ty);
             let matched_b = ctx.builder.block(vec![]);
             ctx.set_term(Term::If {
                 cond: exhausted,
@@ -4459,13 +4463,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     None => Prim::BitstringBitLen(source),
                 };
                 let (bit_len, _) = ctx.emit_let(prim);
-                ctx.value_types.insert(bit_len, int);
+                ctx.record_value_type(bit_len, int);
                 BinaryFacts { bit_len, base: None }
             }
         };
         if reads_bytes && facts.base.is_none() {
             let (base, _) = ctx.emit_let(Prim::BitstringBase(source));
-            ctx.value_types.insert(base, int);
+            ctx.record_value_type(base, int);
             facts.base = Some(base);
         }
         state.binary_facts.insert(source, facts);
@@ -4580,7 +4584,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let (value, _) = ctx.emit_let(prim);
         if field.ty.reads_as_integer() {
             let int = self.world.types_mut().int();
-            ctx.value_types.insert(value, int);
+            ctx.record_value_type(value, int);
         }
         Ok(value)
     }
@@ -4604,7 +4608,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 bit_len,
                 field: field.clone(),
             });
-            ctx.value_types.insert(fits, bool_ty);
+            ctx.record_value_type(fits, bool_ty);
             return (fits, None);
         }
         let (end, _) = ctx.emit_let(Prim::BitFieldEnd {
@@ -4612,11 +4616,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             pos,
             field: field.clone(),
         });
-        ctx.value_types.insert(end, int);
+        ctx.record_value_type(end, int);
         let (zero, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
-        ctx.value_types.insert(zero, int);
+        ctx.record_value_type(zero, int);
         let (fits, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Ge, end, zero));
-        ctx.value_types.insert(fits, bool_ty);
+        ctx.record_value_type(fits, bool_ty);
         (fits, Some(end))
     }
 
@@ -4634,7 +4638,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
     fn require_binary(&mut self, ctx: &mut NativeFnCtx, pos: Var, bit_len: Var, miss: BlockId) {
         let (within, _) = ctx.emit_let(Prim::BinOp(IrBinOp::Ge, bit_len, pos));
         let bool_ty = self.world.types_mut().bool();
-        ctx.value_types.insert(within, bool_ty);
+        ctx.record_value_type(within, bool_ty);
         let next_b = ctx.builder.block(vec![]);
         ctx.set_term(Term::If {
             cond: within,
@@ -4653,7 +4657,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         };
         let (next, _) = ctx.emit_let(prim);
         let int = self.world.types_mut().int();
-        ctx.value_types.insert(next, int);
+        ctx.record_value_type(next, int);
         next
     }
 
@@ -4790,31 +4794,26 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         Some(field) => field,
                         None => {
                             let tuple = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                            let (var, _) = ctx.emit_let(Prim::TupleField(tuple, *index));
-                            NativeBoundValue::Runtime(var)
+                            self.emit_projection(ctx, plan, state, subject, Prim::TupleField(tuple, *index))
                         }
                     }
                 }
                 crate::dispatch_matrix::ProjectionKind::StructField(field) => {
                     let record = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                    let (var, _) = ctx.emit_let(Prim::StructField(record, field.clone()));
-                    NativeBoundValue::Runtime(var)
+                    self.emit_projection(ctx, plan, state, subject, Prim::StructField(record, field.clone()))
                 }
                 crate::dispatch_matrix::ProjectionKind::ListHead => {
                     let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                    let (var, _) = ctx.emit_let(Prim::ListHead(list));
-                    NativeBoundValue::Runtime(var)
+                    self.emit_projection(ctx, plan, state, subject, Prim::ListHead(list))
                 }
                 crate::dispatch_matrix::ProjectionKind::ListTail => {
                     let list = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
-                    let (var, _) = ctx.emit_let(Prim::ListTail(list));
-                    NativeBoundValue::Runtime(var)
+                    self.emit_projection(ctx, plan, state, subject, Prim::ListTail(list))
                 }
                 crate::dispatch_matrix::ProjectionKind::MapValue { key } => {
                     let map = self.dispatch_subject_var(ctx, plan, state, projection.source)?;
                     let key = self.dispatch_key_var(ctx, plan, state, key)?;
-                    let (var, _) = ctx.emit_let(Prim::MapGet(map, key));
-                    NativeBoundValue::Runtime(var)
+                    self.emit_projection(ctx, plan, state, subject, Prim::MapGet(map, key))
                 }
                 crate::dispatch_matrix::ProjectionKind::BitstringField(index) => {
                     // `lower_bitstring_region` records every field it extracts
@@ -4829,40 +4828,32 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 }
             },
         };
-        self.record_projected_type(ctx, plan, state, subject, &value);
         state.values.insert(subject, value);
         Ok(())
     }
 
-    /// A list head a dispatch reads carries the type its plan's inputs prove
-    /// for it, so the compare or arithmetic that consumes it sees what the
-    /// dispatch already knows. A cell is projected only on a cons edge, so the
-    /// head exists. The types come from the plan's inputs and not from the
-    /// edges' refinements, so only a projection whose source is a list is
-    /// typed: a struct field read through the same types asks a tag the inputs
-    /// do not prove, and a head of `none` proves nothing for the value that is
-    /// there.
-    fn record_projected_type(
+    /// Reads a projection of a dispatch subject into a fresh `Var` and records
+    /// the type the subject's own type gives it: the field of its tuple, the
+    /// element of its list, the value under its key. The `Var` is the subject
+    /// of the tests that follow and of every clause that binds it, so it keeps
+    /// the type it had before any of them; a clause that learns more binds its
+    /// own `Var`. A projection the subject's type does not narrow is `any`.
+    fn emit_projection(
         &mut self,
         ctx: &mut NativeFnCtx,
         plan: &PatternDispatchPlan<Ty>,
         state: &DispatchState,
         subject: SubjectId,
-        value: &NativeBoundValue,
-    ) {
-        let (NativeBoundValue::Runtime(var), crate::dispatch_matrix::SubjectSource::Projection(projection)) =
-            (value, &plan.subject(subject))
-        else {
-            return;
+        prim: Prim,
+    ) -> NativeBoundValue {
+        let (var, _) = ctx.emit_let(prim);
+        let types = self.world.types_mut();
+        let ty = match project_subject(types, plan, &state.roots, &[], subject) {
+            ty if ty == types.none() => types.any(),
+            ty => ty,
         };
-        if !matches!(projection.kind, crate::dispatch_matrix::ProjectionKind::ListHead) {
-            return;
-        }
-        let ty = project_subject(self.world.types_mut(), plan, &state.roots, &[], subject);
-        if ty == self.world.types_mut().none() {
-            return;
-        }
-        ctx.value_types.entry(*var).or_insert(ty);
+        ctx.record_value_type(var, ty);
+        NativeBoundValue::Runtime(var)
     }
 
     fn dispatch_pinned_var(
@@ -5114,7 +5105,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             NativeBoundValue::Runtime(source) => {
                 let int = self.world.types_mut().int();
                 let (position, _) = ctx.emit_let(Prim::Const(Const::Int(0)));
-                ctx.value_types.insert(position, int);
+                ctx.record_value_type(position, int);
                 Ok((*source, position))
             }
             NativeBoundValue::Absent | NativeBoundValue::Transport { .. } => Err(FatalError),
@@ -5144,7 +5135,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             field: rest,
         });
         if let Some(ty) = ctx.value_types.get(&source).copied() {
-            ctx.value_types.insert(whole, ty);
+            ctx.record_value_type(whole, ty);
         }
         ctx.whole_cursors.insert((source, position), (ctx.current_block, whole));
         whole
@@ -6288,6 +6279,9 @@ struct NativeFnCtx {
     current_block: BlockId,
     stmt_counts: HashMap<BlockId, usize>,
     value_types: HashMap<Var, Ty>,
+    /// Parameters still holding the type of their lane, not yet sharpened by
+    /// the value bound to them.
+    lane_typed: HashSet<Var>,
     extern_marshals: HashMap<ExternMarshalSite, ExternTy>,
     origin: NativeBodyOrigin,
     entry_abi: NativeEntryAbi,
@@ -6321,6 +6315,7 @@ impl NativeFnCtx {
             current_block: BlockId(0),
             stmt_counts: HashMap::default(),
             value_types: HashMap::default(),
+            lane_typed: HashSet::default(),
             extern_marshals: HashMap::default(),
             origin,
             entry_abi,
@@ -6407,7 +6402,8 @@ impl NativeFnCtx {
         tys.into_iter()
             .map(|ty| {
                 let param = self.builder.fresh_var();
-                self.value_types.insert(param, *ty);
+                self.record_value_type(param, *ty);
+                self.lane_typed.insert(param);
                 param
             })
             .collect()
@@ -6437,6 +6433,30 @@ impl NativeFnCtx {
     /// destination the next put or the freeze takes.
     fn emit_map_put(&mut self, map: Var, key: Var, value: Var) -> Var {
         self.emit_let(Prim::DestMapPut { map, key, value }).0
+    }
+
+    /// A `Var` has one type for its whole life. Recording a second, different
+    /// one is a lowering bug: whatever read the first type has already
+    /// committed to a representation for it.
+    fn record_value_type(&mut self, var: Var, ty: Ty) {
+        let recorded = *self.value_types.entry(var).or_insert(ty);
+        assert!(
+            recorded == ty,
+            "native lowering invariant failed: {var:?} is typed {recorded:?} and cannot be retyped {ty:?} in {:?}",
+            self.origin
+        );
+    }
+
+    /// The value a parameter carries gives it the type that value has. A
+    /// parameter is born with the type of the lane it travels in, and the
+    /// value bound to it, the only one that ever is, sharpens that once. Any
+    /// other `Var` keeps the type it was first recorded with.
+    fn record_carried_type(&mut self, var: Var, ty: Ty) {
+        if self.lane_typed.remove(&var) {
+            self.value_types.insert(var, ty);
+        } else {
+            self.record_value_type(var, ty);
+        }
     }
 
     fn set_term(&mut self, term: Term) {
@@ -6525,7 +6545,7 @@ fn bind_local_value(
     if let Some(var) = bound.runtime_word()
         && let Some(ty) = executable.abi.materialized.value_types.get(&value).copied()
     {
-        ctx.value_types.insert(var, ty);
+        ctx.record_carried_type(var, ty);
     }
     env.insert(value, bound);
 }
@@ -6684,7 +6704,7 @@ fn lower_dispatch_const(
                 .0);
         }
     };
-    ctx.value_types.insert(var, ty);
+    ctx.record_value_type(var, ty);
     Ok(var)
 }
 

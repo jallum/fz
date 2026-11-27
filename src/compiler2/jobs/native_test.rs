@@ -165,6 +165,13 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let root = RootId::for_test(0);
     let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "unwrap_tuple", 1);
     let activation = ActivationKey::from_inputs(root, function, &[int], world.types_mut());
+    world.complete_job(
+        crate::compiler2::Job::SeedRoot(root),
+        crate::compiler2::drive::JobEffects {
+            activation_input_contributions: vec![(activation.clone(), vec![int])],
+            ..crate::compiler2::drive::JobEffects::default()
+        },
+    );
     let key = ExecutableKey {
         activation,
         need: ExecutableNeed::Value,
@@ -1082,4 +1089,96 @@ fn a_dispatch_join_keeps_fit_answers_and_field_reads_only_when_every_arrival_hol
 
     assert_eq!(met.fit_answers.into_iter().collect::<Vec<_>>(), vec![(agreed, true)]);
     assert_eq!(met.field_reads, vec![read(agreed, 10)]);
+}
+
+/// A clause that narrows a tuple field learns something the clause after it
+/// does not know, so the field's `Var`, which both clauses read and the type
+/// test asks, keeps the type the tuple's field has.
+#[test]
+fn a_clause_that_narrows_a_dispatch_field_leaves_the_tested_value_its_whole_type() {
+    let settled = Drive::source(
+        "narrowed_field.fz",
+        "\
+defmodule M do
+  def pre({form, meta, args}, _fun) when is_atom(form), do: {form, meta, args}
+  def pre({form, meta, args}, fun), do: {pre(fun.(form), fun), meta, args}
+  def pre(x, _fun), do: x
+end
+
+def main() do
+  call = {{:., [], [:mod]}, [], [1]}
+  dbg(M.pre(List.last([4, call]), fn n -> n end))
+end
+",
+    )
+    .dump_stage(crate::compiler2::dump::DumpStage::Native);
+    let program = settled.native_program();
+    let types = settled.world().types();
+    let mut tested_fields = 0;
+    for function in program
+        .module
+        .fns
+        .iter()
+        .filter(|function| function.name.starts_with("pre__"))
+    {
+        let body = program
+            .bodies
+            .iter()
+            .find(|body| body.fn_id == function.id)
+            .expect("every native function has its body facts");
+        for statement in function.blocks.iter().flat_map(|block| &block.stmts) {
+            let crate::fz_ir::Stmt::Let(_, Prim::RuntimeTypeTest(subject, _)) = statement else {
+                continue;
+            };
+            if !matches!(defining_prim(function, *subject), Some(Prim::TupleField(_, 0))) {
+                continue;
+            }
+            tested_fields += 1;
+            let ty = body.value_types.get(subject).expect("a tested field has a type");
+            assert!(
+                !types.is_atom_type(ty),
+                "the field is an atom or a tuple until the test says which, not {}",
+                types.display(ty)
+            );
+        }
+    }
+    assert!(tested_fields > 0, "pre/2 tests field 0 of its tuple for being an atom");
+}
+
+/// A `Var` is typed once. A second, different type is refused, and the same
+/// type again is not a second type.
+#[test]
+fn a_var_recorded_with_one_type_cannot_be_recorded_with_another() {
+    let (mut ctx, int, atom) = ctx_with_two_types();
+    let var = ctx.builder.fresh_var();
+    ctx.record_value_type(var, int);
+    ctx.record_value_type(var, int);
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.record_value_type(var, atom)));
+    let message = refused.expect_err("a different type for a typed Var is refused");
+    let message = message.downcast_ref::<String>().expect("the refusal explains itself");
+    assert!(message.contains("cannot be retyped"), "{message}");
+    assert_eq!(ctx.value_types.get(&var), Some(&int));
+}
+
+fn ctx_with_two_types() -> (NativeFnCtx, Ty, Ty) {
+    let mut world = World::new();
+    let int = world.types_mut().int();
+    let atom = world.types_mut().atom();
+    let root = RootId::for_test(0);
+    let key = ExecutableKey {
+        activation: ActivationKey::from_inputs(root, FunctionId::from_coordinate(0), &[], world.types_mut()),
+        need: ExecutableNeed::Value,
+    };
+    let ctx = NativeFnCtx::new(
+        FnId(0),
+        "retyping",
+        FnCategory::User,
+        NativeBodyOrigin::Executable(key),
+        NativeEntryAbi::Direct,
+        Vec::new(),
+        int,
+        Vec::new(),
+        EffectSummary::default(),
+    );
+    (ctx, int, atom)
 }
