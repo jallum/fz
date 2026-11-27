@@ -3628,7 +3628,7 @@ fn runtime_private_helpers_declare_their_domains() {
     for path in paths {
         let source = fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         for (line_index, line) in source.lines().enumerate() {
-            if line.trim_start().starts_with("defp ") {
+            if line.trim_start().starts_with("defp ") && !is_quoted_definition(line, "defp ") {
                 let signature = runtime_source_signature(line, "defp ")
                     .unwrap_or_else(|| panic!("parse private runtime helper at {}:{}", path.display(), line_index + 1));
                 private.insert(format!("{}:{signature}", path.display()));
@@ -3639,12 +3639,29 @@ fn runtime_private_helpers_declare_their_domains() {
         }
     }
 
+    assert!(
+        is_quoted_definition(
+            "      defp unquote(helper)(unquote_splicing(used)), do: unquote(body)",
+            "defp "
+        ),
+        "a quoted definition is the calling module's function, not a runtime helper"
+    );
+
     let missing = private.difference(&specified).cloned().collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
         "private runtime helpers need explicit parameter and result domains:\n{}",
         missing.join("\n")
     );
+}
+
+/// A definition named by `unquote(...)` sits inside a macro's quote and
+/// defines a function in the module that calls the macro, so it is not a
+/// runtime helper.
+fn is_quoted_definition(line: &str, marker: &str) -> bool {
+    line.trim_start()
+        .strip_prefix(marker)
+        .is_some_and(|declaration| declaration.starts_with("unquote("))
 }
 
 fn runtime_source_signature(line: &str, marker: &str) -> Option<String> {
