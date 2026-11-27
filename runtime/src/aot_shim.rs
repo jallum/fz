@@ -27,13 +27,14 @@
 use crate::any_value::{AnyValueRef, Stored};
 use crate::exec_ctx::{Argv, ExecCtx};
 use crate::function_denotation::decode_closure_denotations;
-use crate::heap::{Schema, SchemaRegistry, deep_copy_any_value_ref, pool_outstanding_blocks};
+use crate::heap::{Schema, SchemaRegistry, pool_outstanding_blocks};
 use crate::output::{OutputSink as _, STDOUT_OUTPUT};
 use crate::pinned_abi::{call1, call2};
 use crate::proc_table::ProcTable;
 use crate::process::{AtomName, DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Node, Process, ProcessState};
 use crate::sched::{
     ProbeOutcome, deliver_in_queue, fire_after_timer, mint_entry_thunk, mint_main_inner, probe_sender, self_send,
+    spawn_copying_closure,
 };
 use crate::sched_core::{
     MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
@@ -470,9 +471,8 @@ pub extern "C" fn fz_aot_register_sites(proc: *mut Process, counts: *mut u64, bl
         .register_sites(unsafe { SiteTable::new(sites, counts) });
 }
 
-/// Spawn hook. Allocates a child Process, deep-copies the
-/// closure into its heap, sets pending_closure_entry, and enqueues the
-/// child — returning immediately to the caller. The run-queue loop in
+/// Spawn hook. Starts a child process with the closure copied into its first
+/// block, wraps it in an entry thunk, and enqueues the child — returning immediately to the caller. The run-queue loop in
 /// fz_aot_run_main drives the child when the parent yields or halts.
 extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32 {
     assert!(!sender.is_null(), "aot_spawn_hook: no sender process");
@@ -483,19 +483,11 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, scheduler: *mut (), closure_b
     let entry_thunk_addr = unsafe { (*sched).entry_thunk };
 
     let parent = unsafe { &*sender };
-    let schemas = parent.heap.schemas_registry();
-    // Child shares the parent's node (the same atom table) by Rc clone — a
-    // pointer copy, not a table copy.
-    let node = Rc::clone(&parent.node);
-
-    let child = unsafe { (*sched).tasks.spawn(node, schemas, DEFAULT_REDUCTIONS_PER_QUANTUM) }
+    let closure = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
+    let (child, copied) = spawn_copying_closure(&mut unsafe { &mut *sched }.tasks, parent, closure)
         .unwrap_or_else(|full| fatal(&full.to_string()));
     let child = unsafe { &mut *child };
     let pid = child.pid;
-
-    // Deep-copy the closure into the child's heap.
-    let closure_ref = AnyValueRef::from_raw_word(closure_bits).expect("aot_spawn_hook: closure ref");
-    let copied = deep_copy_any_value_ref(closure_ref, &parent.heap.view(), &mut child.heap);
     copied
         .closure_addr()
         .expect("aot_spawn_hook: copied closure must be a closure");

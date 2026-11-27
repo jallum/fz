@@ -20,12 +20,12 @@ use super::schema::{FieldKind, SchemaRegistry};
 use super::stats::StubSite;
 use crate::any_value::{
     AnyValue, ListCons, ListLink, ListTail, ValueKind, bitstring_bit_len, bitstring_bytes_ptr,
-    closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_captured_count,
-    closure_fn_ptr, closure_halt_kind, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_node_child,
-    map_node_child_count, map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot,
-    struct_schema_id,
+    closure_addr_from_tagged, closure_arity, closure_capture_set, closure_capture_value, closure_capture_word_tag,
+    closure_captured_count, closure_fn_ptr, closure_halt_kind, closure_may_hold_heap, closure_size_for_count,
+    heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_node_child, map_node_child_count,
+    map_node_entry_count, map_slot, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
 };
-use crate::any_value::{AnyValueRef, Stored};
+use crate::any_value::{AnyValueRef, AnyValueRefPacking, Stored};
 use crate::bits::{BINREF_BYTES, BinView, SharedBinHandle, alloc_binref, alloc_view, shared_bin_freeze};
 use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
 
@@ -108,7 +108,7 @@ impl Heap {
 pub fn measure_deep_copy(values: &[Stored], src_heap: &HeapView) -> usize {
     let mut measure = CopyMeasure { src_heap, bytes: 0 };
     for value in values {
-        measure.slot(value.value("measure_deep_copy"));
+        measure.word(value.word, value.kind as u8);
     }
     measure.bytes
 }
@@ -119,29 +119,44 @@ struct CopyMeasure<'a> {
 }
 
 impl CopyMeasure<'_> {
-    /// Count `child` when it is a heap value; an inline slot costs nothing.
-    fn slot(&mut self, child: AnyValue) {
-        if child.kind().is_heap() {
-            self.value(child);
+    /// Count the value a container stores as `word` of kind `tag`. A list or a
+    /// closure is walked from its raw words, with no value decoded along the
+    /// way; an inline slot, a literal and the empty list cost a test.
+    #[inline(always)]
+    fn word(&mut self, word: u64, tag: u8) {
+        if !ValueKind::tag_is_heap(tag) {
+            return;
+        }
+        const PACKING: AnyValueRefPacking = AnyValueRefPacking::current();
+        let addr = (word & PACKING.address_mask()) as *mut u8;
+        if addr.is_null() || PACKING.is_literal(word) {
+            return;
+        }
+        self.src_heap.assert_classified(addr, false);
+        if tag == ValueKind::LIST.tag() {
+            self.list(addr);
+        } else if tag == ValueKind::CLOSURE.tag() {
+            self.closure(addr);
+        } else {
+            let kind = ValueKind::new(tag).expect("a heap kind");
+            self.object(addr, AnyValue::heap_ptr(addr, kind));
         }
     }
 
     fn value(&mut self, src: AnyValue) {
-        let Some(sp) = src.heap_addr() else {
-            return;
-        };
-        if sp.is_null() || self.src_heap.shares(src) {
+        self.word(src.raw(), src.kind().tag());
+    }
+
+    /// A closure is its header and captures, and what its heap captures hold.
+    fn closure(&mut self, sp: *mut u8) {
+        let count = unsafe { closure_captured_count(sp as *const u8) };
+        self.bytes += closure_size_for_count(count);
+        if !unsafe { closure_may_hold_heap(sp as *const u8) } {
             return;
         }
-        match src.kind() {
-            ValueKind::LIST => self.list(sp),
-            ValueKind::MAP
-            | ValueKind::CLOSURE
-            | ValueKind::STRUCT
-            | ValueKind::BITSTRING
-            | ValueKind::BINVIEW
-            | ValueKind::RESOURCE => self.object(sp, src),
-            _ => {}
+        for i in 0..count {
+            let (word, tag) = unsafe { closure_capture_word_tag(sp as *const u8, i) };
+            self.word(word, tag);
         }
     }
 
@@ -160,24 +175,19 @@ impl CopyMeasure<'_> {
             ValueKind::MAP => {
                 for i in 0..unsafe { map_node_entry_count(sp as *const u8) } {
                     let (key, value) = unsafe { map_slot(sp as *const u8, i) };
-                    self.slot(key);
-                    self.slot(value);
+                    self.value(key);
+                    self.value(value);
                 }
                 for i in 0..unsafe { map_node_child_count(sp as *const u8) } {
                     let child = unsafe { map_node_child(sp as *const u8, i) };
-                    self.slot(AnyValue::heap_ptr(child, ValueKind::MAP));
-                }
-            }
-            ValueKind::CLOSURE => {
-                for i in 0..unsafe { closure_captured_count(sp as *const u8) } {
-                    self.slot(unsafe { closure_capture_value(sp as *const u8, i) });
+                    self.value(AnyValue::heap_ptr(child, ValueKind::MAP));
                 }
             }
             ValueKind::STRUCT => {
                 let schema_id = unsafe { struct_schema_id(sp as *const u8) };
                 let registry = self.src_heap.schemas.borrow();
                 for (field, _) in registry.get(schema_id).any_value_fields_with_kind_offsets() {
-                    self.slot(self.src_heap.read_field_slot(sp, field.offset));
+                    self.value(self.src_heap.read_field_slot(sp, field.offset));
                 }
             }
             _ => {}
@@ -187,16 +197,18 @@ impl CopyMeasure<'_> {
     /// A list is walked along its spine, like the copy: it stops at the empty
     /// list.
     fn list(&mut self, first: *mut u8) {
+        let mut cells = 0;
         let mut cell = first;
         while !cell.is_null() {
-            self.bytes += size_of::<ListCons>();
+            cells += 1;
             let cons = unsafe { &*(cell as *const ListCons) };
-            self.slot(cons.head_value());
+            self.word(cons.head, cons.head_tag());
             cell = cons.tail_cell_addr() as *mut u8;
             if !cell.is_null() {
                 self.src_heap.assert_classified(cell, false);
             }
         }
+        self.bytes += cells * size_of::<ListCons>();
     }
 }
 

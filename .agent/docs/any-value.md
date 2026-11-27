@@ -394,8 +394,8 @@ it is a NUL; another process writing there would replace that NUL under a call
 in progress. So every path that makes a buffer reachable from another process
 closes its spare room first, on the sender's thread: `deep_copy_any_value`'s
 view arm calls `shared_bin_freeze`, and every cross-process copy goes through it
-(`gift_copy` for a message or a spawned closure's captured values, and the spawn
-paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs`). `shared_bin_freeze` writes only a buffer with spare
+(`gift_copy` for a message or a spawned closure's captured values, and
+`sched::spawn_copying_closure` and `spawn_copying`, which the spawn paths in `aot_shim.rs`, `ir_interp/backend.rs` and `exec/runtime.rs` call). `shared_bin_freeze` writes only a buffer with spare
 room; one with none, such as a compiler-baked static buffer every scheduler
 thread sends views of, is only read, as OTP's `erts_pin_writable_binary`
 touches only a binary that is still writable. An unfrozen buffer with spare

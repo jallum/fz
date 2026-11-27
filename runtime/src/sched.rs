@@ -18,12 +18,14 @@
 use crate::any_value::{self, AnyValue, AnyValueRef, Stored, ValueKind};
 use crate::delivery::Delivery;
 use crate::exec_ctx::{timer_cancel, timer_schedule};
-use crate::heap::{GiftSegment, Heap, HeapView, deep_copy_stored, measure_deep_copy};
+use crate::heap::{GiftSegment, Heap, HeapView, deep_copy_any_value_ref, deep_copy_stored, measure_deep_copy};
 use crate::mailbox::Mailbox;
 use crate::park::{ParkRecord, Roots};
-use crate::process::{PidId, Process, ProcessState};
+use crate::proc_table::{ProcTable, TableFull};
+use crate::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, PidId, Process, ProcessState};
 use crate::timer::TimerId;
 use std::ptr::write;
+use std::rc::Rc;
 
 /// Mint a fresh-task entry thunk on `heap`: a one-capture closure whose code
 /// is `fz_entry_thunk` and whose `capture[0]` is `inner` (the task's inner
@@ -43,6 +45,51 @@ pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: Any
         any_value::closure_capture_set(p, 0, inner_av);
     }
     AnyValueRef::from_heap_object(ValueKind::CLOSURE, p).expect("entry thunk closure ref")
+}
+
+/// Start a process in `tasks` holding a copy of `closure` from `sender`'s heap.
+pub fn spawn_copying_closure(
+    tasks: &mut ProcTable,
+    sender: &Process,
+    closure: AnyValueRef,
+) -> Result<(*mut Process, AnyValueRef), TableFull> {
+    let source = sender.heap.view();
+    spawn_with(tasks, sender, |heap| deep_copy_any_value_ref(closure, &source, heap))
+}
+
+/// Start a process in `tasks` holding copies of `values` from `sender`'s
+/// heap. Returns the child and the copies, in order.
+pub fn spawn_copying(
+    tasks: &mut ProcTable,
+    sender: &Process,
+    values: &[Stored],
+) -> Result<(*mut Process, Roots), TableFull> {
+    let source = sender.heap.view();
+    spawn_with(tasks, sender, |heap| {
+        values
+            .iter()
+            .map(|value| deep_copy_stored(*value, &source, heap))
+            .collect()
+    })
+}
+
+/// Start a process whose heap holds what `copy` makes from `sender`'s heap.
+/// Until the child first runs nothing else reaches its heap, so the copy needs
+/// no gift.
+fn spawn_with<T>(
+    tasks: &mut ProcTable,
+    sender: &Process,
+    copy: impl FnOnce(&mut Heap) -> T,
+) -> Result<(*mut Process, T), TableFull> {
+    let child = tasks.spawn(
+        Rc::clone(&sender.node),
+        sender.heap.schemas_registry(),
+        DEFAULT_REDUCTIONS_PER_QUANTUM,
+    )?;
+    // SAFETY: the table owns the child it just returned, and nothing else
+    // reaches it before it first runs.
+    let copied = copy(unsafe { &mut (*child).heap });
+    Ok((child, copied))
 }
 
 /// Scheduler scaffolding closures are entered by `fz_resume`, never applied to

@@ -32,7 +32,6 @@ use fz_runtime::any_value::{
 use fz_runtime::construction::FzBsField;
 use fz_runtime::delivery::Delivery;
 use fz_runtime::exec_ctx::{Argv, ExecCtx, NO_ARGV, timer_cancel, timer_schedule};
-use fz_runtime::heap::deep_copy_any_value_ref;
 use fz_runtime::heap::{Collected, Schema};
 use fz_runtime::ir_runtime::{
     fz_bs_build, fz_bs_field_spec, fz_list_reuse_or_cons_parts, fz_map_dest_begin, fz_map_dest_begin_update,
@@ -41,7 +40,8 @@ use fz_runtime::ir_runtime::{
 };
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
 use fz_runtime::output::{EXPAND_HOOK, OUTPUT_HOOK, OutputContext, OutputSink, WARN_HOOK};
-use fz_runtime::process::{DEFAULT_REDUCTIONS_PER_QUANTUM, Disposition, Process, ProcessState};
+use fz_runtime::process::{Disposition, Process, ProcessState};
+use fz_runtime::sched::spawn_copying;
 use fz_runtime::sched::{ProbeOutcome, SendProbe, drain_in_queue, gift_match, gift_message, self_send};
 use fz_runtime::sched_core::{
     MAIN_PID, Scheduler, SchedulingCore, end_quantum, halt_hook, next_runnable, timer_cancel_hook, timer_schedule_hook,
@@ -268,22 +268,21 @@ impl IrInterpRuntime {
         if sender.is_null() {
             return Err("spawn: no sender process".to_string());
         }
-        let user_schemas = self.schemas();
-        let node = Rc::clone(&self.node);
-        let child = self
-            .tasks
-            .spawn(node, user_schemas, DEFAULT_REDUCTIONS_PER_QUANTUM)
-            .map_err(|full| full.to_string())?;
-        let child = unsafe { &mut *child };
-        let pid = child.pid;
-        let sender_view = unsafe { &*sender }.heap.view();
+        let refs: Vec<Stored> = args
+            .iter()
+            .filter_map(|value| match value {
+                AnyValue::Ref(value) => Some(Stored::of_ref(value.raw())),
+                _ => None,
+            })
+            .collect();
+        let (child, copies) =
+            spawn_copying(&mut self.tasks, unsafe { &*sender }, &refs).map_err(|full| full.to_string())?;
+        let pid = unsafe { &*child }.pid;
+        let mut copies = copies.into_iter();
         let args = args
             .into_iter()
             .map(|value| match value {
-                AnyValue::Ref(value) => {
-                    let copied = deep_copy_any_value_ref(value.raw(), &sender_view, &mut child.heap);
-                    AnyValue::from_any_value_ref(copied)
-                }
+                AnyValue::Ref(_) => AnyValue::from_any_value_ref(copies.next().expect("a copy per ref").heap_ref()),
                 value => Ok(value),
             })
             .collect::<Result<Lanes, _>>()?;
