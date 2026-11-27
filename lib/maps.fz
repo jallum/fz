@@ -15,8 +15,8 @@ defmodule :maps do
   def get(key, map) do
     case map do
       %{^key => value} -> value
-      %{} -> raise(%KeyError{key: key, term: map})
-      other -> raise(%BadMapError{term: other})
+      %{} -> __raise__(%KeyError{key: key, term: map}, {:badkey, key})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
@@ -35,7 +35,7 @@ defmodule :maps do
     case map do
       %{^key => value} -> value
       %{} -> default
-      other -> raise(%BadMapError{term: other})
+      other -> __raise__(%BadMapError{term: other}, {:badmap, other})
     end
   end
 
