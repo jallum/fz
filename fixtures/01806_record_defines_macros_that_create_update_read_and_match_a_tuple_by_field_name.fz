@@ -1,0 +1,70 @@
+#---
+# purpose: "Record.defrecord and defrecordp define macros that create a record with defaults or given fields, update and read a field, give a field's index, match in a function head, case and =, and turn a record into a keyword list; is_record/1,2 test a tuple in a guard"
+# oracle: self
+# oracle.stamp: b70be8bdaed19379
+#---
+defmodule Shapes do
+  require Record
+  Record.defrecord(:point, x: 0, y: 0)
+  Record.defrecord(:tagged, Custom, name: "n")
+end
+
+defmodule Main do
+  require Record
+  require Shapes
+  import Shapes
+
+  Record.defrecordp(:secret, :hidden, key: :undefined, size: 8)
+
+  def origin?(point(x: 0, y: 0)), do: true
+  def origin?(_), do: false
+
+  def x_of(point(x: x)), do: x
+
+  def kind(r) when Record.is_record(r, :point), do: :point
+  def kind(r) when Record.is_record(r), do: :record
+  def kind(_), do: :other
+
+  def next_size(secret() = s), do: secret(s, :size) + 1
+
+  def bump(r), do: point(r, x: x_of(r) + 1, y: 7)
+
+  def main() do
+    p = point()
+    IO.inspect(p)
+    IO.inspect(point(x: 3))
+    IO.inspect(point(y: 5, x: 4))
+    IO.inspect(point(p, :y))
+    IO.inspect(point(:y))
+    IO.inspect(point(p, x: 9))
+    IO.inspect(bump(point(x: 1)))
+    IO.inspect(point(point(x: 2, y: 3)))
+    IO.inspect(origin?(p))
+    IO.inspect(origin?(point(x: 1)))
+    IO.inspect(x_of(point(x: 11, y: 4)))
+
+    case point(x: 5, y: 6) do
+      point(x: 5, y: y) -> IO.inspect({:matched, y})
+      _ -> IO.inspect(:no)
+    end
+
+    point(x: a, y: b) = point(x: 10, y: 20)
+    IO.inspect({a, b})
+
+    IO.inspect(tagged())
+    IO.inspect(tagged(tagged(), :name))
+
+    s = secret()
+    IO.inspect(s)
+    IO.inspect(secret(s, :size))
+    IO.inspect(secret(s, key: :k))
+    IO.inspect(secret(:size))
+    IO.inspect(next_size(s))
+    IO.inspect(secret(s))
+
+    IO.inspect({kind(p), kind({:other, 1}), kind({}), kind(:atom)})
+    IO.inspect({Record.is_record(p), Record.is_record({}), Record.is_record(p, :point), Record.is_record(p, :other)})
+  end
+end
+
+Main.main()

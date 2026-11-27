@@ -1,0 +1,29 @@
+#---
+# purpose: "Record.is_record/1,2 are callable in a guard and outside one; a tuple tagged with the kind, or with any atom for the one-argument form, is a record, and a non-tuple, an empty tuple or a non-atom kind answers false instead of raising"
+# oracle: self
+# oracle.stamp: 6394e24bb702034e
+#---
+defmodule Main do
+  require Record
+
+  def kind(x) when Record.is_record(x, :tag), do: :tagged
+  def kind(x) when Record.is_record(x), do: :some_record
+  def kind(_), do: :no
+
+  def main() do
+    IO.inspect([kind({:tag, 1}), kind({:other}), kind({}), kind(5), kind({1, 2})])
+
+    IO.inspect([
+      Record.is_record({:tag, 1}, :tag),
+      Record.is_record({:tag}, :x),
+      Record.is_record(5, :tag),
+      Record.is_record({:a, 1}, "s"),
+      Record.is_record({}, :a),
+      Record.is_record({:a}),
+      Record.is_record({1}),
+      Record.is_record(:a)
+    ])
+  end
+end
+
+Main.main()

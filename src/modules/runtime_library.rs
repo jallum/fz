@@ -217,6 +217,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/macro_env.fz"),
     },
     RuntimeModuleSource {
+        name: "Record",
+        source: include_str!("../../lib/record.fz"),
+    },
+    RuntimeModuleSource {
         name: "OptionParser",
         source: include_str!("../../lib/option_parser.fz"),
     },

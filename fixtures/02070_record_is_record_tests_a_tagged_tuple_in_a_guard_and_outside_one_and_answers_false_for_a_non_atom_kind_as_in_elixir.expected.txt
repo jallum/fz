@@ -1,0 +1,2 @@
+[:tagged, :some_record, :no, :no, :no]
+[true, false, false, false, false, true, false, false]

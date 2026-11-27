@@ -477,7 +477,7 @@ fn decode_expr(
         let span = node.span.unwrap_or(Span::DUMMY);
         if !node.tail.is_list_like() {
             let name = node.head.atom_name()?.to_string();
-            let var = if name == crate::ast::STACKTRACE {
+            let var = if crate::ast::is_scope_special_form(&name) {
                 Var::user(name)
             } else {
                 Var {

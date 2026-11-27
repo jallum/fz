@@ -1,0 +1,388 @@
+defmodule Record do
+  @moduledoc """
+  Defines and uses records, as Elixir's `Record` does.
+
+  A record is a tuple whose first element is an atom, the tag. `defrecord/3`
+  and `defrecordp/3` define macros that create, update, read and match one by
+  field name:
+
+      defmodule User do
+        require Record
+        Record.defrecord(:user, name: "meg", age: 25)
+      end
+
+      require User
+      User.user()                  #=> {:user, "meg", 25}
+      User.user(age: 26)           #=> {:user, "meg", 26}
+      User.user(record, :name)     #=> "meg"
+      User.user(record, age: 27)   #=> the record with age 27
+      User.user(:age)              #=> 2
+      User.user(record)            #=> [name: "meg", age: 25]
+
+  The same macros match in a pattern, where every field not named is `_`.
+
+  Deviations from Elixir:
+
+    * The field list is computed each time a record macro expands, where
+      Elixir computes it once in the module body.
+    * `name/0` and `name/1` are two macros, where Elixir writes `args \\ []`.
+    * The duplicate-definition check and the `__records__` attribute are not
+      defined, and `extract/2` and `extract_all/1` are absent.
+  """
+
+  @doc """
+  Checks if the given `data` is a record of kind `kind`.
+
+  Usable in guards.
+
+  ## Examples
+
+      Record.is_record({User, "john", 27}, User)
+      #=> true
+
+  """
+  @spec is_record(any, any) :: boolean
+  def is_record(data, kind) when is_tuple(data) and tuple_size(data) > 0 and is_atom(kind),
+    do: elem(data, 0) == kind
+
+  def is_record(_data, _kind), do: false
+
+  @doc """
+  Checks if the given `data` is a record.
+
+  Usable in guards.
+
+  ## Examples
+
+      Record.is_record({User, "john", 27})
+      #=> true
+
+      Record.is_record({})
+      #=> false
+
+  """
+  @spec is_record(any) :: boolean
+  def is_record(data) when is_tuple(data) and tuple_size(data) > 0, do: is_atom(elem(data, 0))
+  def is_record(_data), do: false
+
+  @doc """
+  Defines a set of macros to create, access, and pattern match on a record.
+
+  `name` is an atom and names the macros. `tag` is the atom in the first
+  element of the tuple; it is `name` when omitted or `nil`. `kv` is a keyword
+  list of `field: default` entries.
+
+  The macros are `name/0` to create a record with every default, `name/1` to
+  create one from given fields, to read the index of a field or to convert a
+  record to a keyword list, and `name/2` to update a record or read a field.
+  All are public macros.
+  """
+  defmacro defrecord(name, tag, kv) do
+    {tag, fields} = record_definition(:defrecord, name, tag, kv)
+
+    quote do
+      defmacro unquote(name)() do
+        Record.__access__(unquote(tag), unquote(fields), [], __CALLER__)
+      end
+
+      defmacro unquote(name)(args) do
+        Record.__access__(unquote(tag), unquote(fields), args, __CALLER__)
+      end
+
+      defmacro unquote(name)(record, args) do
+        Record.__access__(unquote(tag), unquote(fields), record, args, __CALLER__)
+      end
+    end
+  end
+
+  defmacro defrecord(name, kv) do
+    {tag, fields} = record_definition(:defrecord, name, nil, kv)
+
+    quote do
+      defmacro unquote(name)() do
+        Record.__access__(unquote(tag), unquote(fields), [], __CALLER__)
+      end
+
+      defmacro unquote(name)(args) do
+        Record.__access__(unquote(tag), unquote(fields), args, __CALLER__)
+      end
+
+      defmacro unquote(name)(record, args) do
+        Record.__access__(unquote(tag), unquote(fields), record, args, __CALLER__)
+      end
+    end
+  end
+
+  @doc """
+  Same as `defrecord/3` but generates private macros.
+  """
+  defmacro defrecordp(name, tag, kv) do
+    {tag, fields} = record_definition(:defrecordp, name, tag, kv)
+
+    quote do
+      defmacrop unquote(name)() do
+        Record.__access__(unquote(tag), unquote(fields), [], __CALLER__)
+      end
+
+      defmacrop unquote(name)(args) do
+        Record.__access__(unquote(tag), unquote(fields), args, __CALLER__)
+      end
+
+      defmacrop unquote(name)(record, args) do
+        Record.__access__(unquote(tag), unquote(fields), record, args, __CALLER__)
+      end
+    end
+  end
+
+  defmacro defrecordp(name, kv) do
+    {tag, fields} = record_definition(:defrecordp, name, nil, kv)
+
+    quote do
+      defmacrop unquote(name)() do
+        Record.__access__(unquote(tag), unquote(fields), [], __CALLER__)
+      end
+
+      defmacrop unquote(name)(args) do
+        Record.__access__(unquote(tag), unquote(fields), args, __CALLER__)
+      end
+
+      defmacrop unquote(name)(record, args) do
+        Record.__access__(unquote(tag), unquote(fields), record, args, __CALLER__)
+      end
+    end
+  end
+
+  @spec record_definition(atom, atom, atom, keyword) :: {atom, [{atom, any}]}
+  defp record_definition(kind, name, tag, kv) do
+    tag = tag || name
+    fields = fields(kind, kv)
+    warn_on_duplicate_key(:lists.keysort(1, fields))
+    {tag, fields}
+  end
+
+  @spec warn_on_duplicate_key([{atom, any}]) :: :ok
+  defp warn_on_duplicate_key([]) do
+    :ok
+  end
+
+  defp warn_on_duplicate_key([{key, _} | [{key, _} | _] = rest]) do
+    IO.warn("duplicate key #{inspect(key)} found in record")
+    warn_on_duplicate_key(rest)
+  end
+
+  defp warn_on_duplicate_key([_ | rest]) do
+    warn_on_duplicate_key(rest)
+  end
+
+  # Normalizes record fields to have default values.
+  @spec fields(atom, list) :: [{atom, any}]
+  defp fields(kind, fields) do
+    normalizer_fun = fn
+      {key, value} when is_atom(key) ->
+        try do
+          Macro.escape(value)
+        rescue
+          e in [ArgumentError] ->
+            raise ArgumentError, "invalid value for record field #{key}, " <> Exception.message(e)
+        else
+          value -> {key, value}
+        end
+
+      key when is_atom(key) ->
+        {key, nil}
+
+      other ->
+        raise ArgumentError, "#{kind} fields must be atoms, got: #{inspect(other)}"
+    end
+
+    :lists.map(normalizer_fun, fields)
+  end
+
+  # Callback invoked from record/0 and record/1 macros.
+  @doc false
+  @spec __access__(atom, [{atom, any}], term, map) :: any
+  def __access__(tag, fields, args, caller) do
+    cond do
+      is_atom(args) ->
+        index(tag, fields, args)
+
+      Keyword.keyword?(args) ->
+        create(tag, fields, args, caller)
+
+      true ->
+        fields = Macro.escape(fields)
+
+        case Macro.expand(args, caller) do
+          {:{}, _, [^tag | list]} when length(list) == length(fields) ->
+            record = List.to_tuple([tag | list])
+            Record.__keyword__(tag, fields, record)
+
+          {^tag, arg} when length(fields) == 1 ->
+            Record.__keyword__(tag, fields, {tag, arg})
+
+          _ ->
+            quote(do: Record.__keyword__(unquote(tag), unquote(fields), unquote(args)))
+        end
+    end
+  end
+
+  # Callback invoked from the record/2 macro.
+  @doc false
+  @spec __access__(atom, [{atom, any}], term, term, map) :: any
+  def __access__(tag, fields, record, args, caller) do
+    cond do
+      is_atom(args) ->
+        get(tag, fields, record, args)
+
+      Keyword.keyword?(args) ->
+        update(tag, fields, record, args, caller)
+
+      true ->
+        raise ArgumentError,
+              "expected arguments to be a compile time atom or a keyword list, got: " <>
+                Macro.to_string(args)
+    end
+  end
+
+  # Gets the index of field.
+  @spec index(atom, [{atom, any}], atom) :: pos_integer
+  defp index(tag, fields, field) do
+    find_index(fields, field, 1) ||
+      raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(field)}"
+  end
+
+  # Creates a new record with the given default fields and keyword values.
+  @spec create(atom, [{atom, any}], keyword, map) :: any
+  defp create(tag, fields, keyword, caller) do
+    # Using {} here is safe, since it's not valid AST
+    default = if Macro.Env.in_match?(caller), do: {:_, [], nil}, else: {}
+    {default, keyword} = Keyword.pop(keyword, :_, default)
+    {keyword, exprs} = hoist_expressions(keyword, caller)
+
+    {elements, remaining} =
+      Enum.map_reduce(fields, keyword, fn {key, field_default}, remaining ->
+        case Keyword.pop(remaining, key, default) do
+          {{}, remaining} -> {Macro.escape(field_default), remaining}
+          {default, remaining} -> {default, remaining}
+        end
+      end)
+
+    case remaining do
+      [] ->
+        quote(do: {unquote(tag), unquote_splicing(elements)})
+        |> maybe_prepend_reversed_exprs(exprs)
+
+      [{key, _} | _] ->
+        raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
+    end
+  end
+
+  # Updates a record given by var with the given keyword.
+  @spec update(atom, [{atom, any}], any, keyword, map) :: any
+  defp update(tag, fields, var, keyword, caller) do
+    if Macro.Env.in_match?(caller) do
+      raise ArgumentError, "cannot invoke update style macro inside match"
+    end
+
+    {keyword, exprs} = hoist_expressions(keyword, caller)
+
+    if Keyword.has_key?(keyword, :_) do
+      message = "updating a record with a default (:_) is equivalent to creating a new record"
+      IO.warn(message, caller)
+      create(tag, fields, keyword, caller)
+    else
+      updates =
+        Enum.map(keyword, fn {key, value} ->
+          if index = find_index(fields, key, 2) do
+            {index, value}
+          else
+            raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
+          end
+        end)
+
+      build_update(updates, var) |> maybe_prepend_reversed_exprs(exprs)
+    end
+  end
+
+  @spec hoist_expressions(keyword, map) :: {keyword, [any]}
+  defp hoist_expressions(keyword, %{context: nil, module: module}) do
+    Enum.map_reduce(keyword, [], fn {key, expr}, acc ->
+      if simple_argument?(expr) do
+        {{key, expr}, acc}
+      else
+        var = Macro.unique_var(key, module)
+        {{key, var}, [{:=, [], [var, expr]} | acc]}
+      end
+    end)
+  end
+
+  defp hoist_expressions(keyword, _), do: {keyword, []}
+
+  @spec maybe_prepend_reversed_exprs(any, [any]) :: any
+  defp maybe_prepend_reversed_exprs(expr, []),
+    do: expr
+
+  defp maybe_prepend_reversed_exprs(expr, exprs),
+    do: {:__block__, [], :lists.reverse([expr | exprs])}
+
+  @spec build_update([{pos_integer, any}], any) :: any
+  defp build_update(updates, initial) do
+    updates
+    |> Enum.sort(fn {left, _}, {right, _} -> right <= left end)
+    |> Enum.reduce(initial, fn {key, value}, acc ->
+      quote(do: :erlang.setelement(unquote(key), unquote(acc), unquote(value)))
+    end)
+  end
+
+  @spec simple_argument?(any) :: boolean
+  defp simple_argument?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp simple_argument?(other), do: Macro.quoted_literal?(other)
+
+  # Gets a record key from the given var.
+  @spec get(atom, [{atom, any}], any, atom) :: any
+  defp get(tag, fields, var, key) do
+    index =
+      find_index(fields, key, 2) ||
+        raise ArgumentError, "record #{inspect(tag)} does not have the key: #{inspect(key)}"
+
+    quote do
+      :erlang.element(unquote(index), unquote(var))
+    end
+  end
+
+  @spec find_index([{atom, any}], atom, pos_integer) :: pos_integer | nil
+  defp find_index([{k, _} | _], k, i), do: i
+  defp find_index([{_, _} | t], k, i), do: find_index(t, k, i + 1)
+  defp find_index([], _k, _i), do: nil
+
+  # Returns a keyword list of the record
+  @doc false
+  @spec __keyword__(atom, [{atom, any}], tuple) :: keyword
+  def __keyword__(tag, fields, record) do
+    if is_record(record, tag) do
+      [_tag | values] = Tuple.to_list(record)
+
+      case join_keyword(fields, values, []) do
+        kv when is_list(kv) ->
+          kv
+
+        expected_fields ->
+          raise ArgumentError,
+                "expected argument to be a #{inspect(tag)} record with " <>
+                  "#{expected_fields} fields, got: " <> inspect(record)
+      end
+    else
+      raise ArgumentError,
+            "expected argument to be a literal atom, literal keyword or " <>
+              "a #{inspect(tag)} record, got runtime: " <> inspect(record)
+    end
+  end
+
+  # Returns a keyword list, or expected number of fields on size mismatch
+  @spec join_keyword([{atom, any}], list, keyword) :: keyword | non_neg_integer
+  defp join_keyword([{field, _default} | fields], [value | values], acc),
+    do: join_keyword(fields, values, [{field, value} | acc])
+
+  defp join_keyword([], [], acc), do: :lists.reverse(acc)
+  defp join_keyword(rest_fields, _rest_values, acc), do: length(acc) + length(rest_fields)
+end
