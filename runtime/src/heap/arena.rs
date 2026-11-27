@@ -17,6 +17,12 @@
 //! grows the same way, from its own hint. A chunk that lands anywhere else is a
 //! panic naming the reserved size and the bytes claimed; there is no fallback.
 //!
+//! No block's end is another block's start: every span runs 16 to 32 bytes
+//! past its block's capacity (`span_len`), and the next span begins after that
+//! slack. The address one past a block's last byte therefore never lies in
+//! another block, and "this frame ends at the bump pointer", which frame
+//! release tests to pop the newest frame, can only hold inside one block.
+//!
 //! Blocks never share a granule, so a table byte has one owner at a time: the
 //! thread whose heap holds the block. A span is typed for good by how it is
 //! first claimed. A pooled span (a table capacity, or a multiple of 16 below
@@ -55,10 +61,11 @@ pub(super) const GRANULE_SHIFT: u32 = 5;
 /// Bytes of address space one table byte describes.
 pub(super) const GRANULE: usize = 1 << GRANULE_SHIFT;
 
-/// `bytes` rounded up to whole granules: the span a block of that capacity
-/// occupies.
+/// The span a block of `bytes` capacity occupies: whole granules, with 16 to
+/// 32 bytes of slack past the capacity. The slack holds no object, so a
+/// block's end is never the start of the span after it.
 pub(super) const fn span_len(bytes: usize) -> usize {
-    (bytes + GRANULE - 1) & !(GRANULE - 1)
+    (bytes + GRANULE) & !(GRANULE - 1)
 }
 
 /// How old a block is when it is made.
@@ -472,7 +479,7 @@ fn make_accessible(addr: usize, bytes: usize) {
 fn inner_pages(addr: usize, len: usize, page: usize) -> Option<(usize, usize)> {
     let start = addr.next_multiple_of(page);
     let end = (addr + len) & !(page - 1);
-    (end > start).then_some((start, end - start))
+    (end > start).then(|| (start, end - start))
 }
 
 /// Give `bytes` of whole pages at `addr` back to the operating system so that

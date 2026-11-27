@@ -1,0 +1,18 @@
+#---
+# purpose: a non-tail recursion thousands of frames deep returns its sum, and its resumed frames pop the young heap without moving the bump pointer below a block's start, so the run is clean under telemetry
+# kind: run
+# oracle: self
+# oracle.stamp: f1428d9c39d80681
+#---
+#
+# Each call's frame is allocated on the young heap and popped when it resumes.
+# A frame that ends one block while the next block begins empty must not look
+# like the newest allocation. The sum is 4504500; the telemetry run that
+# `a_resumed_frame_never_pops_across_a_block_boundary` makes on every path is
+# where an underflow of the young byte count would be fatal.
+defmodule P do
+  def down(0, _, _), do: 0
+  def down(n, v1, v0), do: down(n - 1, v1, v0) + (n + v1 + v0)
+end
+
+IO.inspect(P.down(3000, 1, 0))
