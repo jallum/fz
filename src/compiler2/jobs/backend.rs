@@ -23,8 +23,8 @@ use fz_runtime::process::AtomName;
 use super::super::artifact::{
     AbiReadyCallEdge, AbiReadyExecutable, BackendBody, BackendCallArg, BackendClause, BackendConstructionCapture,
     BackendConstructionMemberAdapter, BackendConstructionWrapper, BackendEntry, BackendEntryCapture,
-    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendReturnLayout, BackendStep,
-    BackendTail, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
+    BackendEntryOrigin, BackendExecutable, BackendProgram, BackendReturnFlow, BackendStep, BackendTail,
+    BackendValueLayout, CallEdge, CallReturnFlow, CallTarget, DirectCallEdge, DispatchCallArm,
 };
 use super::super::body::{
     CallArg, CallSiteId, ControlEntryId, ControlEntryOrigin, LoweredBody, LoweredEntry, LoweredMapKey, LoweredStep,
@@ -289,10 +289,7 @@ pub(crate) fn produce_backend_executable_product(
     if !waits.is_empty() {
         return PullOutcome::Waiting(waits);
     }
-    let return_endpoints = abis
-        .values()
-        .flat_map(|abi| abi.return_endpoints.iter().map(|(position, layout)| (position, layout)))
-        .collect();
+    let return_endpoints = ReturnEndpoints::of_executables(abis.values());
     let construction_wrappers = package_backend_construction_wrappers(world, tel, root, &abis, &abi)
         .expect("local construction prerequisites must provide complete wrappers");
     let constructions = construction_wrappers
@@ -477,7 +474,39 @@ pub(crate) fn executable_key_for_symbol(root: RootId, symbol: &ExecutableSymbol)
 }
 
 /// Where each ABI in a lowering's dependency set says a call returns.
-type ReturnEndpoints<'a> = HashMap<&'a TransportPosition, &'a BackendReturnLayout>;
+/// The layout every return-carrying position publishes, and which executable
+/// returns never happen. Only an executable's own return can diverge: a payload
+/// or resume position is where a returning callee's value lands.
+#[derive(Default)]
+struct ReturnEndpoints<'a> {
+    layouts: HashMap<&'a TransportPosition, &'a BackendValueLayout>,
+    diverging_returns: HashSet<&'a TransportPosition>,
+}
+
+impl<'a> ReturnEndpoints<'a> {
+    fn of_executables(abis: impl Iterator<Item = &'a Rc<AbiReadyExecutable>>) -> Self {
+        let mut endpoints = Self::default();
+        for abi in abis {
+            endpoints
+                .layouts
+                .extend(abi.return_endpoints.iter().map(|(position, layout)| (position, layout)));
+            let return_position = &abi.transport.return_position;
+            endpoints.layouts.insert(return_position, &abi.return_layout.layout);
+            if abi.return_layout.diverges {
+                endpoints.diverging_returns.insert(return_position);
+            }
+        }
+        endpoints
+    }
+
+    fn layout(&self, position: &TransportPosition) -> Result<&'a BackendValueLayout, FatalError> {
+        self.layouts.get(position).copied().ok_or(FatalError)
+    }
+
+    fn diverges(&self, position: &TransportPosition) -> bool {
+        self.diverging_returns.contains(position)
+    }
+}
 
 fn backend_call_edge(
     target: &CallEdge<ExecutableKey>,
@@ -560,11 +589,11 @@ fn resolve_return_flow(
     flow: &super::super::artifact::CallReturnFlow,
     endpoints: &ReturnEndpoints<'_>,
 ) -> Result<BackendReturnFlow, FatalError> {
-    let layout = |position: &TransportPosition| endpoints.get(position).copied().ok_or(FatalError);
+    let layout = |position: &TransportPosition| endpoints.layout(position);
     Ok(match flow {
         CallReturnFlow::NoReturn { local_source } => {
             if let Some(local_source) = local_source
-                && !layout(local_source)?.diverges
+                && !endpoints.diverges(local_source)
             {
                 return Err(FatalError);
             }
@@ -575,7 +604,10 @@ fn resolve_return_flow(
             payload,
             caller_return,
         } => {
-            if layout(source)? == layout(payload)? && layout(source)? == layout(caller_return)? {
+            if layout(source)? == layout(payload)?
+                && layout(source)? == layout(caller_return)?
+                && endpoints.diverges(source) == endpoints.diverges(caller_return)
+            {
                 BackendReturnFlow::Tail
             } else {
                 BackendReturnFlow::Continue {
@@ -587,10 +619,10 @@ fn resolve_return_flow(
             source: Box::new(layout(source)?.clone()),
         },
         super::super::artifact::CallReturnFlow::Deliver { source, entry, .. } => {
-            let source = layout(source)?;
-            if source.diverges {
+            if endpoints.diverges(source) {
                 return Err(FatalError);
             }
+            let source = layout(source)?;
             BackendReturnFlow::Deliver {
                 source: Box::new(source.clone()),
                 entry: *entry,

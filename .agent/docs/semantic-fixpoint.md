@@ -551,8 +551,8 @@ with no stored return is how a non-returning function is reported.
 `produce_materialized_executable_product` (`jobs/artifact.rs`) waits on the
 settled fact and unwraps the missing return to `none`; the transport jobs read
 the same settled fact at three positions and, finding no return, take the
-bottom layout (`jobs/transport_layouts.rs`: `ExecutableReturn` and
-`ReturnPayload` take `bottom_transport_layout`; the callable-owner path in
+bottom layout (`jobs/transport_layouts.rs`: `ExecutableReturn` and a
+tail call's `ReturnPayload` take `bottom_transport_layout`; the callable-owner path in
 `jobs/transport.rs` treats them as unreachable). An absent fact could never carry that: nothing
 claims it, so it can never settle.
 

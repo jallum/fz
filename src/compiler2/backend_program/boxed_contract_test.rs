@@ -125,14 +125,11 @@ fn one_raw_lane_does_not_satisfy_a_wrapper_that_hands_back_a_stored_word() {
         &mut world,
         &key,
         BackendReturnFlow::Deliver {
-            source: Box::new(BackendReturnLayout {
-                layout: BackendValueLayout {
-                    structural: nothing,
-                    carrier: TransportCarrier::Absent,
-                    tys: Box::default(),
-                    reprs: Box::new([AbiValueRepr::RawInt]),
-                },
-                diverges: false,
+            source: Box::new(BackendValueLayout {
+                structural: nothing,
+                carrier: TransportCarrier::Absent,
+                tys: Box::default(),
+                reprs: Box::new([AbiValueRepr::RawInt]),
             }),
             entry: ControlEntryId::from_u32(0),
         },

@@ -1,0 +1,57 @@
+#---
+# purpose: "A call that returns, made inside the `catch` of a function that never returns, delivers its result to the handler as in Elixir, with or without an `else` clause, on all three paths"
+# oracle: self
+# oracle.stamp: fe0e7922c7acd583
+#---
+defmodule Main do
+  def run() do
+    collector = fn
+      acc, {:cont, entry} -> [entry | acc]
+      _acc, :halt -> :ok
+    end
+
+    try do
+      :lists.foldl(fn x, acc -> collector.(acc, {:cont, throw(x)}) end, [], [1, 2])
+    catch
+      kind, reason ->
+        collector.([], :halt)
+        IO.puts("collector halted")
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    end
+  end
+
+  def run_with_else() do
+    collector = fn
+      acc, {:cont, entry} -> [entry | acc]
+      acc, :done -> {:done, acc}
+      _acc, :halt -> :ok
+    end
+
+    try do
+      :lists.foldl(fn x, acc -> collector.(acc, {:cont, throw({:ball, x})}) end, [], [1, 2])
+    catch
+      kind, reason ->
+        collector.([], :halt)
+        IO.puts("collector halted again")
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    else
+      acc -> collector.(acc, :done)
+    end
+  end
+
+  def main() do
+    try do
+      run()
+    catch
+      kind, reason -> IO.inspect({kind, reason})
+    end
+
+    try do
+      run_with_else()
+    catch
+      kind, reason -> IO.inspect({kind, reason})
+    end
+  end
+end
+
+Main.main()

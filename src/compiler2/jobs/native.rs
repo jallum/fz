@@ -1858,7 +1858,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                         if !return_flow.as_ref().is_some_and(|flow| match flow {
                             BackendReturnFlow::NoReturn | BackendReturnFlow::Tail => true,
                             BackendReturnFlow::Continue { source } | BackendReturnFlow::Deliver { source, .. } => {
-                                source.as_ref() == &callee_executable.abi.return_layout
+                                source.as_ref() == &callee_executable.abi.return_layout.layout
                             }
                         }) {
                             return Err(incomplete_native_program(
@@ -2765,7 +2765,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entry.params.is_empty(),
                     "a resume entry is entered with its delivered value alone"
                 );
-                let (mut tys, mut reprs) = (layout.layout.tys.to_vec(), layout.layout.reprs.to_vec());
+                let (mut tys, mut reprs) = (layout.tys.to_vec(), layout.reprs.to_vec());
                 let extra_params = reprs.len();
                 self.append_entry_capture_lanes(executable, entry, &mut tys, &mut reprs);
                 (tys, reprs, NativeEntryAbi::Continuation { extra_params })
@@ -2821,14 +2821,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 Ok(lane_index)
             }
             BackendEntryOrigin::DeliveredResume { value, layout } => {
-                if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::Absent)
-                    && matches!(self.world.shape(layout.layout.structural), ShapeDescr::Nothing)
+                if matches!(layout.carrier, super::super::pull::TransportCarrier::Absent)
+                    && matches!(self.world.shape(layout.structural), ShapeDescr::Nothing)
                 {
                     bind_local_value(ctx, executable, env, *value, NativeBoundValue::Absent);
                     return Ok(0);
                 }
                 let mut lane_index = 0;
-                let bound = self.decode_runtime_value_for_layout(&layout.layout, entry_vars, &mut lane_index)?;
+                let bound = self.decode_runtime_value_for_layout(layout, entry_vars, &mut lane_index)?;
                 bind_local_value(ctx, executable, env, *value, bound);
                 Ok(lane_index)
             }
@@ -2931,9 +2931,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         if input_vars.is_empty() {
             return Ok(());
         }
-        let shape = layout.layout.structural;
+        let shape = layout.structural;
         let mut lane_index = 0;
-        if matches!(layout.layout.carrier, super::super::pull::TransportCarrier::ValueRef(_)) {
+        if matches!(layout.carrier, super::super::pull::TransportCarrier::ValueRef(_)) {
             let ignore = RuntimeDemand::ignore();
             let demand = executable
                 .abi
@@ -3029,10 +3029,10 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         &mut self,
         ctx: &NativeFnCtx,
         executable: &BackendExecutable,
-        source_return: &super::super::artifact::BackendReturnLayout,
+        source_return: &BackendValueLayout,
     ) -> Result<Cont, FatalError> {
-        let param_tys = &source_return.layout.tys;
-        let source_reprs = source_return.layout.reprs.to_vec();
+        let param_tys = &source_return.tys;
+        let source_reprs = source_return.reprs.to_vec();
         if param_tys.len() != source_reprs.len() {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -3065,7 +3065,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let params = cont_ctx.entry_params(param_tys.iter());
         let mut lane_index = 0;
-        let source_value = self.decode_runtime_value_for_layout(&source_return.layout, &params, &mut lane_index)?;
+        let source_value = self.decode_runtime_value_for_layout(source_return, &params, &mut lane_index)?;
         if lane_index != params.len() {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -3103,7 +3103,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         entry_fns: &mut EntryFns,
         entry_id: ControlEntryId,
         env: &ValueEnv,
-        source: &super::super::artifact::BackendReturnLayout,
+        source: &BackendValueLayout,
     ) -> Result<Cont, FatalError> {
         let entry = &entries[entry_id.as_u32() as usize];
         let Some(value) = entry.origin.input_value() else {
@@ -3120,12 +3120,12 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         // A source that already has the entry's layout needs no adapter: the
         // entry is the continuation, and the call builds one frame, not two.
         if let BackendEntryOrigin::DeliveredResume { layout, .. } = &entry.origin
-            && layout.layout == source.layout
+            && layout == source
         {
             return self.entry_continuation(ctx, executable, entries, entry_fns, entry_id, env);
         }
 
-        let (source_tys, source_reprs) = (source.layout.tys.to_vec(), source.layout.reprs.to_vec());
+        let (source_tys, source_reprs) = (source.tys.to_vec(), source.reprs.to_vec());
         if source_tys.len() != source_reprs.len() {
             return Err(incomplete_native_program(
                 self.telemetry,
@@ -3162,7 +3162,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         );
         let entry_vars = cont_ctx.entry_params(param_tys.as_slice());
         let mut source_lane_index = 0;
-        let delivered = self.decode_runtime_value_for_layout(&source.layout, &entry_vars, &mut source_lane_index)?;
+        let delivered = self.decode_runtime_value_for_layout(source, &entry_vars, &mut source_lane_index)?;
         let mut adapter_env = ValueEnv::default();
         bind_local_value(&mut cont_ctx, executable, &mut adapter_env, value, delivered);
         let mut lane_index = extra_params;
@@ -3314,14 +3314,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 let local = env
                     .value(value_id)
                     .ok_or_else(|| missing_backend_value(self.root_id, value_id))?;
-                self.encode_runtime_value_for_layout(
-                    ctx,
-                    executable,
-                    Some(value_id),
-                    local,
-                    &layout.layout,
-                    &mut lanes,
-                )?;
+                self.encode_runtime_value_for_layout(ctx, executable, Some(value_id), local, layout, &mut lanes)?;
                 lanes
             }
         };

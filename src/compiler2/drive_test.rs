@@ -14,7 +14,7 @@ use crate::compiler2::body::OutcomeEdge;
 use crate::compiler2::drive::DependencyKey;
 use crate::compiler2::pull::{ProductKey, TransportCarrier};
 use crate::compiler2::{
-    AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendReturnLayout, BackendStep,
+    AbiValueRepr, ActivationKey, BackendBody, BackendEntryOrigin, BackendProgram, BackendStep, BackendValueLayout,
     CallSiteId, CallSiteKey, CallSiteSummary, CallTarget, CallableValueKind, ControlEntryOrigin, ExecutableKey,
     FactKey, FunctionId, FunctionRef, LoweredBody, LoweredStep, LoweredTail, ModuleId, Namespace, QuotedSourceHeap,
     QuotedSourceMetadata, RuntimeDemand, SelectedCallee, Ty, TypeName, TypeVarId, Types, ValueId, World,
@@ -6503,14 +6503,15 @@ fn compiler2_backend_program_carries_return_payload_flow_before_native_lowering(
                     target: CallEdge::Direct(target),
                     ..
                 } => {
-                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.abi.return_layout) {
+                    if return_flow_is_distinct_return_payload(&target.return_flow, &executable.abi.return_layout.layout)
+                    {
                         saw_return_payload_flow = true;
                     }
                 }
                 BackendTail::ClosureCall {
                     return_flow: Some(return_flow),
                     ..
-                } if return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout) => {
+                } if return_flow_is_distinct_return_payload(return_flow, &executable.abi.return_layout.layout) => {
                     saw_return_payload_flow = true;
                 }
                 _ => {}
@@ -10645,7 +10646,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
 
     match &resume_entry.origin {
         BackendEntryOrigin::DeliveredResume { value, layout } => {
-            let _shape = layout.layout.structural;
+            let _shape = layout.structural;
             assert!(
                 main_exec
                     .abi
@@ -12034,15 +12035,13 @@ fn compiler2_native_program_delivers_exact_callee_return_lanes_straight_to_resum
             BackendBody::Extern { .. } => Vec::new(),
         })
         .find_map(|entry| match &entry.origin {
-            BackendEntryOrigin::DeliveredResume { layout, .. }
-                if layout.layout.reprs.as_ref() == [AbiValueRepr::RawInt] =>
-            {
+            BackendEntryOrigin::DeliveredResume { layout, .. } if layout.reprs.as_ref() == [AbiValueRepr::RawInt] => {
                 Some(layout)
             }
             _ => None,
         })
         .expect("the exact count-result demand should project one delivered integer lane");
-    assert_eq!(count_resume.layout.carrier, TransportCarrier::Absent);
+    assert_eq!(count_resume.carrier, TransportCarrier::Absent);
 
     // The count-result clause needs no frame, so native lowering runs it in
     // `count`'s own function and the delivered lane reaches the resume entry
@@ -18489,10 +18488,10 @@ fn compiler2_never_boxed_discarded_closure_call_delivers_no_lanes() {
             };
             checked += 1;
             assert!(
-                source.layout.reprs.is_empty(),
+                source.reprs.is_empty(),
                 "no seam boxes this callable, so a discarded closure call publishes no return lanes; \
                  it claimed {:?}",
-                source.layout.reprs,
+                source.reprs,
             );
         }
     }
@@ -21937,7 +21936,7 @@ fn native_function_contains_nil_const(program: &NativeProgram, fn_id: FnId) -> b
     })
 }
 
-fn return_flow_is_distinct_return_payload(flow: &BackendReturnFlow, caller: &BackendReturnLayout) -> bool {
+fn return_flow_is_distinct_return_payload(flow: &BackendReturnFlow, caller: &BackendValueLayout) -> bool {
     matches!(flow, BackendReturnFlow::Continue { source } if source.as_ref() != caller)
 }
 

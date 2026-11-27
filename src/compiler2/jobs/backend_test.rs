@@ -39,7 +39,7 @@ fn named_function_construction_uses_the_materialized_value_layout() {
         RootId::for_test(0),
         &abi.value_layouts,
         &abi.materialized.value_types,
-        HashMap::default(),
+        ReturnEndpoints::default(),
         ValueMap::new(),
     );
     let lowered = lowerer
@@ -67,18 +67,17 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
             need: ExecutableNeed::Value,
         },
     };
-    let layout = |diverges| BackendReturnLayout {
-        layout: BackendValueLayout {
-            structural: shape,
-            carrier: TransportCarrier::Absent,
-            tys: Box::default(),
-            reprs: Box::default(),
-        },
-        diverges,
+    let layout = BackendValueLayout {
+        structural: shape,
+        carrier: TransportCarrier::Absent,
+        tys: Box::default(),
+        reprs: Box::default(),
     };
 
-    let returning_layout = layout(false);
-    let returning = HashMap::from_iter([(&position, &returning_layout)]);
+    let returning = ReturnEndpoints {
+        layouts: HashMap::from_iter([(&position, &layout)]),
+        diverging_returns: HashSet::default(),
+    };
     assert!(
         resolve_return_flow(
             &CallReturnFlow::NoReturn {
@@ -89,8 +88,10 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
         .is_err()
     );
 
-    let divergent_layout = layout(true);
-    let divergent = HashMap::from_iter([(&position, &divergent_layout)]);
+    let divergent = ReturnEndpoints {
+        layouts: HashMap::from_iter([(&position, &layout)]),
+        diverging_returns: HashSet::from_iter([&position]),
+    };
     assert!(
         resolve_return_flow(
             &CallReturnFlow::Deliver {
@@ -102,6 +103,49 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
         )
         .is_err()
     );
+}
+
+/// A function that never returns still has calls that do: the delivered
+/// payload of such a call is a position of its own, not the function's return,
+/// so its delivery resolves while the function's own return is refused.
+#[test]
+fn a_delivery_into_a_function_that_never_returns_resolves_from_its_payload_position() {
+    let mut world = World::new();
+    let ty = world.types_mut().int();
+    let shape = world.intern_shape(ShapeDescr::Nothing);
+    let arrow = world.types_mut().arrow(&[], ty);
+    let symbol = ExecutableSymbol {
+        activation: ActivationSymbol {
+            function: FunctionId::from_coordinate(1),
+            arrow,
+            entry: None,
+        },
+        need: ExecutableNeed::Value,
+    };
+    let own_return = TransportPosition::ExecutableReturn {
+        executable: symbol.clone(),
+    };
+    let payload = TransportPosition::ResumePayload {
+        executable: symbol,
+        entry: ControlEntryId::from_u32(0),
+    };
+    let layout = BackendValueLayout {
+        structural: shape,
+        carrier: TransportCarrier::Absent,
+        tys: Box::default(),
+        reprs: Box::default(),
+    };
+    let endpoints = ReturnEndpoints {
+        layouts: HashMap::from_iter([(&own_return, &layout), (&payload, &layout)]),
+        diverging_returns: HashSet::from_iter([&own_return]),
+    };
+    let deliver = |source: &TransportPosition| CallReturnFlow::Deliver {
+        source: source.clone(),
+        resume: payload.clone(),
+        entry: ControlEntryId::from_u32(0),
+    };
+    assert!(resolve_return_flow(&deliver(&payload), &endpoints).is_ok());
+    assert!(resolve_return_flow(&deliver(&own_return), &endpoints).is_err());
 }
 
 /// FIX-1 of the fz-kdt.155 re-refutation: the seam tripwire's REFUSING
@@ -172,13 +216,10 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
                     }],
                     dest: ControlDestination::Return,
                     return_flow: Some(BackendReturnFlow::Deliver {
-                        source: Box::new(BackendReturnLayout {
-                            layout: value_layout(
-                                TransportCarrier::ValueRef(LaneId::for_test(0)),
-                                vec![AbiValueRepr::Stored],
-                            ),
-                            diverges: false,
-                        }),
+                        source: Box::new(value_layout(
+                            TransportCarrier::ValueRef(LaneId::for_test(0)),
+                            vec![AbiValueRepr::Stored],
+                        )),
                         entry: ControlEntryId::from_u32(0),
                     }),
                 },
@@ -264,7 +305,7 @@ fn lower_update_whose_value_is_absent(ok_absent: bool) -> BackendStep {
         RootId::for_test(0),
         &abi.value_layouts,
         &abi.materialized.value_types,
-        HashMap::default(),
+        ReturnEndpoints::default(),
         ValueMap::new(),
     );
     lowerer

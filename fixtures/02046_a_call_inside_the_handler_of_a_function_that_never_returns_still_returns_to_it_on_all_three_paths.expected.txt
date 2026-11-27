@@ -1,0 +1,4 @@
+collector halted
+{:throw, 1}
+collector halted again
+{:throw, {:ball, 1}}

@@ -54,7 +54,7 @@ impl BoxedApplyRequirement {
                     // A delivered or continued result lands in a destination
                     // whose lanes are stated outright.
                     Some(BackendReturnFlow::Deliver { source, .. } | BackendReturnFlow::Continue { source }) => {
-                        source.layout.reprs.clone()
+                        source.reprs.clone()
                     }
                     // A tail call hands the seam's result straight on to this
                     // body's own caller without touching it, so this body's own

@@ -134,6 +134,10 @@ impl BackendValueLayout {
     }
 }
 
+/// An executable's own return: its layout, and whether the executable never
+/// returns. A payload or resume endpoint is a plain `BackendValueLayout`: those
+/// flows exist only because their callee returned, so divergence is a fact of
+/// the executable's return alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendReturnLayout {
     pub layout: BackendValueLayout,
@@ -394,10 +398,10 @@ pub enum BackendReturnFlow {
     NoReturn,
     Tail,
     Continue {
-        source: Box<BackendReturnLayout>,
+        source: Box<BackendValueLayout>,
     },
     Deliver {
-        source: Box<BackendReturnLayout>,
+        source: Box<BackendValueLayout>,
         entry: ControlEntryId,
     },
 }
@@ -1105,7 +1109,9 @@ pub struct AbiReadyExecutable {
     pub param_reprs: Vec<AbiValueRepr>,
     pub semantic_inputs: Box<[BackendSemanticInputLayout]>,
     pub return_layout: BackendReturnLayout,
-    pub return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
+    /// The layouts of the payload and resume positions, which carry one
+    /// delivered value each. The executable's own return is `return_layout`.
+    pub return_endpoints: Box<[(TransportPosition, BackendValueLayout)]>,
     pub transport: MaterializedExecutableTransport,
     pub value_layouts: ValueMap<BackendValueLayout>,
     pub effects: EffectSummary,
@@ -1346,10 +1352,7 @@ pub enum BackendEntryOrigin {
     Branch,
     ReceiveOutcome,
     Handler,
-    DeliveredResume {
-        value: ValueId,
-        layout: BackendReturnLayout,
-    },
+    DeliveredResume { value: ValueId, layout: BackendValueLayout },
 }
 
 impl BackendEntryOrigin {
