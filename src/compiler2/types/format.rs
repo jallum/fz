@@ -203,10 +203,14 @@ impl Render<'_> {
                     true => format!("optional({}) => {}", format_map_key(k), self.ty(&field.ty)),
                 })
                 .collect();
+            // A signature whose every domain says something holds only the keys
+            // of the kinds it names, so the kinds it holds none of are left out.
+            let holds_only_named_kinds = !sig.domains.iter().any(|(_, ty)| self.cx.descr(&ty).is_full(self.cx));
             fields.extend(
                 sig.domains
                     .iter()
                     .filter(|(_, ty)| !self.cx.descr(ty).is_full(self.cx))
+                    .filter(|(_, ty)| !(holds_only_named_kinds && self.cx.descr(ty).is_empty(self.cx)))
                     .map(|(domain, ty)| format!("{} => {}", domain.name(), self.ty(&ty))),
             );
             match &module {

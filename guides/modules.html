@@ -424,6 +424,16 @@ one can continue on the next lines after <code>::</code>, before each
 <span class="kw">@spec</span> describe(scalar(), %{label: binary()}) ::
         {scalar(), binary()} | :none</pre>
 
+<p>A map type or a map literal that writes a kind of key (<code>binary()</code>,
+<code>atom()</code>, <code>integer()</code>, ...) holds only keys of the kinds it
+writes. A map that writes only named keys, such as
+<code>%{label: binary()}</code>, writes no kind of key and stays open to any
+other key:</p>
+
+<pre><span class="kw">@spec</span> read(%{binary() =&gt; integer()}) :: integer | <span class="atm">nil</span>
+<span class="kw">def</span> <span class="fn">read</span>(m), <span class="kw">do:</span> m[<span class="atm">:zzz</span>]   <span class="com"># nil: an atom is not a kind this type writes</span>
+read(%{<span class="str">"a"</span> =&gt; <span class="num">1</span>, b: <span class="num">2</span>})        <span class="com"># rejected: :b is an atom key</span></pre>
+
 <p><code>@typep</code> and <code>@opaque</code> declare a type just as
 <code>@type</code> does. Elixir's compiler does the same; only a static analyser
 treats one as private or opaque.</p>

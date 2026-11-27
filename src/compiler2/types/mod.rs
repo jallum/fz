@@ -1913,8 +1913,12 @@ impl Types {
     /// does. A literal key names a field, required unless the entry says
     /// otherwise. A domain entry sets the value type of every key of that kind
     /// the fields do not name, and several entries for one domain join: a
-    /// domain is never required, so the empty map belongs to it. The domains
-    /// no entry names stay `any`, so the type is open.
+    /// domain is never required, so the empty map belongs to it.
+    ///
+    /// A map that writes at least one kind of key holds only keys of the kinds
+    /// it writes: every other domain is `none`, so a key of another kind is
+    /// never present. One that writes only named fields writes no kind, and
+    /// every domain stays `any`, so it holds other keys too.
     pub fn map_of_entries(&mut self, entries: &[MapTypeEntry]) -> Ty {
         let (any, none) = (self.core.any, self.core.none);
         let mut sig = MapSig::open(BTreeMap::new(), any);
@@ -1934,6 +1938,13 @@ impl Types {
                     } else {
                         self.union(sig.domains[*domain], entry.value)
                     };
+                }
+            }
+        }
+        if !written.is_empty() {
+            for domain in MapDomain::ALL {
+                if !written.contains(&domain) {
+                    sig.domains[domain] = none;
                 }
             }
         }

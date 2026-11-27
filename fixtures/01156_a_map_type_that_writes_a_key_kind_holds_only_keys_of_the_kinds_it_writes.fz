@@ -1,0 +1,28 @@
+#---
+# purpose: "A map typed %{binary() => integer()} and a literal with binary keys read, sum and update at run time as in Elixir, and a read of either at an atom key answers nil"
+# oracle: self
+# oracle.stamp: afeec03bee872615
+#---
+defmodule Main do
+  @spec table() :: %{binary() => integer()}
+  def table(), do: hd([%{"a" => 1, "b" => 2}])
+
+  def at_binary(m, key), do: m[key]
+
+  def at_atom(m), do: m[:zzz]
+
+  @spec total(%{binary() => integer()}) :: integer()
+  def total(m), do: Enum.reduce(Map.values(m), 0, fn v, acc -> v + acc end)
+
+  @spec bump(%{binary() => integer()}, binary()) :: %{binary() => integer()}
+  def bump(m, key), do: Map.update(m, key, 1, fn v -> v + 1 end)
+
+  def main() do
+    m = table()
+    IO.inspect({at_binary(m, "a"), at_binary(m, "zz"), at_atom(m), total(m)})
+    IO.inspect({bump(m, "a"), bump(m, "new")})
+    IO.inspect({at_atom(%{"a" => 1}), at_binary(%{"a" => 1}, "a")})
+  end
+end
+
+Main.main()
