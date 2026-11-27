@@ -1,0 +1,25 @@
+#---
+# purpose: a self-recursive call that hands an activation a list head outside the type its key names still has that head tested at runtime, so is_atom answers the same on all three paths
+# oracle: self
+# oracle.stamp: db9d73f4e6fb05fa
+#---
+#
+# `walk/2` is entered with `[1]`, so its key says the head is an int. The
+# recursive call passes `[:a | t]`, so the head can also be an atom. A key is
+# an identity, not evidence: the head's type is what the activation's calls
+# supply, and `is_atom(h)` must read the value rather than the key.
+#
+defmodule Main do
+  def walk([h | t], n) do
+    if n == 0 do
+      is_atom(h)
+    else
+      walk([:a | t], n - 1)
+    end
+  end
+
+  def main() do
+    IO.inspect(walk([1], 2))
+  end
+end
+Main.main()

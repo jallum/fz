@@ -1356,7 +1356,7 @@ never freed.
 | lowered module | `NativeProgram.module` |
 | semantic executable / physical entry inventory | `NativeProgram.executable_entries` plus `NativeProgram.entry` and `bodies[*].fn_id` / `origin` |
 | body result and effects | `NativeBody.return_ty`, `return_reprs`, and `effects` |
-| value type queries | `NativeBody.value_types` |
+| value type queries | `NativeBody.value_types`, one type per `Var` |
 | callable entries | `NativeProgram.callable_boundaries` |
 | callable-boundary lookup | `MakeFnRef` / `MakeClosure` `identity_fn` resolved against `NativeProgram.callable_boundaries` |
 | extern decls plus wire classes | `NativeProgram.module.externs` plus `NativeBody.extern_marshals` |

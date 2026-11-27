@@ -66,6 +66,27 @@ transport shape, and a `ProjectionKind::TupleField` is a view over lanes already
 in hand. Neither builds a value, and a statically settled question emits no
 branch at all.
 
+A projection that is not a view over lanes reads its value into one native
+`Var` -- `TupleField`, `StructField`, `ListHead`, `ListTail`, `MapValue` -- and
+that `Var` is typed when it is read: `project_subject` takes the subject's type
+from the entry's input evidence and gives the field, element or value type within
+it (`any` when the subject's type has nothing there). The `Var` is the subject
+of every test that follows and is handed to every clause that binds it, so it
+keeps that type. A clause that learns more -- `is_atom(form)` having passed --
+binds the narrower type to its own entry-block parameter, and the jump into the
+block converts the value; the tested `Var` is never retyped. `NativeFnCtx`
+records a `Var`'s type once (`record_value_type`): a different second type is a
+lowering panic. The one permitted sharpening is a parameter's own: it is born
+with the type of its lane and takes the type of the value bound to it
+(`record_carried_type`). A constant's `Var` carries the exact type of the value
+it holds, so binding the value changes nothing.
+
+The entry's input types are the activation's joined input evidence
+(`World::activation_inputs_joined`), never the executable's key. A key is an
+identity: a recursive call that re-enters the activation that entered a cycle
+hands it values outside the types its key names, and the joined evidence is
+what covers them.
+
 `Region::Type` is decided from lane form too, per position. A guarded clause
 head -- `def tag({:cont, n}) when is_integer(n)` -- asks a whole-value question
 about a parameter that can perfectly well arrive as lanes, so the lowering asks the

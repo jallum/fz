@@ -1,0 +1,30 @@
+#---
+# purpose: a clause that narrows a tuple field or a list head with `is_atom` leaves the clause after it the field's whole type, so a tuple read there is a tuple on all three paths
+# oracle: self
+# oracle.stamp: 01a5e04fb0477438
+#---
+#
+# `pre/2` reads field 0 of a 3-tuple once. Its first clause narrows that field
+# to an atom; its second takes whatever is left. The tuple reaches it through
+# `List.last/1`, so the field's type is the union of an atom and a tuple, and
+# only the runtime test tells them apart. `tag/1` asks the same of a list head.
+defmodule Main do
+  def main() do
+    call = {{:., [], [:mod]}, [], [1]}
+    IO.inspect(pre(List.last([4, call]), fn n -> n end))
+    IO.inspect(pre(List.last([4, {:f, [], [2]}]), fn n -> n end))
+    IO.inspect(tag(List.last([[:a, 1], [{:x, 1}, 2]])))
+    IO.inspect(tag(List.last([[{:x, 1}, 2], [:a, 1]])))
+    IO.inspect(tag(List.last([[{:x, 1}, 2], []])))
+  end
+
+  def pre({form, meta, args}, _fun) when is_atom(form), do: {form, meta, args}
+  def pre({form, meta, args}, fun), do: {pre(fun.(form), fun), meta, args}
+  def pre(x, _fun), do: x
+
+  def tag([head | rest]) when is_atom(head), do: {:atom, head, rest}
+  def tag([head | rest]), do: {:other, head, rest}
+  def tag([]), do: :empty
+end
+
+Main.main()
