@@ -38,6 +38,9 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_diverges: &'a [bool],
     pub(super) cont_fns: &'a HashSet<FnId>,
+    /// The machine functions that may raise: a call to one is followed by a
+    /// check of the process for an unwind.
+    pub(super) raising_machines: &'a HashSet<FnId>,
     /// Receive functions per ReceiveMatched site, keyed by `(parent_fn_id.0,
     /// block_id.0)`. Populated by the planned codegen declaration pass
     /// and consumed by the Term::ReceiveMatched arm in
@@ -79,6 +82,8 @@ impl CodegenEnv<'_> {
 pub(crate) enum StaticLiteralField {
     Scalar(AnyValue),
     Struct(DataId),
+    /// A short bitstring literal's read-only object.
+    Bitstring(DataId),
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +126,9 @@ pub(crate) struct CodegenCache {
     /// Read-only static struct symbols produced for fully literal aggregate
     /// vars. A later literal aggregate can embed them by data relocation.
     pub(super) static_struct_refs: HashMap<u32, StaticStructRef>,
+    /// The read-only object of each short bitstring literal var, which a
+    /// literal aggregate can embed by data relocation.
+    pub(super) static_bitstring_refs: HashMap<u32, DataId>,
     /// Per-function counter for unique static struct data symbols.
     pub(super) static_struct_count: usize,
     /// FuncRef each extern is called through, deduplicated per function.

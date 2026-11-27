@@ -492,7 +492,7 @@ per executable, where each entry lives (`EntryFns::for_executable` in
 - An entry every transfer to which is a direct transfer from one and the same
   function -- an `if` arm, a decision's outcome or miss, a clause body reached
   from the executable's dispatch, a join that several arms deliver to, or the
-  entry a call lowered in its caller resumes (below) -- is a block of that function. The
+  entry a machine call resumes in its caller (below) -- is a block of that function. The
   transfer is a `Goto` carrying the same arguments a call would; the block's
   parameters follow the entry's signature, and the entry's steps and tail are
   lowered into it before that function is finished. An entry with several
@@ -514,37 +514,71 @@ per executable, where each entry lives (`EntryFns::for_executable` in
   The handler is a function of its own, because only a raise, which the runtime
   delivers, reaches it (`EntryTransfer::Runtime`). A join the body and the
   handler both deliver to is reached from two functions, so it stays a function.
-- A delivered direct call whose every callee is frame-free is lowered in its
-  caller. An executable is frame-free when nothing outside a function holding
-  it could arrive in it: none of its entries reaches a `receive`, a `try`, a
-  closure call, a call across a provider boundary, an indirect call, or a call
-  into a call cycle, and every executable it calls is frame-free. An extern is
-  frame-free, with or without an entry dispatch; a callee nothing defines
-  counts as frame-free, because the call raises where it stands, and so does a
-  call that never returns. `FrameFree::of` in `src/compiler2/jobs/frame_free.rs`
-  answers this once per program by a depth-first walk in which an executable
-  met again while its own answer is pending is in a cycle; one rule
-  (`delivered_call_continues_here`, `tail_call_continues_here`) decides both the
-  table and each call site. A dispatch call edge is lowered in place only when
-  every arm is. The caller jumps to a head block typed with the callee's own
-  input types and lowers the callee's dispatch, clause bodies and entries as
-  its blocks (`NativeLowerer::lower_call_in_place`, `lower_executable_here`,
-  under an `EntryScope` of the callee's entries); an extern callee is the
-  extern call itself (`lower_extern_here`, the same code the extern's own
-  function runs, so a declared failure raises from the caller). Each of the
-  callee's returns jumps to one block typed with its return layout
-  (`Returns::ToJoin`); a tail call inside it to another frame-free callee is
-  lowered in place too and shares that block. From the block the caller binds
-  the returned value to the resume entry's input and transfers to the resume
-  entry. The call builds no continuation and names no callee, and the resume
-  entry is reached by a direct transfer, so `EntryFns::for_executable` counts
-  the call's transfer as `EntryTransfer::Direct`. `n + 1` over integers is such
-  a call, and so is a call to a multi-clause helper that branches and calls
-  other such helpers. A call in tail position (`ControlDestination::Return`)
-  from a function of its own stays a tail call. Lowering in place is a native
-  lowering choice; the backend program and the interpreter, which runs it as
-  it stands, are unchanged. Fixture 01880 pins which calls build a
-  continuation.
+- A delivered direct call whose every callee is frame-free is a machine call. An
+  executable is frame-free when nothing outside a function holding it could
+  arrive in it: none of its entries reaches a `receive`, a `try`, a closure
+  call, a call across a provider boundary, an indirect call, or a call into a
+  call cycle, and every executable it calls is frame-free, including one it
+  calls and never returns from. An extern is frame-free, with or without an
+  entry dispatch; a callee nothing defines counts as frame-free, because the
+  call raises where it stands. `FrameFree::of` in
+  `src/compiler2/jobs/frame_free.rs` answers this once per program by a
+  depth-first walk in which an executable met again while its own answer is
+  pending is in a cycle; one rule (`delivered_call_continues_here`,
+  `tail_call_continues_here`) decides both the table and each call site. A
+  dispatch call edge is a machine call only when every arm is.
+  A frame-free executable of clauses is lowered once, as a machine function
+  (`NativeEntryAbi::Machine`, `NativeLowerer::lower_machine_fn`): it takes the
+  executable's input lanes and no continuation, its dispatch, clause bodies and
+  entries are its blocks, and a return is `Term::ReturnLanes`, which returns
+  the lanes of the executable's return layout in registers. The function the
+  executable's continuation-passing callers reach it by
+  (`lower_machine_entry`) calls the machine function and returns its lanes
+  through the continuation. The call site is `Prim::MachineCall`
+  (`NativeLowerer::lower_machine_call`): a Cranelift `call` to the machine
+  function on the call's lanes, then, when the callee may raise, a check of the
+  process's `unwinding` word (`failed || delivered.is_some()`, one byte the
+  runtime keeps in step in `Process::fail`, `deliver_handler` and
+  `run_quantum`), which returns from the caller too when the callee raised
+  (`return_if_raised`: one load and one branch; a continuation function returns
+  0, a machine function returns a zero in each of its lanes, and the raise
+  propagates a frame at a time to the quantum entry). A callee may raise when
+  it has a raise terminator, calls an extern declared to fail, or calls
+  something that may raise (`raising_machines` in
+  `src/compiler2/native_codegen/raises.rs`, a fixpoint over the machine
+  functions); a call to any other callee has no check. The caller then binds
+  the returned lanes to the resume entry's input and transfers to it. A callee
+  whose copied size is within `COPY_LIMIT` is not called: its blocks are
+  lowered into the caller (`lower_call_copied`). The copied size of an
+  executable is one, plus its entries, plus the copied size of each callee it
+  calls (one for a callee past the limit); a forwarder, whose body is only a
+  call it returns, costs what its callee does. So a caller's code is bounded by
+  its own calls, not by the depth of what they call. A cold block, such as an
+  integer add's overflow path, reads the process register again after a
+  runtime call rather than carrying a copy over it: a value held over a call
+  takes a callee-saved register, which the function then saves in its prologue
+  on every call, because Cranelift does not shrink-wrap. The call builds no continuation
+  and names no continuation function, and the resume entry is reached by a
+  direct transfer, so `EntryFns::for_executable` counts the call's transfer as
+  `EntryTransfer::Direct`. A tail call inside a machine function to another
+  frame-free executable returns that callee's value as its own and is a
+  `return_call` to its machine function; a call that never returns is a
+  machine call followed by a trap. An extern callee is the extern call itself,
+  made where control is (`lower_extern_call_here`, `lower_extern_here`, the same
+  code the extern's own function runs, so a declared failure raises from the
+  caller). Code size is linear in the program: a callee is compiled once and
+  each call site is a constant, or a copy bounded by `COPY_LIMIT`. Collection runs only between quanta, so values
+  a caller holds across the call are never moved, and a frame-free callee has no
+  back edge, so it never yields. A machine call uses the process's machine stack
+  to the depth of the longest acyclic chain of calls; that stack is the
+  thread's own, which no code here sizes. `n + 1` over integers is such a call,
+  and so is a call to a multi-clause helper that branches and calls other such
+  helpers. A call in tail position from a function that is not a machine function
+  stays a tail call. Machine calls are a native lowering choice; the backend
+  program and the interpreter, which runs it as it stands, are unchanged.
+  Fixture 01880 pins which calls build a continuation, and fixtures 01994 to
+  01996 run a chain of a thousand machine calls, a raise through five of them,
+  and results of several lanes.
 - Every other entry is a function of its own: a join whose arms are in
   different functions, the entry a call's return resumes, and the entries the runtime enters from a
   `receive` (its outcomes, its timeout, and the entry its value continues in).

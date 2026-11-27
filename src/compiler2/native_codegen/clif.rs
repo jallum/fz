@@ -46,6 +46,9 @@ pub(crate) fn host_isa_for(home: CodeHome) -> Arc<dyn TargetIsa> {
     // macOS preserves them by default; Linux does not.
     flag_builder.set("preserve_frame_pointers", "true").unwrap();
     flag_builder.set("enable_pinned_reg", "true").unwrap();
+    // A machine function returns every lane of its result in the return
+    // values; past the registers the ABI spills them to the caller's stack.
+    flag_builder.set("enable_multi_ret_implicit_sret", "true").unwrap();
     let isa_builder = builder().expect("host ISA");
     isa_builder.finish(Flags::new(flag_builder)).expect("isa finish")
 }

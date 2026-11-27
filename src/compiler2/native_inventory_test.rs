@@ -56,17 +56,18 @@ pub(super) fn unreachable_native_functions(program: &NativeProgram) -> Vec<FnId>
     };
     let mut control = HashMap::default();
     for function in &program.module.fns {
-        let targets = ir_control_fn_ids(function);
-        targets.iter().copied().for_each(&require_function);
-        control.insert(function.id, targets);
+        let mut targets = ir_control_fn_ids(function);
         for block in &function.blocks {
             for statement in &block.stmts {
                 match statement.prim() {
                     Prim::MakeFnRef(_, id) | Prim::MakeClosure(_, id, _) => roots.push(construction_target(*id)),
+                    Prim::MachineCall(id, _) => targets.push(*id),
                     _ => {}
                 }
             }
         }
+        targets.iter().copied().for_each(&require_function);
+        control.insert(function.id, targets);
     }
     roots.iter().copied().for_each(require_function);
     let mut reached = HashSet::default();

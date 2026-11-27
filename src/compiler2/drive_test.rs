@@ -6821,7 +6821,7 @@ fn compiler2_native_program_resume_payload_shape_is_schedule_independent() {
             .filter_map(|body| match body.origin {
                 NativeBodyOrigin::Continuation { owner, .. } if qsort_owners.contains(&owner) => match body.entry_abi {
                     NativeEntryAbi::Continuation { extra_params } => Some(extra_params),
-                    NativeEntryAbi::Direct => None,
+                    NativeEntryAbi::Direct | NativeEntryAbi::Machine => None,
                 },
                 _ => None,
             })
@@ -6894,7 +6894,7 @@ fn compiler2_native_program_resume_shape_distinguishes_destination_passing_from_
             .filter_map(|body| match body.origin {
                 NativeBodyOrigin::Continuation { owner, .. } if qsort_owners.contains(&owner) => match body.entry_abi {
                     NativeEntryAbi::Continuation { extra_params } => Some(extra_params),
-                    NativeEntryAbi::Direct => None,
+                    NativeEntryAbi::Direct | NativeEntryAbi::Machine => None,
                 },
                 _ => None,
             })
@@ -7369,6 +7369,35 @@ fn native_dispatch_does_not_emit_unselected_branch_helpers() {
 #[test]
 fn native_no_return_call_does_not_emit_delivery_resume() {
     assert_native_helpers_are_referenced("def main() do\n  panic(:done)\n  42\nend\n");
+}
+
+/// `f0..fN`, each calling the one before it, and `all`, calling every one.
+fn frame_free_chain_program(n: usize) -> String {
+    let mut text = String::from("def f0(x), do: x\n");
+    for k in 1..=n {
+        text.push_str(&format!("def f{k}(x), do: f{}(x) + 1\n", k - 1));
+    }
+    let calls = (0..=n).map(|k| format!("f{k}(x)")).collect::<Vec<_>>().join(" + ");
+    text.push_str(&format!("def all(x), do: {calls}\n"));
+    text.push_str("def main(), do: all(1)\n");
+    text
+}
+
+fn native_block_count(text: &str) -> usize {
+    let program = native_program_of("chain.fz", text);
+    program.module.fns.iter().map(|function| function.blocks.len()).sum()
+}
+
+#[test]
+fn a_chain_of_frame_free_calls_compiles_to_code_linear_in_its_length() {
+    let short = native_block_count(&frame_free_chain_program(10));
+    let long = native_block_count(&frame_free_chain_program(40));
+    // A callee is compiled once and called, not copied into each caller, so
+    // four times the functions is about four times the blocks.
+    assert!(
+        long * 10 <= short * 40 * 15 / 10,
+        "40 chained functions took {long} blocks and 10 took {short}: not linear"
+    );
 }
 
 /// Regenerate `.agent/measurements/fz-kdt.163-native-cps-sharing.txt` with:
@@ -9063,21 +9092,29 @@ fn lowered_clif_by_function(source: &str) -> Vec<(String, String)> {
 }
 
 /// The lowered CLIF of the body of the one executable of `function`: the
-/// function named `<function>__e<id>`, not its resume points.
+/// function named `<function>__e<id>`, or `<function>__e<id>__machine` when
+/// the executable cannot suspend and its body is a machine function, not its
+/// resume points.
 fn lowered_clif_of(source: &str, function: &str) -> String {
     let prefix = format!("{function}__e");
     let found: Vec<(String, String)> = lowered_clif_by_function(source)
         .into_iter()
         .filter(|(name, _)| {
-            name.strip_prefix(&prefix)
-                .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+            name.strip_prefix(&prefix).is_some_and(|rest| {
+                let id = rest.strip_suffix("__machine").unwrap_or(rest);
+                !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())
+            })
         })
         .collect();
+    let body = found
+        .iter()
+        .find(|(name, _)| name.ends_with("__machine"))
+        .or(found.first());
     let names: Vec<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
-    let [(_, text)] = found.as_slice() else {
+    if found.iter().filter(|(name, _)| !name.ends_with("__machine")).count() != 1 {
         panic!("one executable of {function}, found {names:?} in\n{source}");
-    };
-    text.clone()
+    }
+    body.expect("one executable").1.clone()
 }
 
 /// The line that defines the condition of the branch into the block that
@@ -9312,6 +9349,142 @@ fn compiler2_native_map_put_passes_an_integer_as_its_word_and_kind() {
     );
 }
 
+/// `a + b` over integers in a function that cannot suspend is the add itself:
+/// `Kernel.+` is a forwarder of an extern, small enough to be copied into its
+/// caller, so the caller's code calls no function of the program, only the
+/// runtime's overflow and failure paths.
+#[test]
+fn compiler2_native_integer_add_in_a_frame_free_caller_calls_no_function_of_the_program() {
+    let source = "defmodule P do\n\
+         \x20 def add(a, b) when is_integer(a) and is_integer(b), do: a + b\n\
+         \x20 def twice(a, b) when is_integer(a) and is_integer(b), do: add(a, b) + 1\n\
+         end\n\
+         def main(), do: P.twice(1, 2)\n";
+    for function in ["add", "twice"] {
+        let clif = lowered_clif_of(source, function);
+        assert!(
+            !clif.contains("= colocated u0:"),
+            "{function} calls a function of the program for its `+`:\n{clif}"
+        );
+    }
+}
+
+/// `big`, a function of forty-one clauses: too big to copy into a caller, and
+/// with no way to fail. `bad` is as big and can fail, for no clause need match.
+/// `mid` is the biggest function a caller copies, and `via_mid` calls it
+/// through a forwarder.
+fn big_machine_callees() -> String {
+    let clauses = |name: &str, count: usize, last: &str| {
+        (0..count)
+            .map(|i| format!("  def {name}({i}), do: {}\n", i + 1))
+            .collect::<String>()
+            + last
+    };
+    format!(
+        "defmodule P do\n{}{}{}\
+         \x20 def fwd(x), do: big(x)\n\
+         \x20 def safe(x) when is_integer(x), do: big(x) + 1\n\
+         \x20 def unsafe(x) when is_integer(x), do: bad(x) + 1\n\
+         \x20 def via_fwd(x) when is_integer(x), do: fwd(x) + 1\n\
+         \x20 def fwd_mid(x), do: mid(x)\n\
+         \x20 def via_mid(x) when is_integer(x), do: fwd_mid(x) + 1\n\
+         end\n\
+         def main(), do: P.safe(3) + P.unsafe(3) + P.via_fwd(1) + P.via_mid(1)\n",
+        clauses("big", 40, "  def big(_), do: 0\n"),
+        clauses("bad", 40, ""),
+        clauses("mid", 30, "  def mid(_), do: 0\n"),
+    )
+}
+
+fn lines_of(clif: &str) -> Vec<&str> {
+    clif.lines().map(str::trim).collect()
+}
+
+/// After a machine call that can raise, the caller asks one question of the
+/// process: one load of the unwinding word and one branch on it.
+#[test]
+fn compiler2_native_the_raise_check_after_a_machine_call_is_one_load_and_one_branch() {
+    let clif = lowered_clif_of(&big_machine_callees(), "unsafe");
+    let lines = lines_of(&clif);
+    let call = lines
+        .iter()
+        .position(|line| line.contains("= call fn0("))
+        .expect("unsafe calls bad");
+    assert!(
+        lines[call + 1].contains("get_pinned_reg")
+            && lines[call + 2].contains("uload8")
+            && lines[call + 3].starts_with("brif "),
+        "the check is a load of the unwinding word and a branch on it:\n{clif}"
+    );
+}
+
+/// A callee that cannot raise leaves nothing to ask: the only load of the
+/// unwinding word in its caller is the one on the caller's own overflow path.
+#[test]
+fn compiler2_native_a_call_to_a_callee_that_cannot_raise_has_no_raise_check() {
+    let source = big_machine_callees();
+    let loads = |function: &str| lowered_clif_of(&source, function).matches("uload8").count();
+    assert_eq!(
+        loads("unsafe"),
+        loads("safe") + 1,
+        "only the call to the callee that can raise is checked"
+    );
+}
+
+/// A cold path holds no value across the runtime call it makes, or the
+/// function that takes the path must save a callee-saved register in its
+/// prologue on every call. So the process register is read again after a call
+/// rather than carried over it.
+#[test]
+fn compiler2_native_a_leaf_add_carries_no_value_over_its_runtime_call() {
+    let source = "defmodule P do\n\
+         \x20 def add(a, b) when is_integer(a) and is_integer(b), do: a + b\n\
+         end\n\
+         def main(), do: P.add(1, 2)\n";
+    let clif = lowered_clif_of(source, "add");
+    let mut pinned_before_call = Vec::new();
+    let mut seen_call = false;
+    for line in lines_of(&clif) {
+        if line.ends_with(':') || line.starts_with("block") {
+            pinned_before_call.clear();
+            seen_call = false;
+        }
+        if seen_call {
+            assert!(
+                !pinned_before_call
+                    .iter()
+                    .any(|name: &String| line.contains(&format!(" {name}")) || line.contains(&format!("({name}"))),
+                "`{line}` reads a value held over a call:\n{clif}"
+            );
+        }
+        if let Some((name, _)) = line.split_once(" = get_pinned_reg")
+            && !seen_call
+        {
+            pinned_before_call.push(name.to_string());
+        }
+        if line.contains("call fn") && !line.starts_with("return_call") {
+            seen_call = true;
+        }
+    }
+}
+
+/// A function that only forwards to another is a tail jump with no frame, and
+/// a caller of it pays what a caller of its callee does.
+#[test]
+fn compiler2_native_a_forwarder_is_a_tail_jump_and_its_caller_calls_its_callee() {
+    let source = big_machine_callees();
+    let forwarder = lowered_clif_of(&source, "fwd");
+    assert!(
+        forwarder.contains("return_call fn0") && !forwarder.contains("store") && !forwarder.contains("load"),
+        "the forwarder is one tail jump:\n{forwarder}"
+    );
+    let caller = lowered_clif_of(&source, "via_mid");
+    assert!(
+        !caller.contains("= colocated u0:"),
+        "the forwarder costs what its callee does, so both are copied in:\n{caller}"
+    );
+}
+
 /// A map the compiler has proven stays proven across `Map.put`: its spec says
 /// it returns a map, the extern it calls declares a map, and the runtime trusts
 /// both. So `map_size` of a put loop's result asks no question of the value's
@@ -9344,14 +9517,8 @@ fn compiler2_native_put_loop_over_a_proven_map_asks_no_kind_question() {
     );
 
     let fill = lowered_clif_of(source, "fill");
-    let before_put = fill
-        .split_once(" = call fn")
-        .map(|(head, _)| head)
-        .unwrap_or_else(|| panic!("the loop calls the runtime's put:\n{fill}"));
-    // The one kind-set test the loop may make before the put reads the key out
-    // of its list cell; a test of the map would be a second.
     assert!(
-        fill.contains("= fz_map_put\n") && before_put.matches(&format!("iconst.i64 {kind_set_test}")).count() <= 1,
+        !fill.contains(kind_set_test),
         "the loop tests the kind of its map before the put:\n{fill}"
     );
 }
@@ -11240,7 +11407,9 @@ fn compiler2_native_receive_after_divergent_member_runs_numeric_path() {
         .iter()
         .filter_map(|body| match &body.origin {
             NativeBodyOrigin::Executable(key)
-                if key.activation.function == bump && compiler.world().types().is_empty(&body.return_ty) =>
+                if key.activation.function == bump
+                    && matches!(body.entry_abi, NativeEntryAbi::Direct)
+                    && compiler.world().types().is_empty(&body.return_ty) =>
             {
                 Some(body.fn_id)
             }
@@ -26343,7 +26512,7 @@ fn a_sum_and_a_remainder_each_compile_to_one_native_function() {
     for operator in ["+__", "rem__", "fz_op_add_ii__", "fz_op_rem_ii__"] {
         let of_operator = names
             .iter()
-            .filter(|name| name.starts_with(operator))
+            .filter(|name| name.starts_with(operator) && !name.ends_with("__machine"))
             .collect::<Vec<_>>();
         assert_eq!(
             of_operator.len(),

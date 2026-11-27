@@ -203,6 +203,21 @@ pub(crate) fn take_param_binding(params: &[ir::Value], cursor: &mut usize, repr:
     binding
 }
 
+/// A machine function's signature: the typed args, and the result lanes it
+/// returns in registers, in `Tail`. It takes no continuation.
+pub(crate) fn build_machine_fn_signature(param_reprs: &[ArgRepr], return_reprs: &[ArgRepr]) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    for repr in param_reprs {
+        push_repr_param(&mut sig, *repr);
+    }
+    for repr in return_reprs {
+        for _ in 0..repr.abi_arity() {
+            sig.returns.push(AbiParam::new(repr.cl_type()));
+        }
+    }
+    sig
+}
+
 /// Per-fn Cranelift Signature: the typed args plus the trailing continuation
 /// (or, for a continuation fn, its `self`), in `Tail`.
 pub(crate) fn build_fn_signature(

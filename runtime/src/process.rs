@@ -104,6 +104,11 @@ pub struct Process {
     /// raise route, never inferred from `halt_value`. An exit with a shutdown
     /// reason ends a process this way too, with status 0.
     pub failed: bool,
+    /// Whether the code running must unwind to the quantum entry: the process
+    /// failed, or a raise delivered a handler. Compiled code reads only this
+    /// word after a call that may raise; it is `failed || delivered.is_some()`,
+    /// kept so by `fail`, `deliver_handler` and `run_quantum`.
+    pub unwinding: bool,
     /// The status a process that ended by an uncaught raise leaves: 1, or what
     /// the exit's shutdown reason says. Drivers read it at the exit boundary
     /// for the main process; it is 0 until the process fails.
@@ -875,6 +880,7 @@ impl Process {
             ctx: null_mut(),
             halt_value: 0,
             failed: false,
+            unwinding: false,
             exit_status: 0,
             atom_key_hashes: node.atom_key_hashes_at(),
             atom_name_prefixes: node.atom_name_prefixes_at(),
@@ -927,6 +933,14 @@ impl Process {
     /// from the raise.
     pub fn deliver_handler(&mut self, handler: AnyValueRef) {
         self.delivered = Some(ClosureRef::new(handler));
+        self.unwinding = true;
+    }
+
+    /// End the process by a raise no handler took, or by a halt, with `status`.
+    pub fn fail(&mut self, status: i32) {
+        self.failed = true;
+        self.unwinding = true;
+        self.exit_status = status;
     }
 
     /// Whether a compiled raise delivered a handler the quantum has yet to run.
@@ -946,7 +960,9 @@ impl Process {
         let mut closure = first;
         loop {
             resume(self, closure);
-            match self.delivered.take() {
+            let delivered = self.delivered.take();
+            self.unwinding = self.failed;
+            match delivered {
                 Some(handler) => closure = handler.as_ref(),
                 None => break,
             }

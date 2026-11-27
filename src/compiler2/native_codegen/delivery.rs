@@ -11,6 +11,7 @@ pub(crate) fn continuation_entry_extra_count(body: &NativeBody) -> usize {
     match body.entry_abi {
         NativeEntryAbi::Direct => 1,
         NativeEntryAbi::Continuation { extra_params } => extra_params,
+        NativeEntryAbi::Machine => unreachable!("a machine function takes no continuation"),
     }
 }
 

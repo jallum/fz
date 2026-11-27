@@ -1,6 +1,7 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
+use crate::compiler2::NativeEntryAbi;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{Block, FnIr, Prim, SourceInfo, Stmt};
 use crate::ir_dce::classify_var_uses;
@@ -26,6 +27,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     let cont_fns = env.cont_fns;
     let native_body = env.body_native(this_spec_id);
     let is_cont_fn = cont_fns.contains(&f.id);
+    let is_machine_fn = matches!(native_body.entry_abi, NativeEntryAbi::Machine);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
     let mut block_map: HashMap<u32, ir::Block> = HashMap::default();
@@ -56,7 +58,9 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         for r in my_param_reprs {
             append_block_param_for_repr(&mut b, entry_cl, *r);
         }
-        b.append_block_param(entry_cl, types::I64); // cont
+        if !is_machine_fn {
+            b.append_block_param(entry_cl, types::I64); // cont
+        }
     }
 
     for blk in &f.blocks {
@@ -169,6 +173,10 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                     let decl = env.module.extern_by_id(*eid);
                     let values = lower_extern_pair(&mut body, &var_env, decl, eid, args, vars)?;
                     var_env.extend(vars.iter().map(|var| var.0).zip(values));
+                }
+                Stmt::LetMany(vars, Prim::MachineCall(callee, args)) => {
+                    let lanes = lower_machine_call(&mut body, env, &var_env, *callee, args);
+                    var_env.extend(vars.iter().map(|var| var.0).zip(lanes));
                 }
                 Stmt::LetMany(_, prim) => {
                     return Err(CodegenError::new(format!(

@@ -315,8 +315,18 @@ fn entry_dispatch_decides_a_lane_form_tuple_from_its_lanes() {
     let telemetry = NullTelemetry;
     let mut lowerer = NativeLowerer::new(&mut world, &telemetry, root, &program).expect("test native lowerer");
     let mut entry_fns = EntryFns::default();
+    let name = lowerer.executable_fn_name(0, &executable);
+    let fn_id = lowerer.executable_fns[0];
     lowerer
-        .lower_executable_head(0, &executable, &clauses, &entries, &mut entry_fns)
+        .lower_executable_head(
+            fn_id,
+            &name,
+            NativeEntryAbi::Direct,
+            &executable,
+            &clauses,
+            &entries,
+            &mut entry_fns,
+        )
         .expect("a lane-form tuple parameter is decided without being boxed");
     let module = lowerer.module.build();
     let entry = module
@@ -605,42 +615,62 @@ fn fns_of_executable<'p>(
         .collect()
 }
 
+fn calls_machine_function(function: &crate::fz_ir::FnIr) -> bool {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .any(|stmt| matches!(stmt.prim(), Prim::MachineCall(..)))
+}
+
+fn calls_extern(function: &crate::fz_ir::FnIr) -> bool {
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.stmts)
+        .any(|stmt| matches!(stmt.prim(), Prim::Extern(..)))
+}
+
+/// The machine function of the one frame-free executable named `function`.
+fn machine_fn_of<'p>(program: &'p crate::compiler2::artifact::NativeProgram, function: &str) -> &'p crate::fz_ir::FnIr {
+    let fns = fns_of_executable(program, function);
+    let mut machines = fns.iter().filter(|candidate| candidate.name.ends_with("__machine"));
+    let (Some(machine), None) = (machines.next(), machines.next()) else {
+        panic!("{function} has one machine function: {:?}", native_fn_names(program));
+    };
+    machine
+}
+
 /// `P.f` adds in a position that is not its tail and `P.g` multiplies in one.
-/// Kernel's `+` and `*` are each a clause that only calls an extern, so each
-/// is frame-free and lowered in its caller: each caller is one function that
-/// calls the extern itself, with no call and no function for the entry that
-/// goes on after it.
+/// Kernel's `+` and `*` are each a clause that only calls an extern: small
+/// enough to be copied into their caller, which then calls the extern itself,
+/// builds no continuation and has no function for the entry after the call.
 #[test]
 fn a_delivered_call_to_a_forwarder_of_an_extern_is_the_extern_inline_in_its_caller() {
     let settled = Drive::fixture(1177).dump_stage(crate::compiler2::dump::DumpStage::Native);
     let program = settled.native_program();
-    let names = native_fn_names(&program);
     for caller in ["f", "g"] {
-        let fns = fns_of_executable(&program, caller);
-        let [function] = fns.as_slice() else {
-            panic!("{caller} is one function, with no resume function of its own: {names:?}");
-        };
+        let machine = machine_fn_of(&program, caller);
         assert!(
-            makes_no_call(function),
-            "{caller} reaches its extern without a call and its continuation"
+            makes_no_call(machine) && !calls_machine_function(machine) && calls_extern(machine),
+            "{caller} calls its operator's extern itself"
         );
-        let calls_extern = function.blocks.iter().flat_map(|block| &block.stmts).any(|stmt| {
-            matches!(
-                stmt,
-                crate::fz_ir::Stmt::Let(_, Prim::Extern(..)) | crate::fz_ir::Stmt::LetMany(_, Prim::Extern(..))
-            )
-        });
-        assert!(calls_extern, "{caller} calls its extern inline");
+        assert!(
+            fns_of_executable(&program, caller)
+                .iter()
+                .all(|function| !function.name.contains("__resume_")),
+            "{caller} has no function for the entry after its call: {:?}",
+            native_fn_names(&program)
+        );
     }
 }
 
 /// `Loop.frame_free` calls `Callee.classify/1`, which has three clauses, an
-/// `if` and a call of its own, and can suspend nothing. The loop is then one
-/// function: classify's clauses and its call to `half/1` are blocks of it, and
-/// it makes no call and has no function for the entry that goes on after the
-/// call.
+/// `if` and a call of its own, and can suspend nothing. Its copied size is
+/// within the limit, so the loop holds classify's blocks, and `half/1`'s, as
+/// its own: one function, no call and no continuation.
 #[test]
-fn a_delivered_call_to_a_frame_free_callee_is_lowered_as_blocks_of_its_caller() {
+fn a_delivered_call_to_a_frame_free_callee_builds_no_continuation() {
     let settled = Drive::fixture(1880).dump_stage(crate::compiler2::dump::DumpStage::Native);
     let program = settled.native_program();
     let fns = fns_of_executable(&program, "frame_free");
@@ -651,8 +681,8 @@ fn a_delivered_call_to_a_frame_free_callee_is_lowered_as_blocks_of_its_caller() 
         );
     };
     assert!(
-        makes_no_call(function),
-        "the loop reaches classify/1 and half/1 without a call"
+        makes_no_call(function) && !calls_machine_function(function),
+        "the loop holds classify/1 and half/1 as its blocks"
     );
 }
 

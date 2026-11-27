@@ -255,9 +255,10 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
     block_map: &HashMap<u32, ir::Block>,
     this_spec_id: u32,
     f: &FnIr,
-    cont_param: ir::Value,
+    cont_param: Option<ir::Value>,
 ) -> Result<(), CodegenError> {
     let caller_fn_id = f.id;
+    let cont = || cont_param.expect("a machine function never suspends, so it holds no continuation");
     let edges = GotoEdges {
         f,
         native_body: env.body_native(this_spec_id),
@@ -269,7 +270,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             handler,
             captures,
             body: body_block,
-        } => emit_try(body, env, var_env, &edges, cont_param, *handler, captures, body_block),
+        } => emit_try(body, env, var_env, &edges, cont(), *handler, captures, body_block),
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
@@ -286,13 +287,13 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             Ok(())
         }
         Term::ReturnLanes(lanes) => emit_return_lanes(body, env, var_env, this_spec_id, cont_param, lanes),
-        Term::Return(v) => emit_return_term(body, env, var_env, this_spec_id, cont_param, v),
+        Term::Return(v) => emit_return_term(body, env, var_env, this_spec_id, cont(), v),
         Term::Call {
             ident: _,
             callee: _,
             args,
             continuation,
-        } => emit_call_term(body, env, var_env, blk, cont_param, args, continuation),
+        } => emit_call_term(body, env, var_env, blk, cont(), args, continuation),
         Term::TailCall {
             ident: _,
             callee: _,
@@ -304,12 +305,12 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             closure,
             args,
             continuation,
-        } => emit_call_closure(body, env, var_env, blk, cont_param, closure, args, continuation),
+        } => emit_call_closure(body, env, var_env, blk, cont(), closure, args, continuation),
         Term::TailCallClosure {
             closure,
             args,
             ident: _,
-        } => emit_tail_call_closure(body, var_env, cont_param, closure, args),
+        } => emit_tail_call_closure(body, var_env, cont(), closure, args),
         Term::ReceiveMatched {
             clauses,
             after,
@@ -323,7 +324,7 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
             var_env,
             blk,
             caller_fn_id,
-            cont_param,
+            cont(),
             clauses,
             dispatch,
             after.as_ref(),
@@ -559,7 +560,7 @@ fn emit_return_lanes<M: cranelift_module::Module>(
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     this_spec_id: u32,
-    cont_param: ir::Value,
+    cont_param: Option<ir::Value>,
     lanes: &[Var],
 ) -> Result<(), CodegenError> {
     if return_diverges(env, this_spec_id) {
@@ -575,19 +576,25 @@ fn emit_return_lanes<M: cranelift_module::Module>(
             return_reprs.len()
         )));
     }
-    let code = body.closure_code_ref(cont_param);
-    let mut sig = Signature::new(CallConv::Tail);
-    let mut cont_args = Vec::with_capacity(lanes.len() + 1);
+    let mut values = Vec::with_capacity(lanes.len() + 1);
     for (lane, repr) in lanes.iter().copied().zip(return_reprs.iter().copied()) {
         let binding = *var_env.get(&lane.0).expect("unbound return lane");
+        body.push_binding_as_abi_arg(&mut values, binding, repr);
+    }
+    let Some(cont_param) = cont_param else {
+        body.b.ins().return_(&values);
+        return Ok(());
+    };
+    let code = body.closure_code_ref(cont_param);
+    let mut sig = Signature::new(CallConv::Tail);
+    for repr in return_reprs.iter().copied() {
         push_repr_param(&mut sig, repr);
-        body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
     }
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
     let sigref = body.b.import_signature(sig);
-    cont_args.push(cont_param);
-    body.b.ins().return_call_indirect(sigref, code, &cont_args);
+    values.push(cont_param);
+    body.b.ins().return_call_indirect(sigref, code, &values);
     Ok(())
 }
 
@@ -672,13 +679,17 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     blk: &fz_ir::Block,
     this_spec_id: u32,
-    cont_param: ir::Value,
+    cont_param: Option<ir::Value>,
     args: &[Var],
     is_back_edge: bool,
 ) -> Result<(), CodegenError> {
     let callee_sid = resolve_callee_sid(env, blk, EmitSlot::Direct);
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
+    if matches!(env.body_native(callee_sid).entry_abi, NativeEntryAbi::Machine) {
+        return emit_machine_tail_call(body, env, var_env, callee_sid, args);
+    }
+    let cont_param = cont_param.expect("a machine function tail-calls only machine functions");
     if let NativeEntryAbi::Continuation { extra_params } = env.body_native(callee_sid).entry_abi {
         emit_native_continuation_tail_delivery(
             body,
@@ -746,6 +757,27 @@ fn emit_tail_call_term<M: cranelift_module::Module>(
         body.b.ins().jump(head, &head_args);
         return Ok(());
     }
+    body.b.ins().return_call(callee_fref, &native_args);
+    Ok(())
+}
+
+/// A tail call between machine functions: the callee returns to this
+/// function's caller, so it must return the lanes this function does.
+fn emit_machine_tail_call<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    callee_sid: u32,
+    args: &[Var],
+) -> Result<(), CodegenError> {
+    assert_eq!(
+        env.body_return_reprs(callee_sid),
+        env.body_return_reprs(env.active_body_fn_id.0),
+        "a machine tail call returns the lanes of the function it leaves"
+    );
+    let callee_fid = *env.fn_ids.get(&callee_sid).expect("callee fn_id missing");
+    let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
+    let native_args = body.coerce_call_args(args, &env.param_reprs[callee_sid as usize], var_env);
     body.b.ins().return_call(callee_fref, &native_args);
     Ok(())
 }

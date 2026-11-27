@@ -1,0 +1,24 @@
+#---
+# purpose: "A call to a function that cannot suspend returns its result in more than one lane: a float, a tuple of mixed lanes and a list, one call deep and two"
+# kind: run
+# oracle: self
+# oracle.stamp: 8e364d689d358a16
+#---
+defmodule Main do
+  def scaled(x), do: x * 1.5 + 0.25
+  def scaled_again(x), do: scaled(x) + 1.0
+
+  def pair(x), do: {x, x * 2.0}
+  def pair_again(x), do: pair(x + 1)
+
+  def spread(x), do: [x, x + 1, x + 2]
+  def spread_again(x), do: [0 | spread(x)]
+
+  def all(x), do: {scaled_again(x), pair_again(x), spread_again(x)}
+end
+
+IO.inspect(Main.scaled(2))
+IO.inspect(Main.scaled_again(2))
+IO.inspect(Main.pair_again(3))
+IO.inspect(Main.spread_again(5))
+IO.inspect(Main.all(4))

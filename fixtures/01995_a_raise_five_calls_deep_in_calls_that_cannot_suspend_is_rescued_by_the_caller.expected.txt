@@ -1,0 +1,4 @@
+{:ok, 6}
+{:rescued, "negative"}
+{:ok, 15}
+{:rescued, "negative"}

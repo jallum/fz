@@ -1,0 +1,29 @@
+#---
+# purpose: "A raise five calls deep, through functions that cannot suspend, unwinds to the try in the outer caller, which rescues it and goes on to call again"
+# kind: run
+# oracle: self
+# oracle.stamp: 6befd8e019d6086b
+#---
+defmodule Main do
+  def d0(x) when x < 0, do: raise(ArgumentError, "negative")
+  def d0(x), do: x
+
+  def d1(x), do: d0(x) + 1
+  def d2(x), do: d1(x) + 1
+  def d3(x), do: d2(x) + 1
+  def d4(x), do: d3(x) + 1
+  def d5(x), do: d4(x) + 1
+
+  def run(x) do
+    try do
+      {:ok, d5(x)}
+    rescue
+      e in ArgumentError -> {:rescued, e.message}
+    end
+  end
+end
+
+IO.inspect(Main.run(1))
+IO.inspect(Main.run(-1))
+IO.inspect(Main.run(10))
+IO.inspect(Main.run(-7))

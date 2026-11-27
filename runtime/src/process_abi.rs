@@ -9,9 +9,9 @@ use std::mem::offset_of;
 
 pub const PROCESS_REDUCTIONS_REMAINING_OFFSET: i32 = offset_of!(Process, reductions_remaining) as i32;
 pub const PROCESS_YIELD_REASONS_OFFSET: i32 = offset_of!(Process, yield_reasons) as i32;
-pub const PROCESS_FAILED_OFFSET: i32 = offset_of!(Process, failed) as i32;
-/// `Process::delivered` is an `Option<ClosureRef>`: one word, zero when empty.
-pub const PROCESS_DELIVERED_OFFSET: i32 = offset_of!(Process, delivered) as i32;
+/// `Process::unwinding`: nonzero when the process failed or a raise delivered a
+/// handler, so code that called something that may raise must return.
+pub const PROCESS_UNWINDING_OFFSET: i32 = offset_of!(Process, unwinding) as i32;
 
 /// `Process::heap`; add a `heap::INLINE_ALLOC_LAYOUT` field offset to reach a
 /// heap field that inline allocation updates.

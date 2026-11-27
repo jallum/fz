@@ -986,7 +986,12 @@ fn align_ir_callsite_identities(left: &IrFn, right: &mut IrFn) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativeEntryAbi {
     Direct,
-    Continuation { extra_params: usize },
+    /// A function that returns its result lanes in registers to a machine
+    /// call. It takes no continuation.
+    Machine,
+    Continuation {
+        extra_params: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
