@@ -203,6 +203,10 @@ impl CopyMeasure<'_> {
             cells += 1;
             let cons = unsafe { &*(cell as *const ListCons) };
             self.word(cons.head, cons.head_tag());
+            assert!(
+                cons.tail() != ListTail::Hole,
+                "a list whose tail is a hole is not a value to copy"
+            );
             cell = cons.tail_cell_addr() as *mut u8;
             if !cell.is_null() {
                 self.src_heap.assert_classified(cell, false);

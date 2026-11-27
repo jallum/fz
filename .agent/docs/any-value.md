@@ -1202,6 +1202,57 @@ counts each binary it marks in `binaries_shared`, reported on
 `process_exited`; native code adds to it inline at
 `PROCESS_BINARIES_SHARED_OFFSET`.
 
+## Open Fields
+
+A builder that returns `[h | f(t)]` places the cell and leaves one field open;
+a later fill closes it. The open field is named by a `FieldDestination`
+(`runtime/src/heap/destination.rs`), a word of kind `ValueKind::DESTINATION`
+(0xB): the cell's address in the address bits and a selector in the bits above
+`tag_shift` saying which field of which cell. `Layout` is the decoded selector:
+`ListTail` (0, the link word), `StructField(ordinal)` (1 and up, the value
+field with that ordinal) and `MapValue(slot)` (the top `MAP_SLOT_LIMIT` = 32
+values, one slot of a published map node). `FieldDestination::STRUCT_FIELD_LIMIT`
+is what the selector bits leave (95 on x86_64, 223 on arm64); `fits(layout)`
+says whether a field can be named, and `new` refuses one that cannot.
+
+An open list tail is `ListLink::hole`, the terminator flag with address 0. An open
+struct field or map value holds `OPEN_FIELD`: word 0 under the kind `STRUCT` (a
+map entry's value nibble, the key nibble stays). That is a null reference, which
+no filled field holds: a struct is never at address 0, and a filled int 0 or
+atom 0 is told apart by its kind. `AnyValueRef::from_heap_object` refuses a null
+address of a heap kind other than `LIST`, so `AnyValue::decode_parts` panics
+(`heap value ref: NullAddress`) on the placeholder, and compare, hash, inspect, deep copy
+and closure and map slot reads refuse an open field loudly; the send measure
+refuses a list whose tail is a hole. The collector forwards a null address of a
+heap kind as it is, so tracing an open field takes no branch of its own.
+`DESTINATION` is the one kind that names a slot and never a value: it has no
+`AnyValue` form and is not a value kind of a ref word. The 4-bit kind field has
+sixteen values and fifteen kinds; `TAG_UNASSIGNED` (0xC) is the other one. Every
+nibble reads as a `ValueKind` (`ValueKind::new` accepts any value of the field,
+so a kind read needs no validity test and every ref-word decode stays free of
+one), and the decodes (`AnyValue::from_ref`, `AnyValue::decode_parts`,
+`AnyValueRef::storage_raw`) refuse a destination or the unassigned tag through
+the one cold `refuse_kind_without_value`. A map value is opened only after
+the map is published, because publish, sort and trie conversion move slots and
+decode entries.
+
+`Heap::alloc_open_list_cell`, `open_struct_field` and `open_map_value` open a
+field; `fill_destination` closes it by storing the field's word and kind (a list
+link keeps its shared mark). The fill is not a write barrier and keeps no other
+record: a collection runs only at a yield or park, never between the stores. The
+collector keeps the record instead. `Heap::open_holes` lists the destinations
+whose field was still open when the last collection met them. A minor collection
+reads each listed field as a root before anything else (it may hold a young value
+by now), writes still-open ones down again, and rebuilds the list from the
+destinations it meets; a major collection ignores the list and rebuilds it.
+`Tracer::forward_slot` forwards a `DESTINATION` slot through
+`forward_destination`, which forwards the named cell, rebases the address and
+writes the field down if the copy's field is open. Every walk over kinded slots
+reaches it through `forward_slot`, including the handler stack's records
+(`HandlerStack::for_each_capture` hands each capture's word and kind to
+`RootForwarder::forward_slot`). A destination whose holder is
+dead still keeps its listed field's value until the next major collection.
+
 ## GC: Roots, Edges, And Lifetime
 
 The process heap is a moving, generational Cheney collector
@@ -1213,9 +1264,10 @@ has parked since the last collection, and the blocks a graft brought, are young;
 blocks a collection filled with survivors are old. A minor collection copies the
 reachable objects of the young blocks into fresh blocks, which become old, and
 leaves old objects where they are; a major collection copies every reachable
-object (`Heap::next_generation` chooses). Nothing old points at anything young:
-data is immutable, and a list cell in an old block is shared, so none is
-rewritten in place. An
+object (`Heap::next_generation` chooses). Nothing old points at anything young
+except an *open field*: data is immutable, and a list cell in an old block is
+shared, so none is rewritten in place, but a cell whose field was left open
+(see Open Fields) is closed in place wherever it lives. An
 `AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not
 `AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not
 survive an allocation, a yield, a GC, or any runtime call that may allocate or

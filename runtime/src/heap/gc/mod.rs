@@ -5,6 +5,7 @@ use crate::any_value::ValueKind;
 pub(super) mod forward;
 pub(super) mod forwarding;
 mod from_space;
+mod holes;
 pub(super) mod roots;
 pub(super) mod trace;
 

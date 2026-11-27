@@ -35,6 +35,15 @@ pub const TAG_BINREF: u64 = 0x8;
 pub const TAG_KIND_PID: u64 = 0x9;
 /// Side-band immediate tag for raw reference-counter slots.
 pub const TAG_KIND_REF: u64 = 0xA;
+/// Kind of a slot that names a field still to be filled: the cell's address
+/// and which of its fields (`FieldDestination`). It lives only in kind-byte
+/// slots, never in a ref word.
+pub const TAG_KIND_DESTINATION: u64 = 0xB;
+/// The one value of the 4-bit kind field no kind owns. No value or slot
+/// carries this tag; a decode that meets it refuses it. A field's kind is read
+/// without a validity test, so every nibble is a `ValueKind` and this one is
+/// refused where a value is built from it.
+pub const TAG_UNASSIGNED: u64 = 0xC;
 /// Side-band immediate tag for raw i64 slots.
 pub const TAG_KIND_INT: u64 = 0xD;
 /// Side-band immediate tag for raw f64::to_bits slots.
@@ -85,18 +94,16 @@ impl ValueKind {
     pub const BINREF: Self = Self(TAG_BINREF as u8);
     pub const PID: Self = Self(TAG_KIND_PID as u8);
     pub const REF: Self = Self(TAG_KIND_REF as u8);
+    pub const DESTINATION: Self = Self(TAG_KIND_DESTINATION as u8);
     pub const INT: Self = Self(TAG_KIND_INT as u8);
     pub const FLOAT: Self = Self(TAG_KIND_FLOAT as u8);
     pub const ATOM: Self = Self(TAG_KIND_ATOM as u8);
 
+    /// The kind a tag byte names. Every value of a kind field is a `ValueKind`,
+    /// so a field read this way needs no validity test; `TAG_UNASSIGNED` is
+    /// refused by the decode that would build a value from it.
     pub const fn new(tag: u8) -> Option<Self> {
-        match tag as u64 {
-            TAG_NULL | TAG_LIST | TAG_MAP | TAG_STRUCT | TAG_CLOSURE | TAG_BITSTRING | TAG_BINVIEW | TAG_RESOURCE
-            | TAG_BINREF | TAG_KIND_PID | TAG_KIND_REF | TAG_KIND_INT | TAG_KIND_FLOAT | TAG_KIND_ATOM => {
-                Some(Self(tag))
-            }
-            _ => None,
-        }
+        if tag < 1 << TAG_BITS { Some(Self(tag)) } else { None }
     }
 
     pub const fn tag(self) -> u8 {
@@ -110,7 +117,21 @@ impl ValueKind {
     }
 
     pub const fn is_heap(self) -> bool {
-        (self.0 >= TAG_LIST as u8 && self.0 <= TAG_RESOURCE as u8) || self.0 == TAG_BINREF as u8
+        self.0.wrapping_sub(TAG_LIST as u8) <= (TAG_BINREF - TAG_LIST) as u8
+    }
+
+    /// Whether a slot of this kind can hold something a collection forwards:
+    /// the heap kinds and the destination, which sit in one run with the pid
+    /// and reference kinds between them. The integer, float and atom kinds a
+    /// slot usually holds are outside it, so one range test rules them out.
+    pub const fn may_need_forwarding(self) -> bool {
+        self.0.wrapping_sub(TAG_LIST as u8) <= (TAG_KIND_DESTINATION - TAG_LIST) as u8
+    }
+
+    /// The kind of a slot holding a `FieldDestination`: not an object, so
+    /// `is_heap` is false, but a collection forwards the cell it names.
+    pub const fn is_destination(self) -> bool {
+        self.0 == TAG_KIND_DESTINATION as u8
     }
 
     pub const fn is_scalar(self) -> bool {
@@ -364,7 +385,7 @@ impl AnyValueRef {
             ValueKind::ATOM => self.load_atom()?,
             tag if tag.is_opaque_word() => self.load_opaque_word(tag)?,
             tag if tag.is_heap() => self.word & AnyValueRefPacking::current().payload_mask(),
-            _ => unreachable!("AnyValueRef tag set is exhaustive"),
+            tag => refuse_kind_without_value(tag),
         })
     }
 
@@ -465,6 +486,20 @@ pub enum AnyValue {
     HeapRef(AnyValueRef),
 }
 
+/// A kind with no value form was read as a value: a destination, which names
+/// a slot, or the unassigned tag, which a corrupt word carries. It is out of
+/// line, and diverges, so the decode it ends stays small enough to inline.
+/// Every other kind has a value form.
+#[cold]
+#[inline(never)]
+fn refuse_kind_without_value(kind: ValueKind) -> ! {
+    match kind {
+        ValueKind::DESTINATION => panic!("a destination is not a value"),
+        _ if kind.tag() as u64 == TAG_UNASSIGNED => panic!("tag 0xC names no kind: a corrupt word"),
+        _ => unreachable!("a kind with a value form was refused"),
+    }
+}
+
 impl AnyValue {
     pub const fn null() -> Self {
         Self::Null
@@ -517,11 +552,11 @@ impl AnyValue {
             ValueKind::FLOAT => Self::float(value.load_float()?),
             ValueKind::ATOM => Self::Atom(value.load_atom()? as u32),
             tag if tag.is_heap() => Self::HeapRef(value),
-            _ => unreachable!("AnyValueRef tag set is exhaustive"),
+            tag => refuse_kind_without_value(tag),
         })
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn decode_parts(raw: u64, kind_tag: u8) -> Option<Self> {
         let kind = ValueKind::new(kind_tag)?;
         Some(match kind {
@@ -532,7 +567,7 @@ impl AnyValue {
             ValueKind::ATOM => Self::Atom(raw as u32),
             ValueKind::LIST if raw == 0 => Self::EmptyList,
             kind if kind.is_heap() => Self::heap_ptr(raw as *mut u8, kind),
-            _ => return None,
+            _ => refuse_kind_without_value(kind),
         })
     }
 
@@ -547,6 +582,8 @@ impl AnyValue {
 
     /// The payload word of a value: a scalar's bits, or a heap object's
     /// address with its literal bit. Containers store this word.
+    /// Inlined into every container store, so a scalar entry pays no call.
+    #[inline(always)]
     pub fn raw(self) -> u64 {
         match self {
             Self::Null | Self::EmptyList => 0,
@@ -1395,6 +1432,14 @@ impl ListCons {
     /// Relocate the same logical tail in a collector-owned graph.
     pub(crate) fn relocate_tail_for_gc(&mut self, tail_addr: u64) {
         self.link = self.link().with_tail_addr(tail_addr).raw();
+    }
+
+    /// Close this cell's open tail with `link`. The shared mark a collection
+    /// set stays: closing a tail is not a rewrite and never makes a cell
+    /// reusable.
+    pub fn close_tail(&mut self, link: ListLink) {
+        assert_eq!(self.tail(), ListTail::Hole, "only an open tail is closed");
+        self.link = link.raw() | (self.link & LIST_LINK_ALIAS_MASK);
     }
 
     /// Replace this cell's head and link when no second holder shares it. The

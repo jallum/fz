@@ -299,7 +299,8 @@ impl<T: Roots + ?Sized> Roots for ProcessRoots<'_, T> {
         if let Some(closure) = self.delivered {
             closure.forward(forwarder);
         }
-        self.handlers.forward_captures(|capture| forwarder.forward(capture));
+        self.handlers
+            .for_each_capture(|slot, kind| unsafe { forwarder.forward_slot(slot, kind) });
         self.transient.forward_into(forwarder);
     }
 }

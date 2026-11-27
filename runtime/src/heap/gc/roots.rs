@@ -1,7 +1,7 @@
 //! The references a collection forwards where they live.
 
 use super::forward::Tracer;
-use crate::any_value::AnyValueRef;
+use crate::any_value::{AnyValueRef, ValueKind};
 
 /// Moves the references a collection's roots hold: each is forwarded in place,
 /// so a root holds its forwarded value as soon as `forward` returns.
@@ -20,6 +20,16 @@ impl<'t, 'a> RootForwarder<'t, 'a> {
     /// was.
     pub fn forward(&mut self, root: &mut AnyValueRef) {
         self.tracer.forward_root(root);
+    }
+
+    /// Forward the value in the kinded slot `slot`, as a collection forwards a
+    /// closure's capture: a heap kind moves, a destination moves its cell and
+    /// is rebased, and any other kind is left alone.
+    ///
+    /// # Safety
+    /// `slot` is a readable, writable word holding a value of kind `kind`.
+    pub unsafe fn forward_slot(&mut self, slot: *mut u64, kind: ValueKind) {
+        unsafe { self.tracer.forward_slot(slot, kind) };
     }
 }
 
