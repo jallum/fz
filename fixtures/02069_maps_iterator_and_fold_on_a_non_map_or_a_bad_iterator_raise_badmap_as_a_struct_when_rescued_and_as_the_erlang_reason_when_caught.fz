@@ -1,0 +1,44 @@
+#---
+# purpose: ":maps.iterator/1 and :maps.fold/3 raise BadMapError for a non-map and fold raises it for a bad iterator; rescued they read as the struct, and caught they read as {:badmap, term}, as in Elixir"
+# oracle: self
+# oracle.stamp: 5af6e9c0788a8f97
+#---
+defmodule Main do
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> {e.__struct__, e.term, Exception.message(e)}
+    end
+  end
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def opaque(value), do: Enum.at([value], 0)
+
+  def main() do
+    sum = fn _key, value, acc -> value + acc end
+
+    IO.inspect(:maps.fold(sum, 0, :maps.iterator(%{a: 1, b: 2})))
+
+    failures = [
+      fn -> :maps.iterator(opaque(5)) end,
+      fn -> :maps.fold(sum, 0, opaque(5)) end,
+      fn -> :maps.fold(sum, 0, opaque(:foo)) end,
+      fn -> :maps.fold(sum, 0, opaque([0 | 5])) end
+    ]
+
+    for f <- failures do
+      IO.inspect(rescued(f))
+      IO.inspect(caught(f))
+    end
+  end
+end
+
+Main.main()

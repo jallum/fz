@@ -1,0 +1,9 @@
+3
+{BadMapError, 5, "expected a map, got:\n\n    5\n"}
+{:error, {:badmap, 5}}
+{BadMapError, 5, "expected a map, got:\n\n    5\n"}
+{:error, {:badmap, 5}}
+{BadMapError, :foo, "expected a map, got:\n\n    :foo\n"}
+{:error, {:badmap, :foo}}
+{BadMapError, [0 | 5], "expected a map, got:\n\n    [0 | 5]\n"}
+{:error, {:badmap, [0 | 5]}}
