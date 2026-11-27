@@ -128,11 +128,11 @@ fn a_function_that_neither_raises_nor_handles_pays_nothing_for_exceptions() {
 
 #[test]
 fn each_raise_site_and_handler_costs_a_fixed_number_of_jobs() {
-    assert_eq!(jobs_per_unit("site", raise_sites, [1, 5, 20]), 15, "per raise site");
-    assert_eq!(jobs_per_unit("handler", handlers, [1, 4, 16]), 15, "per handler");
+    assert_eq!(jobs_per_unit("site", raise_sites, [1, 5, 20]), 17, "per raise site");
+    assert_eq!(jobs_per_unit("handler", handlers, [1, 4, 16]), 17, "per handler");
 }
 
-/// An exception type costs 42 jobs: 15 for the function that raises it, 7 for
+/// An exception type costs 43 jobs: 16 for the function that raises it, 7 for
 /// its `exception/1`, 11 for its `message/1`, one to define its module, two
 /// `DeriveExecutableReach` for the executables its transport positions ask
 /// whether they return to themselves, and six transport-layout jobs. The
@@ -145,10 +145,10 @@ fn each_raise_site_and_handler_costs_a_fixed_number_of_jobs() {
 /// seeded wide, and `Exception.message/1` is analysed once, not again for
 /// each type.
 #[test]
-fn each_exception_type_costs_forty_two_jobs() {
+fn each_exception_type_costs_forty_three_jobs() {
     let one = jobs("few_types1", exception_types(1));
     let six = jobs("few_types6", exception_types(6));
-    assert_eq!(six - one, 5 * 42, "five further exception types");
+    assert_eq!(six - one, 5 * 43, "five further exception types");
 }
 
 /// From eight exception types on, the program pays one job more, however many
@@ -162,7 +162,7 @@ fn each_exception_type_costs_forty_two_jobs() {
 #[test]
 fn many_exception_types_cost_one_job_more_for_the_union_raised() {
     let one = jobs("many_types1", exception_types(1));
-    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 42;
-    assert_eq!(extra(16), 1, "sixteen types cost one job beyond forty-two each");
-    assert_eq!(extra(26), 1, "twenty-six types cost one job beyond forty-two each");
+    let extra = |count: usize| jobs(&format!("many_types{count}"), exception_types(count)) - one - (count - 1) * 43;
+    assert_eq!(extra(16), 1, "sixteen types cost one job beyond forty-three each");
+    assert_eq!(extra(26), 1, "twenty-six types cost one job beyond forty-three each");
 }

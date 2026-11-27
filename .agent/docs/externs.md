@@ -568,7 +568,7 @@ declaration means on every host rather than on this one.
 An extern result is one scalar. A tuple result, `:: {integer, boolean}` for
 instance, is refused where the contract is derived (`extern_return_wire`,
 `src/compiler2/jobs/contract.rs`) with `lower/unsupported`, and the message names
-`raises:` and `message:`, which declare a failure the operation can report.
+`raises:` and `message:`, which declare a failure the operation can report. A `def` declares its failure with `raises:` and `reason:` too; that failure is a synthesized final clause (`.agent/docs/exceptions.md`, "A built-in function's bad argument").
 Aggregate arguments are refused at the same boundary.
 
 ### A declared failure
@@ -579,6 +579,7 @@ result type, in a keyword tail on the declaration:
 ```fz
 extern "C" defp fz_op_rem_ii(integer, integer) :: integer,
   raises: ArithmeticError,
+  reason: :badarith,
   message: "bad argument in arithmetic expression"
 ```
 
@@ -589,11 +590,13 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 - `parse_extern_raises` (`src/compiler2/frontdoor.rs`) reads the tail. `message:`
   is required, because an exception carries no default message, and it is a
   literal string: an interpolated one is refused. The exception is a module
-  alias. The tail takes one option, `raises:`, `delivers:` or `projects:` (below)
+  alias. `reason:` is optional, between the two: the atom of the Erlang reason
+  a `catch` binds for the failure (`:badarith`); without one a `catch` binds
+  the struct. The tail takes one option, `raises:`, `delivers:` or `projects:` (below)
   (`parse_extern_option`). The parts ride the
-  quoted extern map as `raises` and `message`, and `decode_extern_fn` carries
-  them on `FunctionSurface::extern_raises` as `ExternRaises`, with the span of
-  the alias.
+  quoted extern map as `raises`, `reason` and `message`, and `decode_extern_fn`
+  carries them on `FunctionSurface::extern_raises` as `ExternRaises`, with the
+  span of the alias.
 - A declared failure is the struct literal `%Alias{message: "text"}`, and the
   alias must name an exception. `derive_function_contract` refers to the
   struct the way a body that wrote that literal does
@@ -608,7 +611,8 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 - `extern_failure` resolves the alias with `World::module_alias_atom`,
   the call a body makes for `raise(KeyError, ...)`, so alias and import scope
   apply alike, checks that the struct's `__exception__` default is `true`, and
-  builds `LastResort::declared`, which sets `message` to the declared text.
+  builds `LastResort::declared`, which sets `message` to the declared text and
+  keeps the reason.
   The raised struct is completed as every last resort's is
   (`LastResort::struct_fields`, [exceptions](exceptions.md)): every field the
   exception declares, in its order, each other field holding its default (a
@@ -637,7 +641,8 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
 
 Kernel's arithmetic externs (`+ - * / % div rem`, unary `-`, over integer and
 float operands) are declared this way, so a failed operation, an overflow or a
-zero divisor, raises `ArithmeticError` with Elixir's message. A user declaration
+zero divisor, raises `ArithmeticError` with Elixir's message, and `catch` sees
+`:badarith`. A user declaration
 names any exception: `raises: MyApp.DivisionByZero` raises that module's
 struct from a declaration of the same symbol, so with `defexception [:message,
 code: 7]` a handler reads `e.code` as `7`.

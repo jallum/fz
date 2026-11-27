@@ -1228,14 +1228,20 @@ fn tuple_put_copies_the_tuple_and_leaves_the_original_alone() {
 fn list_length_counts_a_proper_list_and_refuses_every_other_value() {
     with_process(|process| {
         let mut list = AnyValueRef::empty_list();
-        assert_eq!(fz_list_length(list.raw_word()), 0);
+        assert_eq!(
+            fz_list_length(list.raw_word()),
+            FzIntegerArithmeticResult { result: 0, failed: 0 }
+        );
         for head in [3, 2, 1] {
             list = process.heap.alloc_list_cons_int(head, list).expect("cons");
         }
-        assert_eq!(fz_list_length(list.raw_word()), 3);
+        assert_eq!(
+            fz_list_length(list.raw_word()),
+            FzIntegerArithmeticResult { result: 3, failed: 0 }
+        );
 
         let integer = process.heap.box_any_value_ref(AnyValue::int(5));
-        assert_eq!(fz_list_length(integer.raw_word()), -1);
+        assert_eq!(fz_list_length(integer.raw_word()).failed, 1);
     });
 }
 

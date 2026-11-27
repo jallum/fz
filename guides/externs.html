@@ -144,6 +144,7 @@ says what a failure means by adding <code>raises:</code> and
 
 <span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">defp</span> <span class="fn">fz_op_div_ii</span>(<span class="ty">integer</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>,
   raises: <span class="ty">MyApp.DivisionByZero</span>,
+  reason: <span class="atm">:division_by_zero</span>,
   message: <span class="str">"cannot divide by zero"</span>
 
 <span class="kw">def</span> <span class="fn">main</span>() <span class="kw">do</span>
@@ -160,6 +161,11 @@ message. Kernel's arithmetic is declared this way, with
 <ul>
   <li><code>message:</code> is required and is a literal string; an
       interpolated one is refused.</li>
+  <li><code>reason:</code> is optional. It is the Erlang reason a
+      <code>catch kind, reason</code> clause sees for the failure, as Elixir's
+      arithmetic shows <code>:badarith</code>; without it the clause sees the
+      exception itself. A <code>rescue</code> clause sees the exception
+      either way.</li>
   <li>The exception is a module that <code>defexception</code> declares with
       a <code>message</code> field, such as <code>ArithmeticError</code>. Any
       other name is a compile error at the <code>raises:</code> line.</li>

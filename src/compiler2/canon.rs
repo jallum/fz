@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use crate::dispatch_matrix::pattern::{
     FieldTerm, LastResort, PatternDispatchOutcome, PatternDispatchPlan, PatternGuardDispatch, PatternGuardExpr,
-    PatternPinnedInput,
+    PatternPinnedInput, ReasonTerm,
 };
 use crate::dispatch_matrix::{
     BitstringFieldShape, BitstringFieldSize, BitstringShape, ComparisonValue, DispatchEdge, DispatchGraph,
@@ -1506,15 +1506,23 @@ impl ProgramCanon<'_> {
             plan.prepared_keys.iter().map(ground).collect::<Vec<_>>(),
         );
         match &plan.last_resort {
-            Some(LastResort::Exception { exception, fields }) => {
+            Some(LastResort::Exception {
+                exception,
+                fields,
+                reason,
+            }) => {
                 let fields = fields
                     .iter()
                     .map(|(name, term)| format!("{name}: {}", field_term(term)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                out.put(&format!("raises {exception} {{{fields}}}"));
+                match reason {
+                    Some(reason) => out.put(&format!("raises {exception} {{{fields}}} for {}", reason_term(reason))),
+                    None => out.put(&format!("raises {exception} {{{fields}}}")),
+                }
             }
-            Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value"),
+            Some(LastResort::Reraise) => out.put("reraises input 0 as kind, input 1 as value, input 2 as reason"),
+            Some(LastResort::Raise) => out.put("raises input 0 as value, input 1 as reason"),
             None => {}
         }
         lines(out)
@@ -1736,6 +1744,16 @@ fn field_term(term: &FieldTerm) -> String {
     match term {
         FieldTerm::Subject => "input 0".to_string(),
         FieldTerm::Literal(term) => literal(term),
+    }
+}
+
+fn reason_term(reason: &ReasonTerm) -> String {
+    match reason {
+        ReasonTerm::Atom(name) => format!(":{name}"),
+        ReasonTerm::Tuple(elements) => {
+            let elements: Vec<String> = elements.iter().map(field_term).collect();
+            format!("{{{}}}", elements.join(", "))
+        }
     }
 }
 

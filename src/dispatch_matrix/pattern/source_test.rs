@@ -312,6 +312,7 @@ fn a_guard_extern_may_carry_floats_and_declare_a_checked_failure() {
         LastResort::declared(
             "Elixir.ArithmeticError".to_string(),
             "bad argument in arithmetic expression",
+            Some("badarith"),
         )
     };
     let admitted = [

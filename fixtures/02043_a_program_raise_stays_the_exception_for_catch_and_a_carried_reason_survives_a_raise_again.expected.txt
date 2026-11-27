@@ -1,0 +1,51 @@
+raise of a module
+{:error, %ArgumentError{message: "argument error"}}
+ArgumentError: argument error
+raise of a module and a message
+{:error, %ArgumentError{message: "x"}}
+ArgumentError: x
+raise of a message
+{:error, %RuntimeError{message: "boom"}}
+RuntimeError: boom
+raise of an exception
+{:error, %KeyError{key: :k, term: nil, message: nil}}
+KeyError: key :k not found
+:erlang.error of :badarg
+{:error, :badarg}
+ArgumentError: argument error
+:erlang.error of a tuple
+{:error, {:badmatch, 1}}
+MatchError: no match of right hand side value:
+
+    1
+
+:erlang.error of a term that names no exception
+{:error, {:my, 1}}
+ErlangError: Erlang error: {:my, 1}
+:erlang.error with arguments
+{:error, :badarg}
+ArgumentError: argument error
+:erlang.raise of a term that names no exception
+{:error, {:my, 1}}
+ErlangError: Erlang error: {:my, 1}
+a built-in failure raised again by :erlang.raise
+{:error, :badarg}
+ArgumentError: argument error
+a map operation on a non-map
+{:error, {:badmap, 1}}
+BadMapError: expected a map, got:
+
+    1
+
+add of a non-number
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+divide by zero
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+bnot of a non-number
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression
+bsr of non-numbers
+{:error, :badarith}
+ArithmeticError: bad argument in arithmetic expression

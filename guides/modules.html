@@ -207,7 +207,10 @@ is <code>"1.5e-10"</code>, the byte functions Erlang code calls
 (<code>element/2</code>, <code>binary_part/3</code>,
 <code>iolist_to_binary/1</code> and others; <code>binary_part/3</code> may also be called in a guard), and <code>raise/3</code>, which raises again what a
 <code>catch kind, reason</code> clause caught:
-<code>:erlang.raise(kind, reason, __STACKTRACE__)</code>. Calling a function of a bare atom that names no module,
+<code>:erlang.raise(kind, reason, __STACKTRACE__)</code>. A call these
+functions refuse, such as <code>:erlang.element(5, {1})</code>, fails as Erlang's does:
+<code>rescue</code> sees an <code>ArgumentError</code> that names each argument at fault,
+and <code>catch kind, reason</code> sees <code>:badarg</code>. Calling a function of a bare atom that names no module,
 such as <code>:nosuch.thing(1)</code>, is refused at compile time as a call
 to any undefined module is.</p>
 

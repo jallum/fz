@@ -1,0 +1,65 @@
+#---
+# purpose: "An :erlang function that checks its arguments fails with `:badarg` for `catch` and an `ArgumentError` worded for each bad argument for `rescue`, as Elixir does on all three paths"
+# oracle: self
+# oracle.stamp: 325be9360a2e3b64
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.inspect(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("atom_to_binary of a non-atom", fn -> :erlang.atom_to_binary(v(1), :utf8) end)
+    show("atom_to_binary with a bad encoding", fn -> :erlang.atom_to_binary(:a, v(:foo)) end)
+    show("atom_to_binary with both bad", fn -> :erlang.atom_to_binary(v(1), v(:foo)) end)
+    show("atom_to_binary latin1 of a wide atom", fn -> :erlang.atom_to_binary(v(:"é€"), :latin1) end)
+    show("binary_to_integer of text", fn -> :erlang.binary_to_integer(v("zz")) end)
+    show("binary_to_integer of a non-binary", fn -> :erlang.binary_to_integer(v(1)) end)
+    show("binary_to_float of text", fn -> :erlang.binary_to_float(v("1")) end)
+    show("binary_to_float of a non-binary", fn -> :erlang.binary_to_float(v(1)) end)
+    show("integer_to_binary of a non-integer", fn -> :erlang.integer_to_binary(v(:a)) end)
+    show("integer_to_binary with both bad", fn -> :erlang.integer_to_binary(v(:a), v(99)) end)
+    show("integer_to_binary with a bad base", fn -> :erlang.integer_to_binary(v(5), v(99)) end)
+    show("integer_to_binary with a non-integer base", fn -> :erlang.integer_to_binary(v(5), v(:a)) end)
+    show("element at zero", fn -> :erlang.element(v(0), {1}) end)
+    show("element of a non-tuple at a non-integer", fn -> :erlang.element(v(:a), v(1)) end)
+    show("element of a non-tuple", fn -> :erlang.element(v(1), v(1)) end)
+    show("element of a non-tuple at zero", fn -> :erlang.element(v(0), v(1)) end)
+    show("element past the end", fn -> :erlang.element(v(5), {1}) end)
+    show("setelement at zero of a non-tuple", fn -> :erlang.setelement(v(0), v(1), :x) end)
+    show("setelement at a non-integer", fn -> :erlang.setelement(v(:a), {1}, :x) end)
+    show("setelement past the end", fn -> :erlang.setelement(v(5), {1}, :x) end)
+    show("iolist_to_binary of an atom", fn -> :erlang.iolist_to_binary(v(:a)) end)
+    show("iolist_to_binary of a list holding an atom", fn -> :erlang.iolist_to_binary(v([:a])) end)
+    show("float_to_binary of a non-float", fn -> :erlang.float_to_binary(v(:a), [:short]) end)
+    show("float_to_binary with a bad option", fn -> :erlang.float_to_binary(1.5, Enum.at([[:short], [:bad]], 1)) end)
+    show("float_to_binary with decimals out of range", fn -> :erlang.float_to_binary(1.5, Enum.at([[:short], [decimals: 300]], 1)) end)
+    show("band of non-numbers", fn -> :erlang.band(v(:a), 1) end)
+    show("bsl of non-numbers", fn -> :erlang.bsl(v(:a), 1) end)
+    show("bnot of a non-number", fn -> :erlang.bnot(v(:a)) end)
+  end
+end
+
+Main.main()

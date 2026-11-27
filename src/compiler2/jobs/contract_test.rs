@@ -3,7 +3,7 @@ use crate::dispatch_matrix::pattern::LastResort;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 
 fn failure() -> LastResort {
-    LastResort::declared("Elixir.ArithmeticError".to_string(), "bad argument")
+    LastResort::declared("Elixir.ArithmeticError".to_string(), "bad argument", None)
 }
 
 #[test]

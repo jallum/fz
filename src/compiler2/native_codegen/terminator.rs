@@ -16,7 +16,7 @@ use cranelift_codegen::ir::TrapCode;
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlagsData, Signature, condcodes::IntCC, types};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::FuncId;
-use fz_runtime::failure::{fz_panic, fz_raise_undefined_function, fz_reraise};
+use fz_runtime::failure::{fz_panic, fz_panic_reason, fz_raise_undefined_function, fz_reraise};
 use fz_runtime::ir_runtime::{fz_receive_park_matched, fz_yield_mid_flight_report, fz_yield_slow_path_begin};
 use fz_runtime::process::YIELD_REASON_REDUCTIONS;
 use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
@@ -273,8 +273,8 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module>(
         Term::If {
             cond, then_b, else_b, ..
         } => emit_if(body, var_env, block_map, caller_fn_id, blk.id, cond, then_b, else_b),
-        Term::Raise { value } => emit_raise(body, var_env, *value),
-        Term::Reraise { kind, value } => emit_reraise(body, var_env, *kind, *value),
+        Term::Raise { value, reason } => emit_raise(body, var_env, *value, *reason),
+        Term::Reraise { kind, value, reason } => emit_reraise(body, var_env, *kind, *value, *reason),
         Term::RaiseUndefined {
             receiver,
             function,
@@ -478,32 +478,53 @@ fn emit_if<M: cranelift_module::Module>(
 }
 
 /// `Term::Raise` is a decision's last resort: the process raises the
-/// exception the block built, through the one raise route, and what follows
-/// is what follows any raise.
+/// exception the block built, through the one raise route, with the reason
+/// the failure declares when it declares one, and what follows is what follows
+/// any raise.
 fn emit_raise<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     value: Var,
+    reason: Option<Var>,
 ) -> Result<(), CodegenError> {
     let [value_word, value_kind] = stored_parts(body, binding_for_var(var_env, value.0));
     let process = body.process_arg();
-    runtime_call!(body, fz_panic, [process, value_word, value_kind]);
+    match reason {
+        Some(reason) => {
+            let [reason_word, reason_kind] = stored_parts(body, binding_for_var(var_env, reason.0));
+            runtime_call!(
+                body,
+                fz_panic_reason,
+                [process, value_word, value_kind, reason_word, reason_kind]
+            );
+        }
+        None => {
+            runtime_call!(body, fz_panic, [process, value_word, value_kind]);
+        }
+    }
     continue_after_raise(body);
     Ok(())
 }
 
 /// `Term::Reraise` is a handler's last resort: the process continues the raise
-/// the handler was delivered, and what follows is what follows any raise.
+/// the handler was delivered, with its reason, and what follows is what follows
+/// any raise.
 fn emit_reraise<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     kind: Var,
     value: Var,
+    reason: Var,
 ) -> Result<(), CodegenError> {
     let kind = body.any_ref_for_var(var_env, kind.0);
     let [value_word, value_kind] = stored_parts(body, binding_for_var(var_env, value.0));
+    let [reason_word, reason_kind] = stored_parts(body, binding_for_var(var_env, reason.0));
     let process = body.process_arg();
-    runtime_call!(body, fz_reraise, [process, kind, value_word, value_kind]);
+    runtime_call!(
+        body,
+        fz_reraise,
+        [process, kind, value_word, value_kind, reason_word, reason_kind]
+    );
     continue_after_raise(body);
     Ok(())
 }

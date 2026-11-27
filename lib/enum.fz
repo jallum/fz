@@ -1993,9 +1993,9 @@ defmodule Enum do
     try do
       reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, entry}) end)
     catch
-      kind, reason ->
+      _kind, _reason ->
         collector.(initial, :halt)
-        Exception.__rethrow__(kind, reason)
+        __reraise__()
     else
       acc -> collector.(acc, :done)
     end
@@ -2017,9 +2017,9 @@ defmodule Enum do
     try do
       reduce(enumerable, initial, fn (entry, acc) -> collector.(acc, {:cont, transform.(entry)}) end)
     catch
-      kind, reason ->
+      _kind, _reason ->
         collector.(initial, :halt)
-        Exception.__rethrow__(kind, reason)
+        __reraise__()
     else
       acc -> collector.(acc, :done)
     end

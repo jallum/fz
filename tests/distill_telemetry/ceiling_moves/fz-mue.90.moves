@@ -1,0 +1,6 @@
+# BIF failures are declared raises, the per-def ceremony is gone (falls); the macro-root order effect, +20 requests and +5 drives, is accepted by the user 2026-11-25 (fz-t93.36)
+largest drive requests -5
+total requests +20
+drives +5
+derivations -59
+reads handed -1212

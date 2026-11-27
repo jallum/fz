@@ -314,7 +314,11 @@ fn extern_failure(
         );
         return Err(FatalError);
     }
-    Ok(Some(LastResort::declared(exception, &raises.message)))
+    Ok(Some(LastResort::declared(
+        exception,
+        &raises.message,
+        raises.reason.as_deref(),
+    )))
 }
 
 /// The return of an extern that declares `raises:`. A failure travels as the

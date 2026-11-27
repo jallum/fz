@@ -1,0 +1,59 @@
+#---
+# purpose: "A Kernel function that checks its arguments fails with `:badarg` for `catch` and an `ArgumentError` worded for each bad argument for `rescue`, as Elixir does on all three paths"
+# oracle: self
+# oracle.stamp: 013779a3993dcb3e
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self()], 0)
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.inspect(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("abs", fn -> abs(v(:a)) end)
+    show("round", fn -> round(v(:a)) end)
+    show("trunc", fn -> trunc(v(:a)) end)
+    show("floor", fn -> floor(v(:a)) end)
+    show("ceil", fn -> ceil(v(:a)) end)
+    show("hd of a non-list", fn -> hd(v(:a)) end)
+    show("hd of []", fn -> hd(v([])) end)
+    show("tl of a non-list", fn -> tl(v(:a)) end)
+    show("tl of []", fn -> tl(v([])) end)
+    show("byte_size", fn -> byte_size(v(:a)) end)
+    show("bit_size", fn -> bit_size(v(:a)) end)
+    show("tuple_size", fn -> tuple_size(v(:a)) end)
+    show("elem past the end", fn -> elem(v({1}), 5) end)
+    show("elem of a non-tuple", fn -> elem(v(1), 0) end)
+    show("elem at a non-integer", fn -> elem(v({1}), :a) end)
+    show("elem of a non-tuple at a non-integer", fn -> elem(v(1), :a) end)
+    show("length of a non-list", fn -> length(v(:a)) end)
+    show("length of an improper list", fn -> length(v([1 | 2])) end)
+    show("is_function with a non-integer arity", fn -> is_function(v(:a), :x) end)
+    show("is_function with a negative arity", fn -> is_function(v(:a), -1) end)
+    show("send to a non-pid", fn -> send(v(1), :msg) end)
+    show("map_size of a non-map", fn -> map_size(v(1)) end)
+  end
+end
+
+Main.main()

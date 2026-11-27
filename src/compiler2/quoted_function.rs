@@ -9,6 +9,7 @@ use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::source::{SourceMap, Span};
 
+use super::bad_arguments::{DeclaredFailure, failure_clause};
 use super::identity::FunctionId;
 use super::quoted_concat_pattern::{concat_operands, decode_concat_pattern, refuse_concat_call};
 use super::source::{META_FROM_OPERATOR_KEY, QuotedAstNode, QuotedSourceCursor, QuotedSourceError, QuotedSourceRoot};
@@ -116,6 +117,7 @@ pub(crate) fn derive_function_surface(
 
     let is_macro = super::quoted_surface::is_macro_definition_head(&form_head);
     let mut clauses = Vec::new();
+    let mut declared_failure: Option<(FnClause, DeclaredFailure)> = None;
     let mut group_name: Option<String> = None;
     let mut name_span = Span::DUMMY;
     let mut group_span = Span::DUMMY;
@@ -128,7 +130,17 @@ pub(crate) fn derive_function_surface(
                 "grouped quoted function mixes `{form_head}` and `{head_name}`"
             )));
         }
-        let (name, clause, clause_name_span) = decode_function_clause(occurrences, &node, sources)?;
+        let (name, clause, clause_name_span, failure, has_body) = decode_function_clause(occurrences, &node, sources)?;
+        if let Some(failure) = failure {
+            if declared_failure.is_some() {
+                return Err(QuotedSourceError::user(
+                    crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
+                    Some(clause.span),
+                    "only one clause of a function declares `raises:`: it states the domain of the whole function",
+                ));
+            }
+            declared_failure = Some((clause.clone(), failure));
+        }
         match &group_name {
             None => {
                 group_name = Some(name);
@@ -142,7 +154,13 @@ pub(crate) fn derive_function_surface(
             }
         }
         group_span = group_span.merge(clause.span);
-        clauses.push(clause);
+        if has_body {
+            clauses.push(clause);
+        }
+    }
+
+    if let Some((domain, failure)) = &declared_failure {
+        clauses.push(failure_clause(failure, domain)?);
     }
 
     for (attr, attr_span) in attrs.iter().zip(&attr_spans) {
@@ -227,6 +245,10 @@ fn decode_extern_fn(
                 exception: ModuleName::from_segments(exception.tail.list_atom_names()?),
                 span: exception.span.unwrap_or(span),
                 message: required_map_utf8(details, "message")?,
+                reason: match details.map_value("reason")? {
+                    Some(reason) => Some(reason.atom_name()?.to_string()),
+                    None => None,
+                },
             })
         }
         None => None,
@@ -280,7 +302,7 @@ fn decode_function_clause(
     occurrences: &mut LambdaOccurrences,
     node: &QuotedAstNode,
     sources: &SourceMap,
-) -> Result<(String, FnClause, Span), QuotedSourceError> {
+) -> Result<(String, FnClause, Span, Option<DeclaredFailure>, bool), QuotedSourceError> {
     let span = node.span.unwrap_or(Span::DUMMY);
     let Some((function_head, do_body)) = node.tail.list_pair()? else {
         return Err(QuotedSourceError::new(
@@ -291,7 +313,13 @@ fn decode_function_clause(
         decode_function_head(occurrences, &function_head, sources)?;
     let form = TryForm::definition(node.head.atom_name()?.as_str())
         .ok_or_else(|| QuotedSourceError::new("quoted function clause expects a definition form"))?;
-    let body = decode_function_body(occurrences, &do_body, span, form, sources)?;
+    let failure = decode_declared_failure(occurrences, &do_body, span, sources)?;
+    let has_body = failure.is_none() || has_body_entry(&do_body)?;
+    let body = if has_body {
+        decode_function_body(occurrences, &do_body, span, form, sources)?
+    } else {
+        Spanned::new(Expr::Nil, span)
+    };
     Ok((
         name,
         FnClause {
@@ -302,7 +330,66 @@ fn decode_function_clause(
             span,
         },
         name_span,
+        failure,
+        has_body,
     ))
+}
+
+/// Whether a definition's keyword tail carries a body beside its failure
+/// keys. A tail of failure keys alone is a statement of the function's domain
+/// that adds no clause.
+fn has_body_entry(cursor: &QuotedSourceCursor) -> Result<bool, QuotedSourceError> {
+    Ok(decode_keyword_entries(cursor)?
+        .iter()
+        .any(|(key, _)| !is_failure_key(key)))
+}
+
+/// The tail keys that declare a definition's failure rather than its body.
+fn is_failure_key(key: &str) -> bool {
+    matches!(key, "raises" | "reason" | "message")
+}
+
+/// The failure a definition's keyword tail declares with `raises:` and
+/// `reason:`. Its message is the one the arguments' wording derives, so a
+/// `message:` is refused.
+fn decode_declared_failure(
+    occurrences: &mut LambdaOccurrences,
+    cursor: &QuotedSourceCursor,
+    span: Span,
+    sources: &SourceMap,
+) -> Result<Option<DeclaredFailure>, QuotedSourceError> {
+    let invalid = |why: &str| {
+        QuotedSourceError::user(
+            crate::diag::codes::PARSE_INVALID_FUNCTION_DEFINITION,
+            Some(span),
+            why.to_string(),
+        )
+    };
+    let (mut exception, mut reason) = (None, None);
+    for (key, value) in decode_keyword_entries(cursor)? {
+        match key.as_str() {
+            "raises" => match decode_expr(occurrences, &value, Some(span), sources)?.node {
+                Expr::Alias(name) => exception = Some(name),
+                _ => return Err(invalid("`raises:` names the exception a call outside the head raises")),
+            },
+            "reason" => match decode_expr(occurrences, &value, Some(span), sources)?.node {
+                Expr::Atom(name) => reason = Some(name),
+                _ => return Err(invalid("`reason:` is the atom of the Erlang reason `catch` sees")),
+            },
+            "message" => {
+                return Err(invalid(
+                    "words its failure from the tests of its guard, so it takes no `message:`",
+                ));
+            }
+            _ => {}
+        }
+    }
+    match (exception, reason) {
+        (None, None) => Ok(None),
+        (Some(exception), Some(reason)) => Ok(Some(DeclaredFailure { exception, reason })),
+        (Some(_), None) => Err(invalid("`raises:` needs a `reason:` beside it")),
+        (None, Some(_)) => Err(invalid("`reason:` needs a `raises:` beside it")),
+    }
 }
 
 fn decode_function_head(
@@ -355,6 +442,7 @@ fn decode_function_body(
     sources: &SourceMap,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
     let mut entries = decode_keyword_entries(cursor)?;
+    entries.retain(|(key, _)| !is_failure_key(key));
     if entries.len() > 1 {
         return decode_try(occurrences, cursor, span, form, sources);
     }
@@ -913,7 +1001,8 @@ fn decode_try(
     form: TryForm,
     sources: &SourceMap,
 ) -> Result<Spanned<Expr>, QuotedSourceError> {
-    let entries = decode_keyword_entries(sections)?;
+    let mut entries = decode_keyword_entries(sections)?;
+    entries.retain(|(key, _)| !is_failure_key(key));
     if entries.len() == 1 {
         return Err(invalid_try(span, "missing :catch/:rescue/:after option in \"try\""));
     }

@@ -87,12 +87,14 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) => {
             used.insert(*a);
         }
-        Term::Raise { value } => {
+        Term::Raise { value, reason } => {
             used.insert(*value);
+            used.extend(*reason);
         }
-        Term::Reraise { kind, value } => {
+        Term::Reraise { kind, value, reason } => {
             used.insert(*kind);
             used.insert(*value);
+            used.insert(*reason);
         }
         Term::RaiseUndefined {
             receiver,

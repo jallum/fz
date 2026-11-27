@@ -1272,7 +1272,7 @@ impl ExecutableNames {
     /// whose struct it builds.
     fn raise(&mut self, failure: &LastResort) {
         for atom in failure.atoms() {
-            push_atom(self, atom);
+            push_atom(self, &atom);
         }
         self.raises(failure.exception());
     }

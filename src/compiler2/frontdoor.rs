@@ -109,6 +109,7 @@ enum ClauseLine<'t> {
 enum ExternOption {
     Raises {
         exception: AnyValueRef,
+        reason: Option<AnyValueRef>,
         message: AnyValueRef,
     },
     Delivers(AnyValueRef),
@@ -714,8 +715,15 @@ impl<'t> FrontDoorParser<'t> {
             entries.push((self.builder.atom("when"), self.builder.list(&constraints)?));
         }
         match option {
-            Some(ExternOption::Raises { exception, message }) => {
+            Some(ExternOption::Raises {
+                exception,
+                reason,
+                message,
+            }) => {
                 entries.push((self.builder.atom("raises"), exception));
+                if let Some(reason) = reason {
+                    entries.push((self.builder.atom("reason"), reason));
+                }
                 entries.push((self.builder.atom("message"), message));
             }
             Some(ExternOption::Delivers(kind)) => entries.push((self.builder.atom("delivers"), kind)),
@@ -775,18 +783,20 @@ impl<'t> FrontDoorParser<'t> {
         }
     }
 
-    /// The tail `raises: Exception, message: "text"` of an extern whose result
-    /// can fail: the exception a body raises, and what it says.
+    /// The tail `raises: Exception, reason: :atom, message: "text"` of an
+    /// extern whose result can fail: the exception a body raises, the Erlang
+    /// reason a `catch` binds for it when it has one, and what it says.
     fn parse_extern_raises(&mut self) -> Result<ExternOption, FrontDoorError> {
         let exception = self.parse_extern_exception()?;
-        self.skip_newlines();
-        if !self.eat(&Tok::Comma) {
-            return Err(FrontDoorError::syntax(
-                "`raises:` needs a `message:` after it: fz exceptions carry no default message",
-                self.prev_span(),
-            ));
-        }
-        self.skip_newlines();
+        self.expect_message_follows()?;
+        let reason = if matches!(self.peek(), Tok::KwKey(key) if key == "reason") {
+            self.advance();
+            let reason = self.parse_extern_reason()?;
+            self.expect_message_follows()?;
+            Some(reason)
+        } else {
+            None
+        };
         match self.bump() {
             Tok::KwKey(key) if key == "message" => {}
             other => {
@@ -797,7 +807,36 @@ impl<'t> FrontDoorParser<'t> {
             }
         }
         let message = self.parse_extern_message()?;
-        Ok(ExternOption::Raises { exception, message })
+        Ok(ExternOption::Raises {
+            exception,
+            reason,
+            message,
+        })
+    }
+
+    /// The comma that leads to the rest of a `raises:` tail, whose last part
+    /// is always its `message:`.
+    fn expect_message_follows(&mut self) -> Result<(), FrontDoorError> {
+        self.skip_newlines();
+        if !self.eat(&Tok::Comma) {
+            return Err(FrontDoorError::syntax(
+                "`raises:` needs a `message:` after it: fz exceptions carry no default message",
+                self.prev_span(),
+            ));
+        }
+        self.skip_newlines();
+        Ok(())
+    }
+
+    /// The Erlang reason a `reason:` names: an atom such as `:badarith`.
+    fn parse_extern_reason(&mut self) -> Result<AnyValueRef, FrontDoorError> {
+        match self.bump() {
+            Tok::Atom(name) => Ok(self.builder.atom(name)),
+            other => Err(self.error(format!(
+                "`reason:` names the Erlang reason a `catch` binds, an atom such as `:badarith`, got {}",
+                describe_token(other)
+            ))),
+        }
     }
 
     fn parse_extern_exception(&mut self) -> Result<AnyValueRef, FrontDoorError> {

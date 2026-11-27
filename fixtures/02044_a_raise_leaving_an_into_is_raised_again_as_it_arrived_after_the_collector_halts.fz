@@ -1,0 +1,66 @@
+#---
+# purpose: "`Enum.into/2` and `for ... into:` tell the collector `:halt` and then raise again what they were handed, with its kind, its value and its Erlang reason unchanged, as Elixir does on all three paths"
+# oracle: self
+# oracle.stamp: b6a055484f4c631d
+#---
+defmodule Tally do
+  defstruct []
+end
+
+defimpl Collectable, for: Tally do
+  def into(_tally) do
+    collector = fn
+      acc, {:cont, entry} -> [entry | acc]
+      acc, :done -> {:done, Enum.reverse(acc)}
+      _acc, :halt ->
+        IO.puts("collector halted")
+        :ok
+    end
+
+    {[], collector}
+  end
+end
+
+defmodule Main do
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.inspect(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def show_kind(label, fun) do
+    IO.puts(label)
+    IO.inspect(caught(fun))
+  end
+
+  def main() do
+    show_kind("a throw", fn -> Enum.into([1, 2], %Tally{}, fn x -> throw({:ball, x}) end) end)
+    show_kind("an exit", fn -> Enum.into([1, 2], %Tally{}, fn x -> exit({:bye, x}) end) end)
+    show("a raise", fn -> Enum.into([1, 2], %Tally{}, fn x -> raise "boom #{x}" end) end)
+    show("a bare reason", fn -> Enum.into([1, 2], %Tally{}, fn _x -> :erlang.error(:badarg) end) end)
+    show("a tuple reason", fn -> Enum.into([1, 2], %Tally{}, fn _x -> :erlang.error({:my, 1}) end) end)
+    show("a built-in", fn -> Enum.into([1, 2], %Tally{}, fn x -> :erlang.atom_to_binary(v(x), :utf8) end) end)
+    show_kind("a for", fn -> for x <- [1, 2], into: %Tally{}, do: throw({:for, x}) end)
+    show("a for raise", fn -> for x <- [1, 2], into: %Tally{}, do: :erlang.error({:my, x}) end)
+  end
+end
+
+Main.main()

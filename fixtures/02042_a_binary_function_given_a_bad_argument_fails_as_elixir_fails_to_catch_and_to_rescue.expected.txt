@@ -1,0 +1,96 @@
+binary_part of a non-binary
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+binary_part past the end
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+binary_part too long
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 3rd argument: out of range
+
+binary_part before the start
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+binary_part of non-integers
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not an integer
+  * 3rd argument: not an integer
+
+binary_part of a non-binary and a negative start
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+  * 2nd argument: out of range
+
+at past the end
+{:error, :badarg}
+ArgumentError: argument error
+at a non-binary
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+at a negative position
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+copy of a non-binary
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+copy a negative count
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: out of range
+
+copy of a non-binary a non-integer count
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+  * 2nd argument: not an integer
+
+copy of a bitstring
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: is a bitstring (expected a binary)
+
+referenced_byte_size of a non-bitstring
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+match with an empty pattern
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 2nd argument: not a valid pattern
+
+compile_pattern of an empty pattern
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a valid pattern
+

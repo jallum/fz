@@ -203,7 +203,7 @@ fn term_raise_pretty_prints_the_value_it_raises() {
     let mut b = FnBuilder::new(FnId(5), "top");
     let entry = b.block(vec![]);
     let value = b.let_(entry, Prim::Const(Const::Int(3)));
-    b.set_terminator(entry, Term::Raise { value });
+    b.set_terminator(entry, Term::Raise { value, reason: None });
     let s = format!("{}", b.build());
     assert!(s.contains("raise v0"), "{s}");
 }

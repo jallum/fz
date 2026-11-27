@@ -844,12 +844,14 @@ pub(crate) fn indirect_callee_only_vars(function: &IrFn) -> HashSet<Var> {
             IrTerm::Return(var) => {
                 other_uses.insert(*var);
             }
-            IrTerm::Raise { value } => {
+            IrTerm::Raise { value, reason } => {
                 other_uses.insert(*value);
+                other_uses.extend(*reason);
             }
-            IrTerm::Reraise { kind, value } => {
+            IrTerm::Reraise { kind, value, reason } => {
                 other_uses.insert(*kind);
                 other_uses.insert(*value);
+                other_uses.insert(*reason);
             }
             IrTerm::RaiseUndefined {
                 receiver,

@@ -42,7 +42,31 @@ pub enum Callee {
     Bound(crate::compiler2::FunctionId),
 }
 
+/// A call spelled as a name that is not a function: the compiler lowers it
+/// where it is written, as a raise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaisingForm {
+    /// `__raise__(exception, reason)` raises the exception as an error whose
+    /// Erlang reason is `reason`, any term.
+    Raise,
+    /// `__reraise__()` continues, as it arrived, the raise the enclosing
+    /// `catch` or `rescue` clause was delivered.
+    Reraise,
+}
+
 impl Callee {
+    /// The raising form this callee spells when called with `arity` arguments.
+    pub fn raising_form(&self, arity: usize) -> Option<RaisingForm> {
+        let Self::Name(CallableName { module: None, name }) = self else {
+            return None;
+        };
+        match (name.as_str(), arity) {
+            ("__raise__", 2) => Some(RaisingForm::Raise),
+            ("__reraise__", 0) => Some(RaisingForm::Reraise),
+            _ => None,
+        }
+    }
+
     /// The callee a call on `expr` with `arity` arguments names, or `None`
     /// when the target is not a name at all.
     pub fn for_call(expr: &Expr, arity: usize) -> Option<Self> {

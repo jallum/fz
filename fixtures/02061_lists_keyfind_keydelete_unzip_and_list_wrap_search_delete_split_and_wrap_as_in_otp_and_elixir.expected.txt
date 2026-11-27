@@ -31,6 +31,10 @@ improper tail reached: ArgumentError: errors were found at the given arguments:
 
   * 3rd argument: not a proper list
 
+caught zero position: {:error, :badarg}
+caught non-integer position: {:error, :badarg}
+caught non-list: {:error, :badarg}
+caught improper tail reached: {:error, :badarg}
 first match only: [a: 10, c: 30, b: 40]
 no match: [a: 10, b: 20, c: 30, b: 40]
 empty list: []

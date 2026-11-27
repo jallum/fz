@@ -55,13 +55,16 @@ pub struct FunctionSurface {
 }
 
 /// The failure an extern declares: the exception a body raises, as written
-/// (an alias, resolved in the extern's own module), and the message it carries.
+/// (an alias, resolved in the extern's own module), the message it carries,
+/// and the Erlang reason a `catch` binds for it.
 #[derive(Debug, Clone)]
 pub struct ExternRaises {
     pub exception: crate::modules::identity::ModuleName,
     /// Where the declaration writes the exception's name.
     pub span: Span,
     pub message: String,
+    /// The atom of the Erlang reason (`:badarith`), when the declaration names one.
+    pub reason: Option<String>,
 }
 
 impl FunctionSurface {

@@ -1,0 +1,43 @@
+#---
+# purpose: "`elem/2` and `:erlang.element/2` given an index out of range or a value that is not a tuple fail with Elixir's argument numbering, so `catch` sees `:badarg` and `rescue` sees the same message, on all three paths"
+# oracle: self
+# oracle.stamp: e86e3884a4516f95
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      fun.()
+    catch
+      kind, reason -> {kind, reason}
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      fun.()
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.inspect(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("elem past the end", fn -> elem(v({1}), 5) end)
+    show("elem of a negative index", fn -> elem(v({1}), -1) end)
+    show("elem of a non-tuple", fn -> elem(v(:x), 0) end)
+    show(":erlang.element of index 0", fn -> :erlang.element(0, v({1})) end)
+    show(":erlang.element past the end", fn -> :erlang.element(2, v({1})) end)
+    show(":erlang.element of a non-tuple", fn -> :erlang.element(1, v(:x)) end)
+  end
+end
+
+Main.main()
