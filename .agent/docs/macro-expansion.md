@@ -284,6 +284,20 @@ The macro-expansion memo key holds the call site (`file` and `line`) and the
 expansion context beside the macro, the call and the scope, since the env a
 macro reads differs by each.
 
+### `Macro.traverse/4`, `prewalk` and `postwalk`
+
+`lib/macro.fz` defines `Macro.traverse/4`, `Macro.prewalk/2,3` and
+`Macro.postwalk/2,3` clause for clause from Elixir's `macro.ex`. They tell five
+node shapes apart: a call whose head is an atom, a call whose head is itself
+quoted code, a 2-tuple, a list, and any other term (a leaf). `traverse/4` calls
+`pre` on the way down and `post` on the way up; `prewalk/3` and `postwalk/3`
+pass an identity function for the other half. `prewalk/2` and `postwalk/2` are
+the accumulator-free loops `macro.ex` writes, and a node `prewalk/2`'s function
+rewrites is itself descended into. The walkers reach `:lists.map/2` and
+`:lists.mapfoldl/3`. Every `defp` carries a `@spec` as `lib/` requires, with
+`any` where Elixir writes `Macro.t()`, because `lib/macro.fz` defines no
+`Macro.t/0`. `prewalker/1` and `postwalker/1` are not defined.
+
 ### `Macro.to_string/1`
 
 `lib/macro.fz` defines `Macro.to_string/1`, and it raises `RuntimeError`

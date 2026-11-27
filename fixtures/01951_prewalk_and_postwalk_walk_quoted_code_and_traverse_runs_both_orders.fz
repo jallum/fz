@@ -1,0 +1,96 @@
+#---
+# purpose: "Macro.prewalk/2,3, postwalk/2,3 and traverse/4 visit every node of quoted code, parents before children for prewalk and children before parents for postwalk, with the same results and accumulators as Elixir, including a function whose rewrite is itself descended into."
+# oracle: self
+# oracle.stamp: c0b2751d3bc47d62
+#---
+defmodule Main do
+  def main() do
+    ast = quote do: 5 + 3 * 7
+
+    swap = fn
+      {:+, meta, children} -> {:*, meta, children}
+      {:*, meta, children} -> {:+, meta, children}
+      other -> other
+    end
+
+    IO.inspect(strip(Macro.prewalk(ast, swap)))
+    IO.inspect(strip(Macro.postwalk(ast, swap)))
+
+    visit = fn
+      {name, meta, children}, acc when is_atom(name) -> {{name, meta, children}, [name | acc]}
+      other, acc -> {other, acc}
+    end
+
+    {pre, pre_acc} = Macro.prewalk(ast, [], visit)
+    IO.inspect({strip(pre), pre_acc})
+    {post, post_acc} = Macro.postwalk(ast, [], visit)
+    IO.inspect({strip(post), post_acc})
+
+    {new_ast, acc} =
+      Macro.traverse(
+        ast,
+        [],
+        fn
+          {:+, meta, children}, acc -> {{:-, meta, children}, [:- | acc]}
+          {:*, meta, children}, acc -> {{:/, meta, children}, [:/ | acc]}
+          other, acc -> {other, acc}
+        end,
+        fn
+          {:-, meta, children}, acc -> {{:min, meta, children}, [:min | acc]}
+          {:/, meta, children}, acc -> {{:max, meta, children}, [:max | acc]}
+          other, acc -> {other, acc}
+        end
+      )
+
+    IO.inspect({strip(new_ast), acc})
+
+    IO.inspect(Macro.prewalk(1, fn x -> x + 1 end))
+    IO.inspect(Macro.postwalk([1, {2, 3}], fn x -> x end))
+    IO.inspect(Macro.prewalk({:ok, [1, 2]}, [], fn x, acc -> {x, [x | acc]} end))
+
+    rewrite = fn
+      {:a, [], nil} -> {:b, [], [{:c, [], nil}]}
+      other -> other
+    end
+
+    IO.inspect(Macro.prewalk({:a, [], nil}, rewrite))
+    IO.inspect(Macro.postwalk({:a, [], nil}, rewrite))
+
+    call = {{:., [], [:mod, :fun]}, [], [{:x, [], nil}, [1, 2], {3, 4}]}
+    log = fn node, acc -> {node, [node | acc]} end
+    {_, pre_order} = Macro.prewalk(call, [], log)
+    Enum.each(Enum.reverse(pre_order), &IO.inspect/1)
+    {_, post_order} = Macro.postwalk(call, [], log)
+    Enum.each(Enum.reverse(post_order), &IO.inspect/1)
+
+    {_, both} =
+      Macro.traverse(
+        call,
+        [],
+        fn node, acc -> {node, [{:pre, node} | acc]} end,
+        fn node, acc -> {node, [{:post, node} | acc]} end
+      )
+
+    Enum.each(Enum.reverse(both), &IO.inspect/1)
+
+    scale = fn
+      x when is_integer(x) -> x * 10
+      other -> other
+    end
+
+    rename = fn
+      {:x, meta, context} -> {:y, meta, context}
+      other -> other
+    end
+
+    IO.inspect(Macro.postwalk(call, scale))
+    IO.inspect(Macro.prewalk(call, rename))
+  end
+
+  defp strip(ast), do: Macro.postwalk(ast, &strip_meta/1)
+
+  defp strip_meta({form, _meta, args}), do: {form, [], args}
+  defp strip_meta(other), do: other
+end
+
+Main.main()

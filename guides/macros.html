@@ -315,6 +315,16 @@ ask the compiler, so expanding a call that may be a macro anywhere else raises
 <code>and</code>, <code>or</code> and <code>|&gt;</code> are not macros in fz,
 so they come back unchanged.</p>
 
+<p><code>Macro.prewalk/2,3</code> and <code>Macro.postwalk/2,3</code> visit
+every node of quoted code, a parent before its children for
+<code>prewalk</code> and after them for <code>postwalk</code>, and replace each
+node with what the function returns; the three-argument forms thread an
+accumulator and return <code>{ast, acc}</code>. A node <code>prewalk</code>'s
+function rewrites is itself descended into. <code>Macro.traverse/4</code> takes
+a function for each direction. The nodes they tell apart are a call (whose head
+is an atom or quoted code itself), a two-element tuple, a list, and everything
+else.</p>
+
 <p><code>__MODULE__</code> is the atom of the module it stands in, and
 <code>nil</code> outside any module. Inside a <code>quote</code> it names the
 module that calls the macro, so a macro can define functions that build and

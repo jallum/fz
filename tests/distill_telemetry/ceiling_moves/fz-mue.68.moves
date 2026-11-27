@@ -1,0 +1,3 @@
+# :lists.mapfoldl/3 and its helper are two new definitions in a module every program loads, each published once; Macro.traverse/4 calls mapfoldl as Elixir's does
+derivations +2
+reads handed +8
