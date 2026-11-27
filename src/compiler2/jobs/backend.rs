@@ -14,7 +14,7 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, ProjectionKind, Region, SubjectSource};
 use crate::fz_ir::SlotStore;
-use crate::ground_value::{GroundValue, entries_in_atom_key_order};
+use crate::ground_value::{GroundValue, entries_in_key_order};
 use crate::literal_term::LiteralTerm;
 use crate::source::Span;
 use fz_runtime::module_name::{ModuleName, STRUCT_MODULE_FIELD};
@@ -1010,7 +1010,11 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
                 },
             ),
             LoweredStep::Map { value, entries } => {
-                let in_key_order = entries_in_key_order(entries);
+                let in_key_order = entries_in_key_order(
+                    entries
+                        .iter()
+                        .map(|(key, value)| (key.literal.as_ref(), (key.value, *value))),
+                );
                 self.step_or_omitted_when_absent(
                     *value,
                     BackendStep::Map {
@@ -1335,16 +1339,6 @@ fn collect_executable_atoms(world: &mut World, executable: &BackendExecutable, n
             }
         }
     }
-}
-
-/// A map literal's entries in the runtime's key order with no key repeated,
-/// when every key is a literal atom.
-fn entries_in_key_order(entries: &[(LoweredMapKey, ValueId)]) -> Option<Vec<(ValueId, ValueId)>> {
-    entries_in_atom_key_order(
-        entries
-            .iter()
-            .map(|(key, value)| (key.literal.as_ref(), (key.value, *value))),
-    )
 }
 
 fn slot_of(fields: &[String], field: &str) -> Option<u32> {

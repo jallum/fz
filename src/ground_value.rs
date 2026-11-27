@@ -37,13 +37,18 @@ pub enum GroundValue {
     Utf8Binary(Vec<u8>),
 }
 
-/// Map entries in the runtime's key order with no key repeated, when every key
-/// is a literal atom: atoms order by name, and of two entries with one key the
-/// later one written is the one the map holds. `None` when any key is not an
-/// atom, which the runtime then orders as the entries are put.
-pub fn entries_in_atom_key_order<'a, T>(
-    entries: impl IntoIterator<Item = (Option<&'a GroundValue>, T)>,
-) -> Option<Vec<T>> {
+/// A map literal's entries in the runtime's key order with no key repeated,
+/// when the compiler can know that order: every key is a literal atom, which
+/// orders by name, or there is one entry, which has no order to keep. Of two
+/// entries with one key the later one written is the one the map holds. `None`
+/// when a key is not a literal atom among several, which the runtime then
+/// orders as the entries are put. Atoms order by name and never by id, so the
+/// answer is the same whatever numbers a build gives them.
+pub fn entries_in_key_order<'a, T>(entries: impl IntoIterator<Item = (Option<&'a GroundValue>, T)>) -> Option<Vec<T>> {
+    let entries: Vec<_> = entries.into_iter().collect();
+    if entries.len() == 1 {
+        return Some(entries.into_iter().map(|(_, entry)| entry).collect());
+    }
     let mut by_name = std::collections::BTreeMap::new();
     for (key, entry) in entries {
         let GroundValue::Atom(name) = key? else {

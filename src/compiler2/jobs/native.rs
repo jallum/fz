@@ -28,10 +28,10 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
-    BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed,
-    DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy,
-    FieldSizeIr, FnBuilder, FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore,
-    Term, UnOp as IrUnOp, Var,
+    BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget,
+    ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FieldSizeIr, FnBuilder,
+    FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp,
+    Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -1138,9 +1138,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             ctx.current_block = block;
             match clause_entered_at(executable, entry_id) {
                 Some(clause) => {
+                    ctx.inherit_sole_goto(block, &entry_vars);
                     self.lower_clause_body_here(ctx, executable, entries, entry_fns, clause, &entry_vars)?
                 }
                 None => {
+                    if handed_control_once(entries, entry_id) {
+                        ctx.inherit_sole_goto(block, &entry_vars);
+                    }
                     self.lower_entry_here(
                         ctx,
                         executable,
@@ -1459,16 +1463,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entries,
                     in_key_order,
                 } => {
-                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(entries.len())));
-                    for (key, item) in entries {
-                        let key = self.env_runtime_var(ctx, executable, env, *key);
-                        let value = self.env_runtime_var(ctx, executable, env, *item);
-                        map = ctx.emit_map_put(map, key, value);
-                    }
-                    let (var, _) = ctx.emit_let(if *in_key_order {
-                        Prim::DestMapPublish(map)
-                    } else {
-                        Prim::DestMapFreeze(map)
+                    let entries = entries
+                        .iter()
+                        .map(|(key, item)| {
+                            (
+                                self.env_runtime_var(ctx, executable, env, *key),
+                                self.env_runtime_var(ctx, executable, env, *item),
+                            )
+                        })
+                        .collect();
+                    let (var, _) = ctx.emit_let(Prim::MakeMap {
+                        entries,
+                        in_key_order: *in_key_order,
                     });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -1479,7 +1485,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entries,
                 } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
-                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Update(base)));
+                    let (mut map, _) = ctx.emit_let(Prim::DestMapBeginUpdate(base));
                     for (key, item) in entries {
                         let key = self.env_runtime_var(ctx, executable, env, *key);
                         let value = self.env_runtime_var(ctx, executable, env, *item);
@@ -2328,6 +2334,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let inputs = ctx.typed_params(executable_input_tys(callee_executable).iter());
         let head = ctx.builder.block(inputs.clone());
         ctx.set_term(Term::Goto(head, lanes));
+        ctx.inherit_sole_goto(head, &inputs);
         ctx.current_block = head;
         let layout = &callee_executable.abi.return_layout.layout;
         let returns = match dest {
@@ -2351,8 +2358,48 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         let Some((join, returned)) = callee_scope.returns.joined() else {
             return Ok(());
         };
+        ctx.inherit_sole_goto(join, &returned);
         ctx.current_block = join;
         self.resume_with_returned(ctx, executable, entries, entry_fns, env, *resume, layout, &returned)
+    }
+
+    /// The map `fz_map_put` answers, built here and now, when the map it puts
+    /// onto was built in this function in key order from literal atom keys and
+    /// the key put is a literal atom: the one build of all the entries, the
+    /// key put in name order and replacing its value if the map holds it.
+    fn fold_map_put(&mut self, ctx: &mut NativeFnCtx, signature: &LoweredExtern, lanes: &[Var]) -> Option<Var> {
+        let ([map, key, value], "fz_map_put") = (lanes, signature.symbol.as_str()) else {
+            return None;
+        };
+        let Some(Provenance::OrderedMap(base)) = ctx.provenance.get(map) else {
+            return None;
+        };
+        let Some(Provenance::Atom(key_id)) = ctx.provenance.get(key) else {
+            return None;
+        };
+        let name_of = |ctx: &NativeFnCtx, var: Var| match ctx.provenance.get(&var)? {
+            Provenance::Atom(id) => Some((*id, self.atoms.name(*id)?)),
+            Provenance::OrderedMap(_) => None,
+        };
+        let put_name = self.atoms.name(*key_id)?;
+        let base_names: Vec<_> = base.iter().map(|(k, _)| name_of(ctx, *k)).collect::<Option<_>>()?;
+        let at = base_names.partition_point(|(_, name)| *name < put_name);
+        let (value, key_id) = (*value, *key_id);
+        let mut entries = base.clone();
+        match base_names.get(at) {
+            Some((id, _)) if *id == key_id => entries[at].1 = value,
+            _ => {
+                let key = ctx.emit_let(Prim::Const(Const::Atom(key_id))).0;
+                entries.insert(at, (key, value));
+            }
+        }
+        Some(
+            ctx.emit_let(Prim::MakeMap {
+                entries,
+                in_key_order: true,
+            })
+            .0,
+        )
     }
 
     /// Calls extern executable `callee` on `lanes` where control is, and
@@ -2365,9 +2412,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         signature: &LoweredExtern,
         lanes: Vec<Var>,
     ) -> Result<Option<Var>, FatalError> {
+        if let Some(folded) = self.fold_map_put(ctx, signature, &lanes) {
+            return Ok(Some(folded));
+        }
         let inputs = ctx.typed_params(executable_input_tys(callee_executable).iter());
         let head = ctx.builder.block(inputs.clone());
         ctx.set_term(Term::Goto(head, lanes));
+        ctx.inherit_sole_goto(head, &inputs);
         ctx.current_block = head;
         self.lower_extern_here(ctx, callee, callee_executable, signature, &inputs)
     }
@@ -3547,14 +3598,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             LiteralTerm::Map(entries) => {
                 let in_key_order = LiteralTerm::entries_in_key_order(entries);
                 let written = in_key_order.clone().unwrap_or_else(|| entries.iter().collect());
-                let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(written.len())));
-                for (key, value) in written {
-                    let (key, value) = (self.literal_var(ctx, key), self.literal_var(ctx, value));
-                    map = ctx.emit_map_put(map, key, value);
-                }
-                match in_key_order {
-                    Some(_) => Prim::DestMapPublish(map),
-                    None => Prim::DestMapFreeze(map),
+                let entries = written
+                    .into_iter()
+                    .map(|(key, value)| (self.literal_var(ctx, key), self.literal_var(ctx, value)))
+                    .collect();
+                Prim::MakeMap {
+                    entries,
+                    in_key_order: in_key_order.is_some(),
                 }
             }
         };
@@ -6482,6 +6532,30 @@ struct NativeFnCtx {
     /// The whole binary a cursor was made into, with the block that made it:
     /// the same cursor asked again in that block is not made again.
     whole_cursors: HashMap<(Var, Var), (BlockId, Var)>,
+    /// What this function knows of how a variable was made, so a use of it
+    /// can be answered from how it was made.
+    provenance: HashMap<Var, Provenance>,
+    /// What every `Goto` made into a block carried: one `Goto` is all there
+    /// is to know when the block is lowered after every way into it has been
+    /// made, and its lanes are then the block's parameters.
+    entered: HashMap<BlockId, Entered>,
+}
+
+/// The ways into a block, as far as they have been made.
+enum Entered {
+    /// One, carrying these lanes' provenance.
+    Once(Vec<Option<Provenance>>),
+    /// More than one.
+    Many,
+}
+
+/// How a variable was made.
+#[derive(Clone)]
+enum Provenance {
+    /// A literal atom, by its id.
+    Atom(u32),
+    /// A map of literal atom keys built in key order: its entries.
+    OrderedMap(Vec<(Var, Var)>),
 }
 
 impl NativeFnCtx {
@@ -6515,6 +6589,8 @@ impl NativeFnCtx {
             pending_entries: VecDeque::default(),
             returns: Returns::FromFunction,
             whole_cursors: HashMap::default(),
+            provenance: HashMap::default(),
+            entered: HashMap::default(),
         }
     }
 
@@ -6625,11 +6701,36 @@ impl NativeFnCtx {
     }
 
     fn emit_let(&mut self, prim: Prim) -> (Var, usize) {
+        let provenance = match &prim {
+            Prim::Const(Const::Atom(id)) => Some(Provenance::Atom(*id)),
+            Prim::MakeMap {
+                entries,
+                in_key_order: true,
+            } => Some(Provenance::OrderedMap(entries.clone())),
+            _ => None,
+        };
         let stmt_idx = self.stmt_counts.entry(self.current_block).or_insert(0);
         let idx = *stmt_idx;
         *stmt_idx += 1;
         let var = self.builder.let_(self.current_block, prim);
+        if let Some(provenance) = provenance {
+            self.provenance.insert(var, provenance);
+        }
         (var, idx)
+    }
+
+    /// The parameters of `block`, which one `Goto` enters, take what is known
+    /// of the lanes it carried. Called once every way into the block has been
+    /// made.
+    fn inherit_sole_goto(&mut self, block: BlockId, params: &[Var]) {
+        let Some(Entered::Once(known)) = self.entered.get(&block) else {
+            return;
+        };
+        for (param, provenance) in params.iter().zip(known.clone()) {
+            if let Some(provenance) = provenance {
+                self.provenance.insert(*param, provenance);
+            }
+        }
     }
 
     fn emit_let_many(&mut self, arity: usize, prim: Prim) -> (Vec<Var>, usize) {
@@ -6682,6 +6783,14 @@ impl NativeFnCtx {
     }
 
     fn set_term(&mut self, term: Term) {
+        if let Term::Goto(block, lanes) = &term {
+            let carried = lanes.iter().map(|lane| self.provenance.get(lane).cloned()).collect();
+            let entered = match self.entered.get(block) {
+                None => Entered::Once(carried),
+                Some(_) => Entered::Many,
+            };
+            self.entered.insert(*block, entered);
+        }
         self.builder.set_terminator(self.current_block, term);
     }
 
@@ -6844,6 +6953,17 @@ fn collect_extern_marshals_in_tail(
         }
     }
     Ok(())
+}
+
+/// Whether exactly one tail of `entries` hands control to `entry`, so that
+/// the one `Goto` into its block is all the ways in there will ever be.
+fn handed_control_once(entries: &[BackendEntry], entry: ControlEntryId) -> bool {
+    entries
+        .iter()
+        .flat_map(|entry| entry.tail.transfers())
+        .filter(|(target, _)| *target == entry)
+        .count()
+        == 1
 }
 
 fn collect_extern_marshals_for_call_target(

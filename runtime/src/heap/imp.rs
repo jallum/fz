@@ -17,15 +17,15 @@ use super::stats::{GcStats, Generation, StubCounts, StubSite};
 use super::{BinaryBudget, Heap, MapLayout, SHARED_BIN_THRESHOLD_BYTES};
 use crate::alloc_site::RuntimeAllocSite;
 use crate::any_value::{
-    AnyValue, AnyValueRef, AnyValueRefError, ListCons, ListLink, ListTail, MAP_FLAT_MAX, MapDestinationKind,
-    STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind, bitstring_header_word,
-    bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot,
-    closure_capture_set, closure_capture_value, closure_captured_field, closure_header_word, closure_header_write,
-    closure_size_for_count, heap_object_word, list_addr_from_tagged, map_addr_from_tagged, map_count,
-    map_destination_header_word, map_destination_state, map_entry, map_header_word, map_key, map_key_in_arrays,
-    map_key_kind, map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_value_kind,
-    map_values_ptr, share_bitstring, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_schema_id,
-    struct_size_for_payload,
+    AnyValue, AnyValueRef, AnyValueRefError, ListCons, ListLink, ListTail, MAP_FLAT_MAX, MAP_HEADER_FIELD_SHIFT,
+    MapDestinationKind, STRUCT_HEADER_SCHEMA_SHIFT, STRUCT_PAYLOAD_OFFSET, SlotLayout, ValueKind,
+    bitstring_header_word, bitstring_size_for_bit_len, closure_addr_from_tagged, closure_capture_kind_slot,
+    closure_capture_raw_slot, closure_capture_set, closure_capture_value, closure_captured_field, closure_header_word,
+    closure_header_write, closure_size_for_count, heap_object_word, list_addr_from_tagged, map_addr_from_tagged,
+    map_count, map_destination_header_word, map_destination_state, map_entry, map_header_word, map_key,
+    map_key_in_arrays, map_key_kind, map_keys_ptr, map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr,
+    map_value_kind, map_values_ptr, share_bitstring, share_struct, struct_field_kind_slot, struct_field_raw_slot,
+    struct_schema_id, struct_size_for_payload,
 };
 use crate::bits::{Bin, BinView, SharedBinHandle, alloc_buffer_view, alloc_view, shared_bin_append};
 use crate::bitstr::BitSink;
@@ -708,6 +708,20 @@ impl Heap {
         if entries.is_empty() { 0 } else { kept + 1 }
     }
 
+    /// A flat map of `size` bytes whose first word is `header`, and nothing
+    /// else written: its tag bytes, keys and values are the caller's, and
+    /// nothing may read the map until they are.
+    pub fn alloc_flat_map_unwritten(&mut self, header: u64, size: usize) -> *mut u8 {
+        debug_assert_eq!(
+            size,
+            map_size_for_count((header >> MAP_HEADER_FIELD_SHIFT) as usize),
+            "the size is the header's count's"
+        );
+        let p = self.alloc_at(RuntimeAllocSite::OrderedMapEntries, size);
+        unsafe { write(p as *mut u64, header) };
+        p
+    }
+
     /// Copy entries whose ordering is preserved by an immutable map operation.
     pub(super) fn alloc_ordered_map_entries(
         &mut self,
@@ -715,8 +729,7 @@ impl Heap {
     ) -> u64 {
         let count = entries.len();
         debug_assert!(count <= MAP_FLAT_MAX, "a flat map holds at most {MAP_FLAT_MAX} entries");
-        let p = self.alloc_at(RuntimeAllocSite::OrderedMapEntries, map_size_for_count(count));
-        unsafe { write(p as *mut u64, map_header_word(count)) };
+        let p = self.alloc_flat_map_unwritten(map_header_word(count), map_size_for_count(count));
         self.write_map_entries(p, count, entries);
         heap_object_word(p, ValueKind::MAP)
     }

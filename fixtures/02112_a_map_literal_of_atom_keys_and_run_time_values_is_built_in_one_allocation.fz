@@ -1,0 +1,62 @@
+#---
+# purpose: "A map literal whose keys are literal atoms and whose values are computed is one allocation that holds each value under its kind: scalars, binaries, lists, tuples, maps, and values of a kind known only at run time"
+# oracle: self
+# oracle.stamp: 254652a41317d274
+#---
+defmodule Main do
+  def sorted(map), do: Enum.sort(Map.to_list(map))
+
+  def view(map) do
+    map
+    |> Map.update!(:s, &byte_size/1)
+    |> Map.update!(:t, fn {a, b} -> {a, byte_size(b)} end)
+    |> sorted()
+  end
+
+  def two(x, y), do: %{a: x, b: y}
+  def six(a, b, c, d, e, f), do: %{f: f, e: e, d: d, c: c, b: b, a: a}
+  def nine(x), do: %{a: x, b: x + 1, c: x + 2, d: x + 3, e: x + 4, f: x + 5, g: x + 6, h: x + 7, i: x + 8}
+  def mixed(x, bin, list), do: %{n: x, f: x * 1.5, s: bin, l: list, t: {x, bin}, m: %{inner: x}, z: :tag}
+
+  def churn(0, acc), do: acc
+  def churn(n, acc), do: churn(n - 1, [{n, two(n, n)} | acc])
+
+  def main() do
+    IO.inspect(sorted(two(1, 2)))
+    IO.inspect(sorted(two("x", [1, 2])))
+    IO.inspect(sorted(two(2.5, nil)))
+    IO.inspect(sorted(six(1, 2.0, :three, "four", [5], {6})))
+    IO.inspect(sorted(nine(10)))
+
+    list = Enum.to_list(1..5)
+    bin = String.duplicate("ab", 40)
+    m = mixed(7, bin, list)
+    other = Enum.map(list, &(&1 + 1))
+    IO.inspect(view(m))
+    IO.inspect({other, m.l == list})
+
+    kept = churn(100_000, [])
+    {last, last_map} = Enum.at(kept, 99_999)
+    IO.inspect({length(kept), view(m) == view(mixed(7, bin, list)), last, sorted(last_map)})
+
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        receive do
+          {:map, got} -> send(parent, {:echo, got.s == bin, elem(got.t, 0), got.l})
+        end
+      end)
+
+    send(pid, {:map, m})
+
+    receive do
+      {:echo, same, t, l} -> IO.inspect({same, t, l})
+    end
+
+    IO.inspect(view(%{m | n: 99}))
+    IO.inspect(Keyword.keys(view(Map.put(m, :q, 1))))
+  end
+end
+
+Main.main()

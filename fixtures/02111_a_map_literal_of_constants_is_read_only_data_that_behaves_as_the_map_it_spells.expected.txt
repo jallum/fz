@@ -1,0 +1,13 @@
+[a: 1, b: 2.5, c: :three, d: nil, e: true, f: -9]
+[a: 100, b: 2.5, c: :three, d: nil, e: true, f: -9]
+[a: 1, b: 2.5, c: :three, d: nil, e: true, f: -9]
+[a: 1, c: :three, d: nil, e: true, f: -9]
+[a: 5, b: 2.5, c: :three, d: nil, e: true, f: -9]
+{6, true, :three, nil}
+[k: {1, 2}, m: %{inner: "bin"}, s: "short", t: {%{deep: 1}, 2}]
+[a: [1, 2], b: 3]
+{%{"key" => :v}, [{1, :one}, {2, :two}]}
+{200000, [k: {1, 2}, m: %{inner: "bin"}, s: "short", t: {%{deep: 1}, 2}], true}
+{{1, 2}, true}
+{32, 528, 17}
+{33, 561, 33}

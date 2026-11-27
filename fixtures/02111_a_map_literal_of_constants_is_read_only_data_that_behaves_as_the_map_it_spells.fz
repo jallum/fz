@@ -1,0 +1,57 @@
+#---
+# purpose: "A map literal of constants is read-only program data that behaves as the map it spells: a put copies it, it survives collections, it travels in a message, and a literal past 32 keys is still a map"
+# oracle: self
+# oracle.stamp: 1811eca1aa71a923
+#---
+defmodule Main do
+  def scalars(), do: %{a: 1, b: 2.5, c: :three, d: nil, e: true, f: -9}
+  def objects(), do: %{k: {1, 2}, m: %{inner: "bin"}, s: "short", t: {%{deep: 1}, 2}}
+  def with_list(), do: %{a: [1, 2], b: 3}
+  def one(), do: %{"key" => :v}
+  def by_int(), do: %{2 => :two, 1 => :one}
+  def flat32(), do: %{k01: 1, k02: 2, k03: 3, k04: 4, k05: 5, k06: 6, k07: 7, k08: 8, k09: 9, k10: 10, k11: 11, k12: 12, k13: 13, k14: 14, k15: 15, k16: 16, k17: 17, k18: 18, k19: 19, k20: 20, k21: 21, k22: 22, k23: 23, k24: 24, k25: 25, k26: 26, k27: 27, k28: 28, k29: 29, k30: 30, k31: 31, k32: 32}
+  def trie33(), do: %{k01: 1, k02: 2, k03: 3, k04: 4, k05: 5, k06: 6, k07: 7, k08: 8, k09: 9, k10: 10, k11: 11, k12: 12, k13: 13, k14: 14, k15: 15, k16: 16, k17: 17, k18: 18, k19: 19, k20: 20, k21: 21, k22: 22, k23: 23, k24: 24, k25: 25, k26: 26, k27: 27, k28: 28, k29: 29, k30: 30, k31: 31, k32: 32, k33: 33}
+
+  def sorted(map), do: Enum.sort(Map.to_list(map))
+
+  def churn(0, acc), do: acc
+  def churn(n, acc), do: churn(n - 1, [{n, n} | acc])
+
+  def main() do
+    m = scalars()
+    IO.inspect(sorted(m))
+    IO.inspect(sorted(Map.put(m, :a, 100)))
+    IO.inspect(sorted(m))
+    IO.inspect(sorted(Map.delete(m, :b)))
+    IO.inspect(sorted(%{m | a: 5}))
+    IO.inspect({map_size(m), m == scalars(), m.c, Map.get(m, :zz)})
+
+    IO.inspect(sorted(objects()))
+    IO.inspect(sorted(with_list()))
+    IO.inspect({one(), sorted(by_int())})
+
+    keep = objects()
+    garbage = churn(200_000, [])
+    IO.inspect({length(garbage), sorted(keep), keep == objects()})
+
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        receive do
+          {:map, got} -> send(parent, {:echo, got.k, got == objects()})
+        end
+      end)
+
+    send(pid, {:map, keep})
+
+    receive do
+      {:echo, k, same} -> IO.inspect({k, same})
+    end
+
+    IO.inspect({map_size(flat32()), Enum.sum(Map.values(flat32())), flat32().k17})
+    IO.inspect({map_size(trie33()), Enum.sum(Map.values(trie33())), trie33().k33})
+  end
+end
+
+Main.main()

@@ -3694,8 +3694,10 @@ fn an_update_that_cannot_miss_compiles_no_key_error_path() {
 
 /// A map literal whose keys are all literal atoms is written into the
 /// backend program in the runtime's key order, one entry per key, so no path
-/// sorts it at run time. Every value is still evaluated, in source order. A
-/// literal with any other key keeps its source order for the runtime to sort.
+/// sorts it at run time, and so is a literal of one entry, whatever its key.
+/// Every value is still evaluated, in source order. A literal of several keys
+/// that are not all literal atoms keeps its source order for the runtime to
+/// sort.
 #[test]
 fn a_map_literal_of_literal_atom_keys_is_written_in_key_order() {
     use crate::compiler2::{BackendBody, BackendStep};
@@ -3705,10 +3707,11 @@ fn a_map_literal_of_literal_atom_keys_is_written_in_key_order() {
         name: Some("map_literal.fz".to_string()),
         text: concat!(
             "def keyed(k), do: %{k => 1, a: 2}\n",
+            "def lone(k), do: %{k => 5}\n",
             "def main() do\n",
             "  one = 1\n",
             "  m = %{c: 3, a: one, b: 2, a: 10}\n",
-            "  m.a + m.b + m.c + keyed(:z).z\n",
+            "  m.a + m.b + m.c + keyed(:z).z + lone(:q).q + %{\"a\" => 1}[\"a\"]\n",
             "end\n",
         )
         .to_string(),
@@ -3719,7 +3722,7 @@ fn a_map_literal_of_literal_atom_keys_is_written_in_key_order() {
         arity: 0,
         need: ExecutableNeed::Value,
     });
-    assert_eq!(compiler.run_root_interp(main), Ok(16));
+    assert_eq!(compiler.run_root_interp(main), Ok(22));
 
     let program = compiler.retained_backend_program(main);
     let literals: Vec<(usize, bool)> = program
@@ -3744,6 +3747,10 @@ fn a_map_literal_of_literal_atom_keys_is_written_in_key_order() {
     assert!(
         literals.contains(&(2, false)),
         "a key known only at run time leaves both entries for the runtime to sort: {literals:?}"
+    );
+    assert!(
+        literals.contains(&(1, true)),
+        "one entry has no order to keep, whatever its key: {literals:?}"
     );
 }
 

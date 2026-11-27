@@ -6,6 +6,7 @@ use super::construction::{
     AlignedSegment, aligned_segments, descriptor_spec, emit_aligned_construction, emit_append,
     starts_with_unsized_binary,
 };
+use super::map_literal::lower_make_map;
 use super::recipe::{Emitted, emit_box, emit_cell, emit_in_body, emit_inline, emit_slice};
 use super::repr::ExternLane;
 use super::runtime_test::{
@@ -15,8 +16,8 @@ use super::*;
 use crate::ast::BitType;
 use crate::fast_hash::HashMap;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitMatchField, BitSizeIr, BlockId, Const, DestMapSeed, ExternArg, ExternDecl, ExternId,
-    ExternMarshalSite, ExternTy, FieldSizeIr, FnId, FrameLane, ModuleAtoms, Prim, UnOp, Var,
+    BinOp, BitFieldIr, BitMatchField, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternId, ExternMarshalSite,
+    ExternTy, FieldSizeIr, FnId, FrameLane, ModuleAtoms, Prim, UnOp, Var,
 };
 use crate::runtime_type_predicate::{CallableShapes, Listing, RuntimeTypePredicate};
 use cranelift_codegen::ir::{
@@ -36,12 +37,11 @@ use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
 use fz_runtime::ir_runtime::fz_unbox_opaque;
 use fz_runtime::ir_runtime::{
     fz_alloc_binview_from_static, fz_bs_build, fz_bs_field_end, fz_bs_field_spec, fz_bs_read_int_ref,
-    fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_stored, fz_map_dest_begin,
-    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_publish, fz_map_dest_put, fz_map_get_ref,
-    fz_map_named_schema_ref, fz_matcher_map_get_ref, fz_pinned_binary_segment_size, fz_ref_load_atom,
-    fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref, fz_struct_get_named_field_ref, fz_struct_is_named_ref,
-    fz_struct_module, fz_struct_schema_id_ref, fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const,
-    fz_value_eq_ref, fz_value_eq_widening_ref,
+    fz_function_arity, fz_int_float_cmp, fz_list_cons_any, fz_list_cons_stored, fz_map_dest_begin_update,
+    fz_map_dest_freeze, fz_map_dest_put, fz_map_get_ref, fz_map_named_schema_ref, fz_matcher_map_get_ref,
+    fz_pinned_binary_segment_size, fz_ref_load_atom, fz_ref_load_float, fz_ref_load_int, fz_struct_get_field_ref,
+    fz_struct_get_named_field_ref, fz_struct_is_named_ref, fz_struct_module, fz_struct_schema_id_ref,
+    fz_value_cmp_raw_const, fz_value_cmp_ref, fz_value_eq_raw_const, fz_value_eq_ref, fz_value_eq_widening_ref,
 };
 use fz_runtime::process_abi::PROCESS_UNWINDING_OFFSET;
 use std::mem::{align_of, offset_of, size_of};
@@ -90,7 +90,7 @@ fn map_key_parts<M: cranelift_module::Module, T: Types<Ty = Ty>>(
 
 /// Put one entry in a map destination; the answer is the reference to the
 /// destination to continue with.
-fn emit_map_destination_put<M: cranelift_module::Module>(
+pub(super) fn emit_map_destination_put<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     map_bits: ir::Value,
     key: CodegenValue,
@@ -193,7 +193,9 @@ fn cons_head_kind(head_kind: Option<ValueKind>, head_value: CodegenValue) -> Opt
     }
 }
 
-fn static_literal_field_for_var(
+/// The slot content a var gives a read-only aggregate: its immediate or the
+/// read-only object it is, and `None` for a var that is neither.
+pub(super) fn static_literal_field_for_var(
     cache: &CodegenCache,
     var_env: &HashMap<u32, CodegenValue>,
     var: Var,
@@ -207,13 +209,11 @@ fn static_literal_field_for_var(
             value => Some(StaticLiteralField::Scalar(*value)),
         };
     }
-    if let Some(object) = cache.static_bitstring_refs.get(&var.0) {
-        return Some(StaticLiteralField::Bitstring(*object));
-    }
     cache
-        .static_struct_refs
+        .static_objects
         .get(&var.0)
-        .map(|static_ref| StaticLiteralField::Struct(static_ref.data_id))
+        .copied()
+        .map(StaticLiteralField::Object)
 }
 
 fn try_static_struct_literal<M: cranelift_module::Module>(
@@ -234,7 +234,7 @@ fn try_static_struct_literal<M: cranelift_module::Module>(
     };
 
     let data_id = define_static_struct_literal(body, env, dest_var, schema_id, name, &static_fields)?;
-    Ok(Some(static_struct_value(body, dest_var, data_id)))
+    Ok(Some(static_object_literal(body, dest_var, data_id, ValueKind::STRUCT)))
 }
 
 fn define_static_struct_literal<M: cranelift_module::Module>(
@@ -258,23 +258,14 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
                 buf[raw_offset..raw_offset + SLOT_BYTES as usize].copy_from_slice(&value.raw().to_le_bytes());
                 buf[kind_offset] = value.kind().tag();
             }
-            StaticLiteralField::Struct(data_id) => {
-                child_relocs.push((raw_offset, data_id));
-                buf[kind_offset] = ValueKind::STRUCT.tag();
-            }
-            StaticLiteralField::Bitstring(data_id) => {
-                child_relocs.push((raw_offset, data_id));
-                buf[kind_offset] = ValueKind::BITSTRING.tag();
+            StaticLiteralField::Object(object) => {
+                child_relocs.push((raw_offset, object.data_id));
+                buf[kind_offset] = object.kind.tag();
             }
         }
     }
 
-    let idx = body.cache.static_struct_count;
-    body.cache.static_struct_count += 1;
-    let name = format!(
-        ".fz_static_struct_{}_{}_{}_{}",
-        env.active_body_fn_id.0, env.active_spec_id, dest_var.0, idx
-    );
+    let name = static_object_name(body, env, "struct", dest_var);
     let addresses = child_relocs
         .into_iter()
         .map(|(offset, child)| (offset, StaticAddress::Data(child)))
@@ -282,15 +273,33 @@ fn define_static_struct_literal<M: cranelift_module::Module>(
     define_read_only_object(body.jmod, &name, buf, &addresses)
 }
 
-fn static_struct_value<M: cranelift_module::Module>(
+/// A symbol for the next read-only object of `what` this function defines.
+pub(super) fn static_object_name<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    env: &CodegenEnv<'_>,
+    what: &str,
+    dest_var: Var,
+) -> String {
+    let idx = body.cache.static_object_count;
+    body.cache.static_object_count += 1;
+    format!(
+        ".fz_static_{what}_{}_{}_{}_{}",
+        env.active_body_fn_id.0, env.active_spec_id, dest_var.0, idx
+    )
+}
+
+/// The value of the read-only object `data_id` that `dest_var` is, which a
+/// later literal aggregate can embed by data relocation.
+pub(super) fn static_object_literal<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     dest_var: Var,
     data_id: DataId,
+    kind: ValueKind,
 ) -> CodegenValue {
     body.cache
-        .static_struct_refs
-        .insert(dest_var.0, StaticStructRef { data_id });
-    body.static_object_value(data_id, ValueKind::STRUCT)
+        .static_objects
+        .insert(dest_var.0, StaticObject { data_id, kind });
+    body.static_object_value(data_id, kind)
 }
 
 /// A struct or tuple of `fields`: read-only program data when every field is
@@ -511,8 +520,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 .literal(body.jmod, bytes, *bit_len)?;
             match literal {
                 BitstringLiteral::Object(object) => {
-                    body.cache.static_bitstring_refs.insert(dest_var.0, object);
-                    LowerOut::Strict(body.static_object_value(object, ValueKind::BITSTRING))
+                    LowerOut::Strict(static_object_literal(body, dest_var, object, ValueKind::BITSTRING))
                 }
                 BitstringLiteral::Shared(shared) => {
                     let gv = body.jmod.declare_data_in_func(shared, body.b.func);
@@ -527,18 +535,13 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
                 }
             }
         }
-        Prim::DestMapBegin(seed) => {
+        Prim::MakeMap { entries, in_key_order } => {
+            return lower_make_map(body, t, env, var_env, dest_var, entries, *in_key_order);
+        }
+        Prim::DestMapBeginUpdate(base) => {
             let process = body.process_arg();
-            match seed {
-                DestMapSeed::Capacity(capacity) => {
-                    let capacity = body.b.ins().iconst(types::I32, *capacity as i64);
-                    LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin, [process, capacity]))
-                }
-                DestMapSeed::Update(base) => {
-                    let base_bits = body.any_ref_for_var(var_env, base.0);
-                    LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin_update, [process, base_bits]))
-                }
-            }
+            let base_bits = body.any_ref_for_var(var_env, base.0);
+            LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_begin_update, [process, base_bits]))
         }
         Prim::DestMapPut { map, key, value } => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
@@ -598,11 +601,6 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             body.b.switch_to_block(join_blk);
             body.b.seal_block(join_blk);
             LowerOut::ValueRef(body.b.block_params(join_blk)[0])
-        }
-        Prim::DestMapPublish(map) => {
-            let map_bits = body.any_ref_for_var(var_env, map.0);
-            let process = body.process_arg();
-            LowerOut::ValueRef(runtime_call1!(body, fz_map_dest_publish, [process, map_bits]))
         }
         Prim::DestMapFreeze(map) => {
             let map_bits = body.any_ref_for_var(var_env, map.0);
@@ -1420,10 +1418,10 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         | Prim::StructModule(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
-        | Prim::DestMapBegin(..)
+        | Prim::MakeMap { .. }
+        | Prim::DestMapBeginUpdate(..)
         | Prim::DestMapPut { .. }
         | Prim::DestMapFreeze(..)
-        | Prim::DestMapPublish(..)
         | Prim::StructWith { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)

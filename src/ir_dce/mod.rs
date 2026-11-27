@@ -30,6 +30,37 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
     (if_only_conds, all_used)
 }
 
+/// The vars something reads: an operand of a prim, an operand of any
+/// terminator but a `Goto`, or an argument of a `Goto` whose block parameter is
+/// itself read. A value that only travels to parameters nothing reads is dead,
+/// where `classify_var_uses` counts it as used because it appears as an
+/// argument.
+pub fn live_vars(f: &FnIr) -> HashSet<Var> {
+    let mut live: HashSet<Var> = HashSet::default();
+    let mut forwards: Vec<(Var, Var)> = Vec::new();
+    for block in &f.blocks {
+        for stmt in &block.stmts {
+            stmt.prim().collect_used_vars(&mut live);
+        }
+        match &block.terminator {
+            Term::Goto(target, args) => {
+                forwards.extend(f.block(*target).params.iter().copied().zip(args.iter().copied()));
+            }
+            t => collect_term_vars(t, &mut live),
+        }
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (param, arg) in &forwards {
+            if live.contains(param) && live.insert(*arg) {
+                changed = true;
+            }
+        }
+    }
+    live
+}
+
 fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
     match t {
         Term::Goto(_, args) => {
@@ -131,3 +162,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ir_dce_test.rs"]
+mod ir_dce_test;

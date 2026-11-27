@@ -1,7 +1,7 @@
 //! A value written out in full.
 
 use crate::ast::{CallableName, Expr, ModuleTarget, Spanned};
-use crate::ground_value::{GroundValue, entries_in_atom_key_order};
+use crate::ground_value::{GroundValue, entries_in_key_order};
 use crate::source::Span;
 use fz_runtime::module_name::ModuleName;
 
@@ -38,9 +38,9 @@ impl LiteralTerm {
     }
 
     /// A map literal's entries in the runtime's key order with no key
-    /// repeated, when every key is an atom.
+    /// repeated, when the compiler knows that order (`entries_in_key_order`).
     pub fn entries_in_key_order(entries: &[(LiteralTerm, LiteralTerm)]) -> Option<Vec<&(LiteralTerm, LiteralTerm)>> {
-        entries_in_atom_key_order(entries.iter().map(|entry| match &entry.0 {
+        entries_in_key_order(entries.iter().map(|entry| match &entry.0 {
             Self::Ground(key) => (Some(key), entry),
             _ => (None, entry),
         }))

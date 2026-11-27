@@ -561,7 +561,7 @@ compiler2 CLIF dumps aligned with the runtime packing model.
 ## The literal bit
 
 A *literal* is an object the program carries in read-only data rather than on a
-heap: a static struct (`.fz_static_struct_*`), a static closure, a halt
+heap: a static struct (`.fz_static_struct_*`), a static map (`.fz_static_map_*`), a static closure, a halt
 continuation, a short binary literal. Every reference to a literal has one bit set
 above the kind field of its address word: `1 << (tag_shift + 5)`, bit 61 on
 arm64 and bit 62 on x86_64, owned by `AnyValueRefPacking`
@@ -890,21 +890,51 @@ step carrying a `LiteralTerm` (`LiteralTerm::constant`,
 the term by the rules the tuple, list and map steps use. Native code builds it
 with `literal_var` and the interpreter with `literal_term_value`; a constant
 tuple whose layout spreads its fields over lanes is encoded field by field
-(`literal_bound`). A constant list or map is still built on the heap each time
-it is evaluated, and a constant map with atom keys is written in key order
-(`LiteralTerm::entries_in_key_order`) and published without a sort.
+(`literal_bound`). A constant list is still built on the heap each time it is evaluated. A
+constant map whose order the compiler knows (`LiteralTerm::entries_in_key_order`)
+and that is flat (at most `MAP_FLAT_MAX` entries) is read-only program data in
+compiled code (`native_codegen/map_literal.rs`): `Prim::MakeMap` with
+`in_key_order` and every key and value an immediate or another read-only
+object (tuple, binary, map) is one `.fz_static_map_*` object, written with the
+runtime's own layout functions, and a use is its address. It is never
+allocated or written, the collector and deep copy pass it by pointer, and the
+emitter refuses a heap reference or a map past the flat limit. A flat map in
+key order whose keys are all literal atoms or integers but whose values are
+computed is one inline allocation (`emit_inline_map`, `Heap::alloc_flat_map_unwritten`
+in the recipe table): the header word, the tag bytes a word at a time (a
+constant unless a value's kind is known only at run time), the key words as
+constants and each value's stored form (`CodegenFn::stored_entry`, which marks
+a heap value shared as `Heap::write_map_entries` does). Any other literal fills
+a destination through the runtime. A `Map.put` of a literal atom key onto a map
+this function built in key order from literal atom keys (`Provenance` in
+`NativeFnCtx`, which follows a map through block parameters entered once:
+copied-call heads, a single return, a clause entry and an entry one tail hands
+control to) is not a call: `fold_map_put` builds the one map of all the entries,
+the key in name order and replacing its value if present. The maps the chain
+passed through are read by nothing, so `lower_make_map` does not build them
+(`ir_dce::live_vars`: a value forwarded only to block parameters nothing reads
+is dead). A put after a join of several paths, onto a key that is not a literal
+atom, or onto a map of another origin, is the runtime's `fz_map_put`. The interpreter
+builds the same literal on the heap, so the map-allocation counts of the two
+differ, and a rendered map is walked whether or not its address is a literal.
 
-A map literal whose keys are all literal atoms is sorted by the compiler, not
-the runtime. Atoms order by name, so `entries_in_key_order`
-(`src/compiler2/jobs/backend.rs`) writes `BackendStep::Map`'s entries in key
-order, keeping the last entry written for a repeated key, and marks the step
-`in_key_order`. Every value is its own earlier step, so each is still
+A map literal whose keys are all literal atoms, or that has one entry, is
+sorted by the compiler, not the runtime. `entries_in_key_order`
+(`src/ground_value.rs`) is the one function that answers a literal's
+compile-time order: atoms order by name and never by id, so the answer does not
+depend on the numbers a build gives them, and one entry has no order to keep
+whatever its key. It writes `BackendStep::Map`'s entries in key order, keeping
+the last entry written for a repeated key, and marks the step `in_key_order`.
+A literal of several keys that are not all literal atoms (integers, binaries,
+a key known only at run time) leaves their order to the runtime, because
+whether the compiler's order equals term order across kinds (`1` against
+`1.0`) is not established. Every value is its own earlier step, so each is still
 evaluated, in source order. Such a literal fills its destination in order and
-ends in `Prim::DestMapPublish` (`Heap::map_destination_publish`), which
+ends in `fz_map_dest_publish` (`Heap::map_destination_publish`), which
 publishes the entries where they stand; a debug build asserts the order. For
 example, `%{b: f(), a: g(), b: h()}` calls `f`, `g` and `h` in that order and
-puts `a` then `b`, with `h`'s value. A literal with any other key keeps its
-source order and ends in the freeze. A flat build destination is sorted where
+puts `a` then `b`, with `h`'s value. A literal of several keys that are not all
+literal atoms keeps its source order and ends in the freeze. A flat build destination is sorted where
 it stands (`Heap::normalize_destination_entries`): entries move as the tag
 byte and key and value words they are stored as, and only keys are decoded,
 to be compared. A repeated key keeps its first slot and its last value, and

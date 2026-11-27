@@ -67,7 +67,7 @@
 use super::atom_compare::emit_atom_compare;
 use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::binary_slice::emit_binary_slice;
-use super::inline_object::{Placed, emit_closure, emit_struct};
+use super::inline_object::{Placed, emit_closure, emit_flat_map, emit_struct};
 use super::list_cell::{HeadLane, emit_list_cell};
 use super::list_reuse::{ReuseLane, emit_list_reuse};
 use super::prim::bit_len_of_header;
@@ -113,6 +113,7 @@ enum Emit {
     Cell(HeadLane),
     Reuse(ReuseLane),
     Struct,
+    Map,
     Closure,
     Box(BoxLane),
     /// The window of a binary: a copy placed in place, or the runtime function
@@ -502,6 +503,12 @@ pub(crate) const RECIPES: &[Recipe] = &[
         3,
         Emit::Struct
     ),
+    heap_object!(
+        "Heap::alloc_flat_map_unwritten",
+        Heap::alloc_flat_map_unwritten,
+        3,
+        Emit::Map
+    ),
     heap_object!("Heap::alloc_closure", Heap::alloc_closure, 6, Emit::Closure),
 ];
 
@@ -533,7 +540,7 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
         // The symbol is also called from sites that have no body to host the
         // cold call: they get the runtime function.
         Emit::AtomCompare => None,
-        Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Closure | Emit::Box(_) | Emit::Slice => {
+        Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Map | Emit::Closure | Emit::Box(_) | Emit::Slice => {
             panic!(
                 "`{symbol}` places an object; ask for it through `emit_cell`, `emit_reuse`, `emit_box`, `emit_slice` or `emit_object`"
             )
@@ -579,7 +586,7 @@ pub(crate) fn emit_cell<M: cranelift_module::Module>(
             panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
         }
         Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
-        Emit::Struct | Emit::Closure => {
+        Emit::Struct | Emit::Map | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
         Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
@@ -612,7 +619,7 @@ pub(crate) fn emit_reuse<M: cranelift_module::Module>(
             panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
         }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
-        Emit::Struct | Emit::Closure => {
+        Emit::Struct | Emit::Map | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
         Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
@@ -643,7 +650,7 @@ pub(crate) fn emit_box<M: cranelift_module::Module>(
         }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
         Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
-        Emit::Struct | Emit::Closure => {
+        Emit::Struct | Emit::Map | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
         Emit::Slice => panic!("`{symbol}` slices a binary; ask for it through `emit_slice`"),
@@ -674,7 +681,7 @@ pub(crate) fn emit_slice<M: cranelift_module::Module>(
         }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
         Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
-        Emit::Struct | Emit::Closure => {
+        Emit::Struct | Emit::Map | Emit::Closure => {
             panic!("`{symbol}` places a struct or closure; ask for it through `emit_object`")
         }
         Emit::Box(_) => panic!("`{symbol}` places a scalar box; ask for it through `emit_box`"),
@@ -704,6 +711,7 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
     let constant = |index: usize| constant_word(index) as u32;
     match row.emit {
         Emit::Struct => emit_struct(body, constant_word(1) as u64, constant(2) as usize),
+        Emit::Map => emit_flat_map(body, constant_word(1) as u64, constant(2) as usize),
         Emit::Closure => {
             let count = constant(3) as usize;
             let header = closure_header_word(

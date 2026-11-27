@@ -111,3 +111,57 @@ fn as_dispatch_shape_projects_the_six_dispatch_matrix_variants() {
     );
     assert_eq!(GroundValue::Binary(vec![1]).as_dispatch_shape(), None);
 }
+
+fn atom(name: &str) -> GroundValue {
+    GroundValue::Atom(name.to_string())
+}
+
+/// Literal atom keys come out in name order, whatever order they are written
+/// in, and of a key written twice the later entry is the one kept: the map the
+/// runtime builds from the same entries holds them that way.
+#[test]
+fn atom_keys_are_ordered_by_name_and_the_last_of_a_repeated_key_wins() {
+    let keys = [atom("c"), atom("a"), atom("b"), atom("a")];
+    let ordered = entries_in_key_order(
+        keys.iter()
+            .zip(["c", "a1", "b", "a2"])
+            .map(|(key, tag)| (Some(key), tag)),
+    );
+    assert_eq!(ordered, Some(vec!["a2", "b", "c"]));
+}
+
+/// A name that sorts first sorts first however many names come before it in
+/// the source: the order reads names, never the numbers a build gives atoms.
+#[test]
+fn atom_order_is_by_name_not_by_first_appearance() {
+    let names = ["zebra", "mango", "apple"];
+    let keys = names.map(atom);
+    let ordered = entries_in_key_order(keys.iter().zip(names).map(|(key, name)| (Some(key), name)));
+    assert_eq!(ordered, Some(vec!["apple", "mango", "zebra"]));
+}
+
+/// One entry has no order to keep, so its key need not be an atom, nor known.
+#[test]
+fn a_single_entry_is_in_order_whatever_its_key() {
+    let binary = GroundValue::Binary(b"a".to_vec());
+    assert_eq!(entries_in_key_order([(Some(&binary), 1)]), Some(vec![1]));
+    assert_eq!(entries_in_key_order([(Some(&GroundValue::Int(7)), 2)]), Some(vec![2]));
+    assert_eq!(entries_in_key_order([(None, 3)]), Some(vec![3]));
+}
+
+/// Several keys that are not all literal atoms are ordered by the runtime as
+/// the entries are put: integers and binaries compare across kinds there.
+#[test]
+fn several_keys_that_are_not_all_literal_atoms_are_left_to_the_runtime() {
+    let (one, a) = (GroundValue::Int(1), atom("a"));
+    assert_eq!(entries_in_key_order([(Some(&one), 1), (Some(&a), 2)]), None);
+    assert_eq!(entries_in_key_order([(Some(&a), 1), (None, 2)]), None);
+    assert_eq!(
+        entries_in_key_order([(Some(&GroundValue::Int(2)), 1), (Some(&one), 2)]),
+        None
+    );
+    assert_eq!(
+        entries_in_key_order([(Some(&GroundValue::Bool(true)), 1), (Some(&a), 2)]),
+        None
+    );
+}
