@@ -1,5 +1,5 @@
 defmodule BadMapError do
   defexception [:term]
 
-  def message(exception), do: Exception.__format_message_with_term__("expected a map, got:", exception.term)
+  def message(%{term: term}), do: Exception.__format_message_with_term__("expected a map, got:", term)
 end

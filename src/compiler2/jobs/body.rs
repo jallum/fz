@@ -12,7 +12,8 @@ use std::rc::Rc;
 
 use crate::ast::{
     AfterClause, BinOp, BitField, BitSize, CallableName, Callee, CatchClause, Expr, FnClause, LambdaClause,
-    MatchClause, Pattern, PatternBitSize, RaisingForm, RescueClause, Spanned, TryForm, UnOp, Var, WithBinding,
+    MatchClause, ModuleTarget, Pattern, PatternBitSize, RaisingForm, RescueClause, Spanned, TryForm, UnOp, Var,
+    WithBinding,
 };
 use crate::diag::Diagnostic;
 use crate::diag::codes;
@@ -3446,10 +3447,10 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 .binding
                 .as_ref()
                 .map_or(Pattern::Wildcard, |binding| Pattern::Var(binding.node.clone()));
-            let row = |name: Pattern| PatternRow {
+            let row = |name: Pattern, bound: Pattern| PatternRow {
                 patterns: vec![
                     pattern(Pattern::Atom(ERROR_KIND.to_string())),
-                    pattern(bound.clone()),
+                    pattern(bound),
                     pattern(Pattern::Wildcard),
                     pattern(name),
                 ],
@@ -3458,11 +3459,19 @@ impl<'w, 'tel, 'f, T: crate::telemetry::Telemetry> Lowerer<'w, 'tel, 'f, T> {
                 body_id: 0,
             };
             if rescue.exceptions.is_empty() {
-                arms.push(HandlerArm::rescue(row(Pattern::Wildcard), clause));
+                arms.push(HandlerArm::rescue(row(Pattern::Wildcard, bound.clone()), clause));
             }
             for exception in &rescue.exceptions {
                 let atom = self.world.module_alias_atom(self.namespace, &exception.node);
-                arms.push(HandlerArm::rescue(row(Pattern::Atom(atom)), clause));
+                let named = Pattern::Struct {
+                    module: ModuleTarget::Unresolved(exception.node.clone()),
+                    fields: Vec::new(),
+                };
+                let value = match rescue.binding {
+                    Some(_) => Pattern::Both(Box::new(pattern(bound.clone())), Box::new(pattern(named))),
+                    None => Pattern::Wildcard,
+                };
+                arms.push(HandlerArm::rescue(row(Pattern::Atom(atom), value), clause));
             }
         }
         arms
