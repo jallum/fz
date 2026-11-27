@@ -891,20 +891,26 @@ the term by the rules the tuple, list and map steps use. Native code builds it
 with `literal_var` and the interpreter with `literal_term_value`; a constant
 tuple whose layout spreads its fields over lanes is encoded field by field
 (`literal_bound`). A constant list or map is still built on the heap each time
-it is evaluated, and a constant map with atom keys is written in key order
-(`LiteralTerm::entries_in_key_order`) and published without a sort.
+it is evaluated, and a constant map whose order the compiler knows is written
+in key order (`LiteralTerm::entries_in_key_order`) and published without a sort.
 
-A map literal whose keys are all literal atoms is sorted by the compiler, not
-the runtime. Atoms order by name, so `entries_in_key_order`
-(`src/compiler2/jobs/backend.rs`) writes `BackendStep::Map`'s entries in key
-order, keeping the last entry written for a repeated key, and marks the step
-`in_key_order`. Every value is its own earlier step, so each is still
+A map literal whose keys are all literal atoms, or that has one entry, is
+sorted by the compiler, not the runtime. `entries_in_key_order`
+(`src/ground_value.rs`) is the one function that answers a literal's
+compile-time order: atoms order by name and never by id, so the answer does not
+depend on the numbers a build gives them, and one entry has no order to keep
+whatever its key. It writes `BackendStep::Map`'s entries in key order, keeping
+the last entry written for a repeated key, and marks the step `in_key_order`.
+A literal of several keys that are not all literal atoms (integers, binaries,
+a key known only at run time) leaves their order to the runtime, because
+whether the compiler's order equals term order across kinds (`1` against
+`1.0`) is not established. Every value is its own earlier step, so each is still
 evaluated, in source order. Such a literal fills its destination in order and
 ends in `Prim::DestMapPublish` (`Heap::map_destination_publish`), which
 publishes the entries where they stand; a debug build asserts the order. For
 example, `%{b: f(), a: g(), b: h()}` calls `f`, `g` and `h` in that order and
-puts `a` then `b`, with `h`'s value. A literal with any other key keeps its
-source order and ends in the freeze. A flat build destination is sorted where
+puts `a` then `b`, with `h`'s value. A literal of several keys that are not all
+literal atoms keeps its source order and ends in the freeze. A flat build destination is sorted where
 it stands (`Heap::normalize_destination_entries`): entries move as the tag
 byte and key and value words they are stored as, and only keys are decoded,
 to be compared. A repeated key keeps its first slot and its last value, and

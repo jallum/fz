@@ -1,0 +1,26 @@
+#---
+# purpose: "A map literal of one entry holds that entry whatever the kind of its key, on every path"
+# oracle: self
+# oracle.stamp: 1c656f56051300ff
+#---
+defmodule Main do
+  def one(key, value), do: %{key => value}
+
+  def main() do
+    IO.inspect(%{"a" => 1})
+    IO.inspect(%{7 => :seven})
+    IO.inspect(%{2.5 => :float})
+    IO.inspect(%{[1, 2] => :list})
+    IO.inspect(%{{1, :t} => %{inner: true}})
+    IO.inspect(%{nil => :nothing})
+    IO.inspect(one("bin", 1))
+    IO.inspect(one(9, 2))
+    IO.inspect(one(:atom, 3))
+    IO.inspect(one(1.5, 4))
+    IO.inspect(Map.put(%{"a" => 1}, "b", 2))
+    IO.inspect(%{"a" => 1} == %{"a" => 1})
+    IO.inspect(Map.get(%{"k" => :found}, "k"))
+  end
+end
+
+Main.main()
