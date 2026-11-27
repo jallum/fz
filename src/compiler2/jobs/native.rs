@@ -101,6 +101,11 @@ struct NativeLowerer<'a, 'tel, T: crate::telemetry::Telemetry> {
     /// clauses: the one place its body is lowered. The executable's own
     /// function, which a continuation reaches it by, calls it.
     machine_fns: Vec<Option<FnId>>,
+    /// The executables that something refers to by function, so that their own
+    /// functions are lowered; a callee copied into every caller is never one.
+    referenced: Vec<bool>,
+    /// Referenced executables not yet lowered.
+    unlowered: Vec<usize>,
     construction_identity_fns: HashMap<TransportPosition, FnId>,
     callable_boundaries: Vec<NativeCallableBoundary>,
     extern_ids: HashMap<usize, ExternId>,
@@ -259,6 +264,8 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             executable_fns,
             frame_free,
             machine_fns,
+            referenced: vec![false; program.executables().len()],
+            unlowered: Vec::new(),
             construction_identity_fns,
             callable_boundaries,
             extern_ids,
@@ -270,8 +277,44 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
         })
     }
 
+    /// The program's entry and the target of each construction wrapper member
+    /// are entered from outside any lowered body: the host starts the entry, and
+    /// a callable value reaches its members through its wrapper.
+    fn refer_to_entry_and_construction_targets(&mut self) {
+        let program = self.program;
+        let entry = program
+            .executable_index(program.entry(), self.world.types())
+            .expect("native entry belongs to program");
+        self.refer_to(entry);
+        for wrapper in program.construction_wrappers().iter() {
+            for member in &wrapper.members {
+                let target = program
+                    .executable_index(&member.target, self.world.types())
+                    .expect("construction target belongs to program");
+                self.refer_to(target);
+            }
+        }
+    }
+
+    /// Records that something calls or enters executable `index` by its own
+    /// functions, so that `lower` emits them.
+    fn refer_to(&mut self, index: usize) {
+        if !std::mem::replace(&mut self.referenced[index], true) {
+            self.unlowered.push(index);
+        }
+    }
+
+    /// The function of executable `index`, which the caller refers to.
+    fn referenced_fn(&mut self, index: usize) -> FnId {
+        self.refer_to(index);
+        self.executable_fns[index]
+    }
+
     fn lower(mut self) -> Result<NativeProgram, FatalError> {
-        for (index, executable) in self.program.executables().iter().enumerate() {
+        let program = self.program;
+        self.refer_to_entry_and_construction_targets();
+        while let Some(index) = self.unlowered.pop() {
+            let executable = &program.executables()[index];
             let lowered = (|| -> Result<(), FatalError> {
                 match &executable.body {
                     BackendBody::Extern { signature } => self.lower_extern_executable(index, executable, signature),
@@ -350,7 +393,9 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             .executables()
             .iter()
             .zip(&self.executable_fns)
-            .map(|(executable, fn_id)| NativeExecutableEntry {
+            .zip(&self.referenced)
+            .filter(|(_, referenced)| **referenced)
+            .map(|((executable, fn_id), _)| NativeExecutableEntry {
                 key: executable.key.clone(),
                 fn_id: *fn_id,
             })
@@ -1878,7 +1923,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     ClosureCallEdge::Seam | ClosureCallEdge::Dead => None,
                 };
                 if let Some((target, call_args)) = direct_call {
-                    let callee = DirectCallTarget::Local(self.executable_fns[target]);
+                    let callee = DirectCallTarget::Local(self.referenced_fn(target));
                     let return_flow = return_flow.as_ref().ok_or_else(|| {
                         incomplete_native_program(
                             self.telemetry,
@@ -2266,6 +2311,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 return self.lower_call_copied(ctx, executable, entries, entry_fns, env, callee, lanes, dest);
             }
             BackendBody::Clauses { .. } => {
+                self.refer_to(callee);
                 let machine = self.machine_fns[callee].expect("a frame-free executable of clauses has a machine fn");
                 if matches!(dest, ControlDestination::Return)
                     && matches!(return_flow, BackendReturnFlow::Tail)
@@ -2562,7 +2608,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     .executable_index(callee, self.world.types())
                     .ok_or(FatalError)?;
                 let lanes = self.call_lanes(ctx, executable, env, callee, args)?;
-                Ok((DirectCallTarget::Local(self.executable_fns[callee]), lanes))
+                Ok((DirectCallTarget::Local(self.referenced_fn(callee)), lanes))
             }
             CallTarget::ProviderBoundary(function) => Ok((
                 DirectCallTarget::ProviderBoundary(self.world.function_mfa(*function)),

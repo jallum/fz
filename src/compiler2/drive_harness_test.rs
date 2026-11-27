@@ -132,10 +132,22 @@ fn settle_and_dump_stage_populate_every_installed_capture() {
         !settled.backend_programs().records(settled.root()).is_empty(),
         "BackendProgramCapture must have recorded the settled backend product"
     );
-    assert_eq!(
-        settled.native_program().executable_entries.len(),
-        settled.backend_program().executables().len(),
-        "the native product should carry one entry per backend executable"
+    let entries = &settled.native_program().executable_entries;
+    let backend = settled.backend_program();
+    let backend_keys: Vec<_> = backend.executables().iter().map(|executable| &executable.key).collect();
+    assert!(
+        entries.iter().all(|entry| backend_keys.contains(&&entry.key)),
+        "every native entry is a backend executable"
+    );
+    assert!(
+        entries.iter().any(|entry| &entry.key == backend.entry()),
+        "the program's entry has an entry"
+    );
+    assert!(
+        entries.len() < backend_keys.len(),
+        "a callee copied into its callers has no entry: {} entries for {} executables",
+        entries.len(),
+        backend_keys.len()
     );
     // NativeProgramCapture has no `records` lookup (unlike its backend
     // sibling); `.last` is what production code and this proof both use.

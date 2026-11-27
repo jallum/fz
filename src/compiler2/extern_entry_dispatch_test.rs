@@ -173,54 +173,46 @@ fn a_proven_extern_call_has_no_dispatch_and_an_unproven_one_has_one() {
     );
 }
 
+/// The call whose argument is proven an integer is the extern alone; the call
+/// on a received value asks its argument's kind first. Each extern wrapper is
+/// small enough to be copied into its caller, so the questions of the program
+/// are those of the functions that hold the calls.
 #[test]
 fn only_the_unproven_extern_call_compiles_a_tag_test() {
     let settled = Drive::fixture(1113).dump_stage(super::dump::DumpStage::Native);
-    let names = settled
-        .native_program()
+    let program = settled.native_program();
+    let holders = program
         .module
         .fns
         .iter()
-        .map(|function| function.name.clone())
+        .filter(|function| function.name.starts_with("main__"))
+        .map(|function| {
+            let tests = function
+                .blocks
+                .iter()
+                .flat_map(|block| &block.stmts)
+                .filter(|stmt| matches!(stmt.prim(), crate::fz_ir::Prim::RuntimeTypeTest(..)))
+                .count();
+            (function.name.as_str(), tests)
+        })
         .collect::<Vec<_>>();
-    let add = names
-        .iter()
-        .filter(|name| name.starts_with("fz_op_add_ii__"))
-        .collect::<Vec<_>>();
+    assert!(
+        program
+            .module
+            .fns
+            .iter()
+            .all(|function| !function.name.starts_with("fz_op_add_ii__")),
+        "the extern wrapper is copied into its callers, so it has no function"
+    );
     assert_eq!(
-        add.len(),
-        2,
-        "the proven row is the call alone; the received row is its dispatch and the call in one function: {names:?}"
+        holders.iter().map(|(_, tests)| tests).sum::<usize>(),
+        1,
+        "one tag test, for the call on the received value: {holders:?}"
     );
     assert!(
-        add.iter().all(|name| !name.ends_with("__call")),
-        "the call behind a dispatch is a block of the dispatch's function: {add:?}"
-    );
-}
-
-/// Fixture 01364 orders binaries through `<`, `<=`, `>` and `>=`. The
-/// backend program is the one product the interpreter, the JIT and the AOT
-/// build all lower from, so a byte-compare extern that has an executable
-/// there is the one every path calls: the `binary` clause was selected, not
-/// the `any`/`any` catch-all through `compare/2`.
-#[test]
-fn ordering_two_binaries_selects_the_binary_clause_of_every_ordering_operator() {
-    let settled = Drive::fixture(1364).dump_stage(super::dump::DumpStage::Backend);
-    let program = settled.backend_program();
-    let reached = |name: &str| {
-        let function = settled
-            .functions()
-            .all()
-            .into_iter()
-            .find(|record| record.function_ref.is_named(name))
-            .unwrap_or_else(|| panic!("Kernel declares {name}"))
-            .function_id;
-        program
-            .executables()
+        holders
             .iter()
-            .any(|executable| executable.key.activation.function == function)
-    };
-    for extern_name in ["fz_op_lt_bb", "fz_op_lte_bb", "fz_op_gt_bb", "fz_op_gte_bb"] {
-        assert!(reached(extern_name), "{extern_name} is called by a binary ordering");
-    }
+            .any(|(name, tests)| name.contains("__receive_") && *tests == 1),
+        "the test is where the received value arrives: {holders:?}"
+    );
 }

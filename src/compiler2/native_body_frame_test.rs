@@ -19,6 +19,8 @@ struct FramedRun {
     members: usize,
     refused: Vec<RefusedFrame>,
     code_bytes: usize,
+    /// The display name of each function that has a body of its own.
+    executable_bodies: Vec<String>,
     exit: ExitRecord,
 }
 
@@ -74,6 +76,16 @@ fn compile_and_run_here(name: &str, source: &str) -> FramedRun {
         .run_root_jit(root)
         .unwrap_or_else(|error| panic!("{name} should run end-to-end: {error}"));
     let program = native.last(root).program;
+    let executable_bodies = program
+        .bodies
+        .iter()
+        .filter_map(|body| match &body.origin {
+            NativeBodyOrigin::Executable(key) => {
+                Some(compiler.world().function_ref(key.activation.function).display_name())
+            }
+            _ => None,
+        })
+        .collect();
     let frames = || program.bodies.iter().filter_map(|body| body.frame);
     FramedRun {
         roots: frames()
@@ -83,6 +95,7 @@ fn compile_and_run_here(name: &str, source: &str) -> FramedRun {
         members: frames().filter(|frame| frame.role == FrameRole::Member).count(),
         refused: refused.borrow().clone(),
         code_bytes: *code_bytes.borrow(),
+        executable_bodies,
         exit: exits.last().expect("runtime process exit telemetry"),
     }
 }
@@ -254,5 +267,24 @@ fn compiler2_sibling_binary_clauses_compile_to_code_proportional_to_their_count(
     assert!(
         second_doubling <= 3 * first_doubling,
         "eight more clauses add {second_doubling} bytes, four more added {first_doubling}"
+    );
+}
+
+/// A callee copied into every caller that reaches it has no body of its own:
+/// nothing calls the standalone function, so emitting it only adds code.
+#[test]
+fn compiler2_a_callee_copied_into_its_only_caller_has_no_body_of_its_own() {
+    let run = compile_and_run("literal_clauses_then_a_byte.fz", &literal_clauses_then_a_byte(4));
+
+    assert_eq!(run.exit.halt_value, 91);
+    assert!(
+        run.executable_bodies.iter().any(|name| name == "main"),
+        "main is the root: {:?}",
+        run.executable_bodies
+    );
+    assert!(
+        !run.executable_bodies.iter().any(|name| name == "w"),
+        "w is copied into main, so no function of its own remains: {:?}",
+        run.executable_bodies
     );
 }
