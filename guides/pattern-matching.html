@@ -429,8 +429,11 @@ same program.</p>
 <p>What the compiler does flag at compile time is the opposite shape: a
 clause that can never run because an earlier clause already matches
 everything it could see. The check reads the same compiled DispatchGraph
-every surface form lowers to — real guards, nothing normalized away — so a
-guarded clause is never mistaken for redundant, and a type-test guard that
+every surface form lowers to — real guards, nothing normalized away — and asks
+which clauses an input of any type can reach. A type-test guard counts as
+coverage, so <code>f(1)</code> after <code>f(x) when is_integer(x)</code> is
+flagged (Elixir stays silent there); a guard that is more than a type test
+(<code>f(x) when x &gt; 0</code>) covers nothing, and a type-test guard that
 actually partitions the input (<code>f(x) when is_integer(x)</code> beside
 <code>f(x) when is_atom(x)</code>) is never mistaken for overlap. The warning is <code>type/redundant-clause</code>,
 worded the way Elixir words the same warning: "this clause cannot match

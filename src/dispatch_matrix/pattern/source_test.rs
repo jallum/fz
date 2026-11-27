@@ -1,7 +1,10 @@
 use super::*;
 use crate::ast::{Expr, Pattern, Spanned};
-use crate::compiler2::{Ty, Types};
-use crate::dispatch_matrix::pattern::{PatternDispatchError, PatternSubjectRef, pattern_dispatch_from_source};
+use crate::compiler2::dispatch::SourcePatternResolver;
+use crate::compiler2::{Namespace, Ty, Types, World};
+use crate::dispatch_matrix::pattern::{
+    PatternDispatchError, PatternSubjectRef, pattern_dispatch_from_source, pattern_dispatch_from_source_with_resolver,
+};
 
 fn sp<T>(node: T) -> Spanned<T> {
     Spanned::dummy(node)
@@ -29,12 +32,16 @@ fn row_with_guard_expr(patterns: Vec<Pattern>, body_id: PatternBodyId, guard: Ex
     }
 }
 
-/// Test-only convenience: compiles `patterns` with a resolver that answers no
-/// guard call, then reports its redundant rows. Production callers always
-/// pass their own already-compiled plan and their own real resolver.
+/// Compiles `patterns` and reports its redundant rows through the production
+/// resolver, whose typed reachability calculator decides which bodies are dead.
 fn redundant_rows(patterns: &SourcePatternRows<Ty>) -> Vec<RedundantRow> {
-    let mut resolver = |_callee: &crate::ast::Callee, _arity: usize| Ok(None);
-    let plan = pattern_dispatch_from_source(patterns.clone()).expect("test patterns must compile");
+    let mut world = World::new();
+    let mut resolver = SourcePatternResolver {
+        world: &mut world,
+        namespace: Namespace::default(),
+        guard: |_world: &mut World, _callee: &crate::ast::Callee, _arity: usize| Ok(None),
+    };
+    let plan = pattern_dispatch_from_source_with_resolver(patterns, &mut resolver).expect("test patterns must compile");
     find_redundant_rows_with_resolver(patterns, &plan, &mut resolver)
 }
 

@@ -42,8 +42,8 @@ subsystem-specific cascades:
   receive matcher and its guard dispatch go through `emit_dispatch_graph` the
   same way. The code of a dispatch is therefore linear in its node count:
   `compiler2_native_a_guarded_clause_chain_is_lowered_linearly` holds it. The
-  atom collector of the backend and the reachable-bodies collector of
-  redundant-row analysis iterate `DispatchGraph::reachable`.
+  atom collector of the backend iterates `DispatchGraph::reachable`;
+  redundant-row analysis asks the typed reachability calculator instead.
 
   A native arrival also carries what the dispatch has learned of a cursor's
   first field: whether it fits (`DispatchState::fit_answers`, by

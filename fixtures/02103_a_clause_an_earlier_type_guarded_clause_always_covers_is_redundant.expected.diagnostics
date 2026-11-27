@@ -1,0 +1,21 @@
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 5 always matches
+  --> fixtures/02103_a_clause_an_earlier_type_guarded_clause_always_covers_is_redundant.fz:3:3
+   |
+3 |   def typed(1), do: :one
+   |   ^^^^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 9 always matches
+  --> fixtures/02103_a_clause_an_earlier_type_guarded_clause_always_covers_is_redundant.fz:7:3
+   |
+7 |   def atoms(:a), do: :a
+   |   ^^^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+
+warning[type/redundant-clause]: this clause cannot match because a previous clause at line 13 always matches
+  --> fixtures/02103_a_clause_an_earlier_type_guarded_clause_always_covers_is_redundant.fz:11:3
+   |
+11 |   def second(1, _y), do: :one
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ unreachable
+   |
+

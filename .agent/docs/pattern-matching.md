@@ -776,20 +776,28 @@ could see. `src/dispatch_matrix/pattern/source.rs` finds this from the
 compiled plan, not from a syntax walk. `find_redundant_rows_with_resolver`
 takes the caller's own already-compiled `PatternDispatchPlan` for the real
 rows — real guards, real annotation preconditions, nothing normalized away —
-and walks the `DispatchGraph` to collect every body id some path still
-reaches. A row whose body id is missing from that set is unreachable; its
-`RedundantRow` also names the earliest earlier row (`always_matches`) whose
-own coverage, once you replay just that prefix plus the redundant row, already
-renders it unreachable on its own. Coverage only grows as earlier rows are
-added, so the first prefix that reproduces the miss is the row responsible for
-it.
+and asks the resolver which body ids some input can still reach.
+`PatternResolver::reachable_bodies` is answered by the typed reachability
+calculator (`calculate_dispatch_reachability`) given inputs of `any` type, so
+coverage is the same entailment real plan trimming uses: after `is_integer(x)`
+misses, the literal `1` cannot match, and a clause `def g(1)` behind
+`def g(x) when is_integer(x)` is unreachable. A row whose body id is missing
+from the answer is unreachable; its `RedundantRow` also names the earliest
+earlier row (`always_matches`) whose own coverage, once you replay just that
+prefix plus the redundant row, already renders it unreachable on its own.
+Coverage only grows as earlier rows are added, so the first prefix that
+reproduces the miss is the row responsible for it.
 
-Because the check runs on the real compiled plan, a guarded clause is never
-mistaken for redundant — a guard always compiles to a real `on_miss` branch in
-the graph, so a row behind a guard can still fall through to whatever follows
-it — and a parameter annotation that actually partitions the input (`f(x ::
-integer)` beside `f(x :: atom)`) is never mistaken for overlap either; each
-clause's own precondition row is what the plan branches on.
+Because the check runs on the real compiled plan, a guard that is more than a
+type test is never mistaken for covering: `x > 0` stays a `Region::Guard`,
+which the calculator never decides, so both of its outcomes stay reachable
+and the clause behind it is not redundant. A guard that is a type test
+(`is_integer(x)`, `is_atom(x)`, `x :: integer`) is a type fact, and a
+parameter annotation that actually partitions the input (`f(x :: integer)`
+beside `f(x :: atom)`) is never mistaken for overlap; each clause's own
+precondition row is what the plan branches on. Integer and float literals are
+type facts too (`int | c_pointer` and `float`: a null `c_pointer` is matched by
+the literal `0` in `lib/file.fz`).
 
 `plan_entry_dispatch` (function clauses) and `compile_match_dispatch` (`case`
 and `with` arms) each run this check once, right after their own plan
@@ -798,7 +806,7 @@ compiles, skipping it when there is only one row. The warning is
 clause cannot match because a previous clause at line N always matches".
 
 Diagnostics should not reimplement matching with syntax walkers. If a warning
-depends on dispatch reachability, ask the dispatch graph.
+depends on dispatch reachability, ask the reachability calculator.
 
 A variable a clause binds and never reads warns `lower/unused-variable`, in
 Elixir's words: "variable \"x\" is unused (if the variable is not meant to be

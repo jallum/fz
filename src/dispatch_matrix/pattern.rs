@@ -13,6 +13,7 @@ use crate::fast_hash::HashMap;
 use crate::function_surface::CallableSurface;
 use crate::fz_ir::{ExternAbi, ExternReturn, ExternTy};
 use crate::source::Span;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub(crate) mod last_resort;
@@ -290,6 +291,9 @@ pub(crate) trait PatternResolver<TypeHandle> {
     /// The region that holds exactly where `region` does not, when one can be
     /// written: a type test over everything the tested type leaves out.
     fn complement(&mut self, region: &Region<TypeHandle>) -> Option<Region<TypeHandle>>;
+
+    /// The body ids some value of any type can reach in `plan`.
+    fn reachable_bodies(&mut self, plan: &PatternDispatchPlan<TypeHandle>) -> BTreeSet<PatternBodyId>;
 }
 
 /// What a call in a guard reaches: a helper whose clauses are reified into
@@ -453,6 +457,12 @@ where
 
     fn ground_has_type(&mut self, _value: &GroundValue, _ty: &TypeHandle) -> Option<bool> {
         None
+    }
+
+    /// A bare closure resolver has no types to prove a body dead with, so it
+    /// claims every body is reachable.
+    fn reachable_bodies(&mut self, plan: &PatternDispatchPlan<TypeHandle>) -> BTreeSet<PatternBodyId> {
+        plan.outcomes.iter().map(|outcome| outcome.body_id).collect()
     }
 }
 
