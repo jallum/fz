@@ -27,18 +27,18 @@ so a list that is not chardata raises `inspect/2 does not support option
 ## Rendering
 
 The value renderer is `any_value::debug` in the runtime crate. `render_value`
-and `render_with_limits` dispatch on a value's `ValueKind`/heap tag and produce
+and `render_with_options` dispatch on a value's `ValueKind`/heap tag and produce
 the printed form. Every print path shares it: `IO.inspect/1` and `dbg/1` (which
 is `IO.inspect/1`) through `Kernel.inspect/1`, the IR interpreter, and the REPL
-all call `render_value`, which means `Limits::DEFAULT` (`limit` 100 and
-`printable_limit` 4096, Elixir's `%Inspect.Opts{}` defaults); `Kernel.inspect/2` reaches `render_with_limits`
+all call `render_value`, which means `InspectOptions::DEFAULT` (`limit` 100,
+`printable_limit` 4096 and `custom_options: []`, Elixir's `%Inspect.Opts{}` defaults); `Kernel.inspect/2` reaches `render_with_options`
 through `fz_inspect_with`; `IO.inspect/2` strips its `label:` and hands the rest
 to `Kernel.inspect/2`. The decision is purely payload-driven, reading only the
 tagged bits and heap layout, never the type system's brand slot, so the
 interpreter, JIT, and AOT paths agree on output without sharing type
 information at runtime.
 
-A `Renderer` carries the process, the remaining `Limit` and the `printable_limit`. Each element of a
+A `Renderer` carries the process, the remaining `Limit`, the `printable_limit` and `sort_maps` (`custom_options: [sort_maps: true]`, which sorts a map's pairs by term order as `:lists.sort/1` does; a struct's fields stay in declaration order). Each element of a
 list, tuple, map entry, keyword entry or bitstring byte costs one before it is
 rendered, and what it renders inside spends from the same budget; once the
 budget is spent, `...` replaces the elements left. Numbers, atoms, strings,

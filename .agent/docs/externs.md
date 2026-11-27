@@ -218,7 +218,7 @@ frame or ends the process. See [exceptions](exceptions.md).
 `Kernel.inspect/1` wraps a private `extern "fz" defp fz_inspect(stored_value) :: binary`,
 which renders with Elixir's default options. `Kernel.inspect/2` wraps
 `fz_inspect_with(stored_value, any) :: binary`, whose second argument is the option
-keyword list; the physical export reads it for `limit:` and `printable_limit:` (`Limits::from_options`)
+keyword list; the physical export reads it for `limit:`, `printable_limit:` and `custom_options:` (`InspectOptions::from_options`)
 before it renders. The two are separate because `inspect/1` must stay a
 dispatch-pure helper (guard helpers such as `map_size/1` call it to word their
 failure) and must not box an argument: a literal list is not a guard

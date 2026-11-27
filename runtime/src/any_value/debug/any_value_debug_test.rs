@@ -80,7 +80,7 @@ fn printable_within_looks_only_at_the_first_limit_codepoints() {
 }
 
 mod budget {
-    use super::super::{Limit, Limits, render_with_limits};
+    use super::super::{InspectOptions, Limit, render_with_options};
     use crate::any_value::{AnyValue, EMPTY_LIST_BITS, ValueKind};
     use crate::heap::{Schema, SchemaRegistry};
     use crate::module_name::ModuleName;
@@ -164,12 +164,12 @@ mod budget {
         }
 
         fn show(&mut self, value: AnyValue, limit: Limit) -> String {
-            render_with_limits(
+            render_with_options(
                 &mut *self.process,
                 value,
-                Limits {
+                InspectOptions {
                     elements: limit,
-                    ..Limits::DEFAULT
+                    ..InspectOptions::DEFAULT
                 },
             )
         }
@@ -476,27 +476,48 @@ mod budget {
         let proc: *mut Process = &mut *b.process;
         let (three, ten, infinity) = (b.int(3), b.int(10), b.atom("infinity"));
         let none = b.list(&[]);
-        assert_eq!(Limits::from_options(proc, none), Limits::DEFAULT);
+        assert_eq!(InspectOptions::from_options(proc, none), InspectOptions::DEFAULT);
         let entry = b.pair("limit", three);
         let one = b.list(&[entry]);
-        assert_eq!(Limits::from_options(proc, one).elements, Count(3));
+        assert_eq!(InspectOptions::from_options(proc, one).elements, Count(3));
         let (first, second) = (b.pair("limit", three), b.pair("limit", ten));
         let twice = b.list(&[first, second]);
         assert_eq!(
-            Limits::from_options(proc, twice).elements,
+            InspectOptions::from_options(proc, twice).elements,
             Count(10),
             "the last limit wins"
         );
         let entry = b.pair("limit", infinity);
         let unbounded = b.list(&[entry]);
-        assert_eq!(Limits::from_options(proc, unbounded).elements, Infinity);
+        assert_eq!(InspectOptions::from_options(proc, unbounded).elements, Infinity);
         let entry = b.pair("printable_limit", three);
         let printable = b.list(&[entry]);
-        let limits = Limits::from_options(proc, printable);
+        let limits = InspectOptions::from_options(proc, printable);
         assert_eq!((limits.elements, limits.printable), (Count(100), Count(3)));
         let entry = b.pair("printable_limit", infinity);
         let unbounded = b.list(&[entry]);
-        assert_eq!(Limits::from_options(proc, unbounded).printable, Infinity);
+        assert_eq!(InspectOptions::from_options(proc, unbounded).printable, Infinity);
+    }
+
+    #[test]
+    fn sort_maps_is_the_first_truthy_sort_maps_entry_of_custom_options() {
+        let mut b = Built::new();
+        let proc: *mut Process = &mut *b.process;
+        let (yes, no, nil) = (b.atom("true"), b.atom("false"), b.atom("nil"));
+        let sorting = |b: &mut Built, entries: &[AnyValue]| {
+            let custom = b.list(entries);
+            let entry = b.pair("custom_options", custom);
+            let options = b.list(&[entry]);
+            InspectOptions::from_options(proc, options).sort_maps
+        };
+        const { assert!(!InspectOptions::DEFAULT.sort_maps) };
+        let (other, sort) = (b.pair("other", yes), b.pair("sort_maps", yes));
+        assert!(sorting(&mut b, &[other, sort]));
+        let off = b.pair("sort_maps", no);
+        assert!(!sorting(&mut b, &[off, sort]), "Keyword.get takes the first entry");
+        let unset = b.pair("sort_maps", nil);
+        assert!(!sorting(&mut b, &[unset]));
+        assert!(!sorting(&mut b, &[other]));
     }
 }
 

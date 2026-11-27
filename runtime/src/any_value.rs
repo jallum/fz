@@ -1882,6 +1882,7 @@ pub mod debug {
     use crate::heap::{FieldKind, SchemaIdentity};
     use crate::module_name::{alias_spelling, is_alias_namespace_atom};
     use crate::process::Process;
+    use crate::term::{NumericMode, TermComparator};
     use std::slice;
     use std::str;
 
@@ -1918,44 +1919,65 @@ pub mod debug {
         }
     }
 
-    /// The `Inspect.Opts` limits: `limit:` is a budget that elements spend as
-    /// they print, and `printable_limit:` is how many characters of a string
-    /// or charlist print, a size that is not spent.
+    /// The `Inspect.Opts` a rendering reads: `limit:` is a budget that
+    /// elements spend as they print, `printable_limit:` is how many characters
+    /// of a string or charlist print, a size that is not spent, and
+    /// `custom_options: [sort_maps: true]` sorts every map's pairs.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct Limits {
+    pub struct InspectOptions {
         pub elements: Limit,
         pub printable: Limit,
+        pub sort_maps: bool,
     }
 
-    impl Limits {
-        /// `%Inspect.Opts{}`'s `limit` and `printable_limit`.
+    impl InspectOptions {
+        /// `%Inspect.Opts{}`'s `limit`, `printable_limit` and `custom_options: []`.
         pub const DEFAULT: Self = Self {
             elements: Limit::Count(100),
             printable: Limit::Count(4096),
+            sort_maps: false,
         };
 
-        /// The limits of an option keyword list `Kernel.inspect/2` has
-        /// already checked: the last of a key wins, and an absent key keeps
-        /// its default.
+        /// The options of a keyword list `Kernel.inspect/2` has already
+        /// checked: the last of a key wins, and an absent key keeps its
+        /// default.
         pub fn from_options(proc: *mut Process, options: AnyValue) -> Self {
-            let mut limits = Self::DEFAULT;
-            let Some(bits) = options.heap_object_word() else {
-                return limits;
-            };
-            for (key, value) in list_walk(bits)
-                .cells
-                .into_iter()
-                .filter_map(|cell| pair(proc, cell.head_value()))
-            {
+            let mut parsed = Self::DEFAULT;
+            for (key, value) in keyword_pairs(proc, options) {
                 let AnyValue::Atom(id) = key else { continue };
                 match atom_name(proc, id).as_deref() {
-                    Some("limit") => limits.elements = Limit::of_option(proc, value),
-                    Some("printable_limit") => limits.printable = Limit::of_option(proc, value),
+                    Some("limit") => parsed.elements = Limit::of_option(proc, value),
+                    Some("printable_limit") => parsed.printable = Limit::of_option(proc, value),
+                    Some("custom_options") => parsed.sort_maps = Self::sorts_maps(proc, value),
                     _ => {}
                 }
             }
-            limits
+            parsed
         }
+
+        /// `Keyword.get(custom_options, :sort_maps)` is truthy: the first
+        /// `:sort_maps` entry that is neither `nil` nor `false`.
+        fn sorts_maps(proc: *mut Process, custom_options: AnyValue) -> bool {
+            let is_sort_maps = |key: &AnyValue| matches!(key, AnyValue::Atom(id) if atom_name(proc, *id).as_deref() == Some("sort_maps"));
+            keyword_pairs(proc, custom_options)
+                .into_iter()
+                .find(|(key, _)| is_sort_maps(key))
+                .is_some_and(
+                    |(_, value)| !matches!(value, AnyValue::Atom(id) if id == NIL_ATOM_ID || id == FALSE_ATOM_ID),
+                )
+        }
+    }
+
+    /// The `{key, value}` pairs of a keyword list, in order.
+    fn keyword_pairs(proc: *mut Process, list: AnyValue) -> Vec<(AnyValue, AnyValue)> {
+        let Some(bits) = list.heap_object_word() else {
+            return Vec::new();
+        };
+        list_walk(bits)
+            .cells
+            .into_iter()
+            .filter_map(|cell| pair(proc, cell.head_value()))
+            .collect()
     }
 
     /// An atom's name, when `proc` has one for it.
@@ -2055,26 +2077,28 @@ pub mod debug {
 
     /// `inspect/1` with Elixir's default options.
     pub fn render_value(proc: *mut Process, value: AnyValue) -> String {
-        render_with_limits(proc, value, Limits::DEFAULT)
+        render_with_options(proc, value, InspectOptions::DEFAULT)
     }
 
-    /// `inspect/2` with `limit:` and `printable_limit:`.
-    pub fn render_with_limits(proc: *mut Process, value: AnyValue, limits: Limits) -> String {
+    /// `inspect/2` with `limit:`, `printable_limit:` and `custom_options:`.
+    pub fn render_with_options(proc: *mut Process, value: AnyValue, options: InspectOptions) -> String {
         Renderer {
             proc,
-            limit: limits.elements,
-            printable: limits.printable,
+            limit: options.elements,
+            printable: options.printable,
+            sort_maps: options.sort_maps,
         }
         .value(value)
     }
 
     /// The process is the heap's schema registry and the atom table; `limit`
-    /// is what is left to spend and `printable` is how much of a string or
-    /// charlist prints.
+    /// is what is left to spend, `printable` is how much of a string or
+    /// charlist prints, and `sort_maps` orders a map's pairs by term order.
     struct Renderer {
         proc: *mut Process,
         limit: Limit,
         printable: Limit,
+        sort_maps: bool,
     }
 
     impl Renderer {
@@ -2280,7 +2304,10 @@ pub mod debug {
             if let Some((module, fields)) = unsafe { &*self.proc }.heap.entries_spelling_a_struct(map_ref) {
                 return self.named_struct(&module, fields);
             }
-            let entries = unsafe { map_entries(p) };
+            let mut entries = unsafe { map_entries(p) };
+            if self.sort_maps {
+                self.sort_by_term_order(&mut entries);
+            }
             let keywords: Option<Vec<(String, AnyValue)>> = entries
                 .iter()
                 .map(|(key, value)| Some((self.keyword_key(*key)?, *value)))
@@ -2292,6 +2319,18 @@ pub mod debug {
                     format!("{key} => {}", renderer.value(value))
                 }),
             }
+        }
+
+        /// `:lists.sort/1` of `{key, value}` pairs: tuples compare by key and
+        /// then by value, with `1` and `1.0` equal, and equal pairs keep
+        /// their order.
+        fn sort_by_term_order(&self, entries: &mut [(AnyValue, AnyValue)]) {
+            let process = unsafe { &*self.proc };
+            let registry = process.heap.schemas_registry();
+            let schemas = registry.borrow();
+            let comparator = TermComparator::new(&process.node, &schemas);
+            let widening = |a, b| comparator.compare(a, b, NumericMode::Widening);
+            entries.sort_by(|(ak, av), (bk, bv)| widening(*ak, *bk).then_with(|| widening(*av, *bv)));
         }
 
         fn bitstring(&mut self, bits: u64) -> String {

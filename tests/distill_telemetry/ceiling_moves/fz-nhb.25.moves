@@ -1,0 +1,2 @@
+# the custom_options clause in Kernel's checked_inspect_options/2 is one more clause in the distiller's inspect path; accepted by the user 2026-11-27
+reads handed +1
