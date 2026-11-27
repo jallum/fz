@@ -1,0 +1,47 @@
+#---
+# purpose: "An atom given as the second argument of OtpJSON.format/2, whose specs say a map or a three-argument function, is refused at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+# OTP's json.erl treats the spec as advisory: on the BEAM the call compiles and
+# fails with function_clause at run time. fz refuses the call at compile time.
+# The module holds the port's format/2 and format/3 with their types, specs,
+# guards and clause heads, and a trimmed body; fixtures/01860 holds the whole
+# port.
+defmodule OtpJSON do
+  @type encode_value() ::
+          integer()
+          | float()
+          | boolean()
+          | :null
+          | binary()
+          | atom()
+          | list(encode_value())
+          | encode_map(encode_value())
+
+  @type encode_map(value) :: %{optional(binary() | atom() | integer()) => value}
+
+  @type formatter() :: (dynamic(), formatter(), map() -> iodata())
+
+  @spec format(encode_value(), map()) :: iodata()
+  @spec format(dynamic(), formatter()) :: iodata()
+  def format(term, options) when is_map(options), do: format(term, &format_value/3, options)
+
+  def format(term, encoder) when is_function(encoder, 3), do: format(term, encoder, %{})
+
+  @spec format(dynamic(), formatter(), map()) :: iodata()
+  def format(term, encoder, options) when is_function(encoder, 3) do
+    [encoder.(term, encoder, options), ?\n]
+  end
+
+  @spec format_value(dynamic(), formatter(), map()) :: iodata()
+  def format_value(term, _enc, _state), do: Integer.to_string(term)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(OtpJSON.format(1, :not_an_encoder))
+  end
+end
+
+Main.main()

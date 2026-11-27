@@ -1,0 +1,20 @@
+# OTP json.erl on fz
+
+`fixtures/01860_otp_json_erl_runs_unchanged.fz` contains `OtpJSON`, a line-for-line port of OTP 28.3 (stdlib-7.2) `json.erl` into Elixir syntax, followed by a deterministic corpus. It is an `oracle: self` fixture: Elixir runs the file and owns `expected.txt`, and the fixture matrix runs the same file on interp, run and build.
+
+The port keeps every function, clause, argument and variable name of `json.erl`. It keeps the improper-list stacks and iodata, `throw`/`catch`, the guard macros, the 8-byte fast path, and the real BIFs. The only changes are the ones Elixir syntax forces and the one deviation below, and each one carries a `# erl:` comment quoting the original line. Where fz cannot run the port, the gap is a ticket under fz-mue, never a change to the port.
+
+One deviation is not forced by Elixir syntax: json.erl:660 passes its own 2-arity wrapper where a `formatter()` is required (BEAM: `badarity` with a formatter that calls its Encoder on an atom); the port's `format_value/3` atom clause hands the formatter on instead, as json.erl does at :731 and :764. Sent upstream as erlang/otp PR #12282. The default formatter ignores its Encoder, so `:json.format/1,2,3` and the port agree on every case `difftest.exs` runs; a custom formatter that calls its Encoder on an atom is not in the corpus or in `difftest.exs`, because the BEAM's `json` still raises there. Fixture `01867` pins the fixed behaviour on a copy of the functions concerned.
+
+- `difftest.exs` compares the port against OTP's `:json` on the BEAM, case by case and outcome by outcome: 113,386 cases. Run it from the repository root with `elixir tools/otp_json/difftest.exs`. It loads the port from the fixture.
+- `gen_guards.py` prints the `defguardp` block of `json.hrl` in Elixir form. The long `===` chains in the port are its output.
+
+The corpus prints every outcome for small groups, and a count plus a digest for large ones. To see every outcome, run `elixir <fixture> full` or `fz2 run <fixture> full`, then diff the two outputs.
+
+The corpus holds no call whose argument lies outside the callee's `@spec`. fz refuses such a call at compile time (`error[spec/violation]`), where the BEAM compiles it and raises at run time, so a corpus that made those calls could not compile on fz. The misuse cases live in two places: `difftest.exs` still runs them against `:json` on the BEAM, and fixtures `01861` to `01866` each hold small copies of the specced port functions and one out-of-spec call, and pin the `spec/violation` diagnostic on interp, run and build. The kinds are a binary to `encode_integer/1`, a list to `encode_binary/1`, an atom to `decode/1` and to `decode/3`, and an atom as the encoder of `encode/2` and `format/2`.
+
+The corpus compares values, not the undefined iteration order of a map. Erlang documents map order only for the ordered iterator (`:maps.iterator(map, :ordered)`) and for comparison; `:maps.to_list/1`, `:maps.iterator/1`, `Map.keys` and `inspect` iterate in an order that differs between the BEAM and fz.
+- `Corpus.show` prints a term that holds a map of two or more keys with every map's pairs sorted by the printed text of their keys, recursing through lists, tuples, improper lists, maps and structs. Every other term prints exactly as `inspect` prints it. Labels and outcomes both go through it.
+- The encoders that iterate a map in plain order (`encode/1,2`, `encode_value/2`, `encode_list/2`, `encode_map/2`, `encode_map_checked/2`, `encode_key_value_list/2`, `encode_key_value_list_checked/2`) are wrapped in `Corpus.order_free`. When the encoded term holds a map of two or more keys, the outcome is `{:members_sorted, text}`: the output flattened to one binary with the members of every JSON object sorted by their own bytes. A wrong key, value, escape or separator still changes that text. Any other term keeps its exact iodata.
+- `format/1,2,3` and `format_value/3` iterate with the ordered iterator, so their outcomes keep their exact bytes, whatever the term holds.
+

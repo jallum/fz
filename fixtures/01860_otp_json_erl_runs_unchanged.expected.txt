@@ -1,0 +1,781 @@
+== decode/1 edge inputs
+"" -> {:raised, :error, :unexpected_end}
+" " -> {:raised, :error, :unexpected_end}
+"1" -> {:ok, 1}
+"-" -> {:raised, :error, :unexpected_end}
+"-1" -> {:ok, -1}
+"0" -> {:ok, 0}
+"01" -> {:raised, :error, {:invalid_byte, 49}}
+"0." -> {:raised, :error, :unexpected_end}
+"0.1" -> {:ok, 0.1}
+"0e" -> {:raised, :error, :unexpected_end}
+"0e+" -> {:raised, :error, :unexpected_end}
+"0E5" -> {:ok, 0.0}
+"1e" -> {:raised, :error, :unexpected_end}
+"1e+" -> {:raised, :error, :unexpected_end}
+"1.e1" -> {:raised, :error, {:invalid_byte, 101}}
+"1.5" -> {:ok, 1.5}
+"1.5e" -> {:raised, :error, :unexpected_end}
+"1.5e+" -> {:raised, :error, :unexpected_end}
+"1.5e5" -> {:ok, 150000.0}
+"1.5e+5x" -> {:raised, :error, {:invalid_byte, 120}}
+"123abc" -> {:raised, :error, {:invalid_byte, 97}}
+"-0" -> {:ok, 0}
+"-01" -> {:raised, :error, {:invalid_byte, 49}}
+"--1" -> {:raised, :error, {:invalid_byte, 45}}
+"+1" -> {:raised, :error, {:invalid_byte, 43}}
+".5" -> {:raised, :error, {:invalid_byte, 46}}
+"1.5.5" -> {:raised, :error, {:invalid_byte, 46}}
+"1e5e5" -> {:raised, :error, {:invalid_byte, 101}}
+"t" -> {:raised, :error, :unexpected_end}
+"tr" -> {:raised, :error, :unexpected_end}
+"tru" -> {:raised, :error, :unexpected_end}
+"true" -> {:ok, true}
+"truee" -> {:raised, :error, {:invalid_byte, 101}}
+"trux" -> {:raised, :error, :unexpected_end}
+"f" -> {:raised, :error, :unexpected_end}
+"fals" -> {:raised, :error, :unexpected_end}
+"false" -> {:ok, false}
+"n" -> {:raised, :error, :unexpected_end}
+"nul" -> {:raised, :error, :unexpected_end}
+"null" -> {:ok, :null}
+"nulll" -> {:raised, :error, {:invalid_byte, 108}}
+"nan" -> {:raised, :error, :unexpected_end}
+"\"" -> {:raised, :error, :unexpected_end}
+"\"a" -> {:raised, :error, :unexpected_end}
+"\"abc" -> {:raised, :error, :unexpected_end}
+"\"abc\"" -> {:ok, "abc"}
+"\"abc\"x" -> {:raised, :error, {:invalid_byte, 120}}
+"\"\\" -> {:raised, :error, :unexpected_end}
+"\"\\u" -> {:raised, :error, :unexpected_end}
+"\"\\u1" -> {:raised, :error, :unexpected_end}
+"\"\\u12" -> {:raised, :error, :unexpected_end}
+"\"\\u123" -> {:raised, :error, :unexpected_end}
+"\"\\u1234\"" -> {:ok, "ሴ"}
+"\"\\u12G4\"" -> {:raised, :error, {:unexpected_sequence, "\\u12G4"}}
+"\"\\uzzzz\"" -> {:raised, :error, {:unexpected_sequence, "\\uzzzz"}}
+"\"\\ud800\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\u" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\udc00\"" -> {:ok, "𐀀"}
+"\"\\ud800\\u0041\"" -> {:raised, :error, {:unexpected_sequence, "\\ud800\\u0041"}}
+"\"\\udc00\"" -> {:raised, :error, {:unexpected_sequence, "\\udc00"}}
+"\"\\ud800x\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud83d\\ude00\"" -> {:ok, "😀"}
+"\"\\ud83d\\ude0" -> {:raised, :error, :unexpected_end}
+"\"\\uDBFF\\uDFFF\"" -> {:ok, "􏿿"}
+"\"\\uD800\\uDBFF\"" -> {:raised, :error, {:unexpected_sequence, "\\uD800\\uDBFF"}}
+"\"\\u0000\\u001f\"" -> {:ok, <<0, 31>>}
+"\"\\x\"" -> {:raised, :error, {:invalid_byte, 120}}
+"\"\\q\"" -> {:raised, :error, {:invalid_byte, 113}}
+"\"\\/\"" -> {:ok, "/"}
+"\"a\\nb\"" -> {:ok, "a\nb"}
+"\"\n\"" -> {:raised, :error, {:invalid_byte, 10}}
+"\"\t\"" -> {:raised, :error, {:invalid_byte, 9}}
+<<34, 1, 34>> -> {:raised, :error, {:invalid_byte, 1}}
+"\"\d\"" -> {:ok, "\d"}
+"\"é\"" -> {:ok, "é"}
+<<34, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 195, 40, 34>> -> {:raised, :error, {:invalid_byte, 40}}
+<<34, 226, 130>> -> {:raised, :error, :unexpected_end}
+"\"€\"" -> {:ok, "€"}
+<<34, 240, 159, 152>> -> {:raised, :error, :unexpected_end}
+"\"😀\"" -> {:ok, "😀"}
+<<34, 192, 128, 34>> -> {:raised, :error, {:invalid_byte, 192}}
+<<34, 237, 160, 128, 34>> -> {:raised, :error, {:invalid_byte, 160}}
+<<34, 244, 144, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 144}}
+<<34, 128, 34>> -> {:raised, :error, {:invalid_byte, 128}}
+<<34, 255, 34>> -> {:raised, :error, {:invalid_byte, 255}}
+<<34, 248, 136, 128, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 248}}
+"\"abcdefghéijklmnopq\"" -> {:ok, "abcdefghéijklmnopq"}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195, 169, 105, 106, 107, 108, 109, 110, 111, 112, 113, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195>> -> {:raised, :error, :unexpected_end}
+"[" -> {:raised, :error, :unexpected_end}
+"[]" -> {:ok, []}
+"[ ]" -> {:ok, []}
+"[1" -> {:raised, :error, :unexpected_end}
+"[1," -> {:raised, :error, :unexpected_end}
+"[1,]" -> {:raised, :error, {:invalid_byte, 93}}
+"[1 2]" -> {:raised, :error, {:invalid_byte, 50}}
+"[,1]" -> {:raised, :error, {:invalid_byte, 44}}
+"[1,2]" -> {:ok, [1, 2]}
+"[1]x" -> {:raised, :error, {:invalid_byte, 120}}
+"[[]]" -> {:ok, [[]]}
+"[[[" -> {:raised, :error, :unexpected_end}
+"[1,[2,[3,[]]]]" -> {:ok, [1, [2, [3, []]]]}
+"[1 " -> {:raised, :error, :unexpected_end}
+"[1 ," -> {:raised, :error, :unexpected_end}
+"[ 1 , 2 ]" -> {:ok, [1, 2]}
+"{" -> {:raised, :error, :unexpected_end}
+"{}" -> {:ok, %{}}
+"{ }" -> {:ok, %{}}
+"{\"a\"" -> {:raised, :error, :unexpected_end}
+"{\"a\":" -> {:raised, :error, :unexpected_end}
+"{\"a\":1" -> {:raised, :error, :unexpected_end}
+"{\"a\":1," -> {:raised, :error, :unexpected_end}
+"{\"a\":1,}" -> {:raised, :error, {:invalid_byte, 125}}
+"{\"a\" 1}" -> {:raised, :error, {:invalid_byte, 49}}
+"{a:1}" -> {:raised, :error, {:invalid_byte, 97}}
+"{\"a\":1}" -> {:ok, %{"a" => 1}}
+"{\"a\":1,\"a\":2}" -> {:ok, %{"a" => 1}}
+"{\"a\":{\"b\":[1,{\"c\":null}]}}" -> {:ok, %{"a" => %{"b" => [1, %{"c" => :null}]}}}
+"{1:2}" -> {:raised, :error, {:invalid_byte, 49}}
+"{\"a\":1 \"b\":2}" -> {:raised, :error, {:invalid_byte, 34}}
+"{\"a\" :" -> {:raised, :error, :unexpected_end}
+"{\"a\": 1 , " -> {:raised, :error, :unexpected_end}
+"{ \"k\" : [ ] }" -> {:ok, %{"k" => []}}
+"\u00A0" -> {:raised, :error, {:invalid_byte, 194}}
+"\uFEFF1" -> {:raised, :error, {:invalid_byte, 239}}
+"1 2" -> {:raised, :error, {:invalid_byte, 32}}
+"1 " -> {:ok, 1}
+" 1" -> {:ok, 1}
+"\n1\n" -> {:ok, 1}
+<<49, 0>> -> {:raised, :error, {:invalid_byte, 0}}
+<<0>> -> {:raised, :error, {:invalid_byte, 0}}
+"}" -> {:raised, :error, {:invalid_byte, 125}}
+"]" -> {:raised, :error, {:invalid_byte, 93}}
+"," -> {:raised, :error, {:invalid_byte, 44}}
+":" -> {:raised, :error, {:invalid_byte, 58}}
+"x" -> {:raised, :error, {:invalid_byte, 120}}
+"[x]" -> {:raised, :error, {:invalid_byte, 120}}
+"{\"a\":x}" -> {:raised, :error, {:invalid_byte, 120}}
+"[1,x]" -> {:raised, :error, {:invalid_byte, 120}}
+"[tru" -> {:raised, :error, :unexpected_end}
+"[nul]" -> {:raised, :error, :unexpected_end}
+"{\"a\":tr" -> {:raised, :error, :unexpected_end}
+"[\"abc" -> {:raised, :error, :unexpected_end}
+"[\"abc\\" -> {:raised, :error, :unexpected_end}
+"[\"abc\\u00" -> {:raised, :error, :unexpected_end}
+"[\"\\ud800" -> {:raised, :error, :unexpected_end}
+"{\"a\\u12\"" -> {:raised, :error, :unexpected_end}
+"1.7976931348623157e309" -> {:raised, :error, {:unexpected_sequence, "1.7976931348623157e309"}}
+"1e999" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"[1e999]" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"-1e999" -> {:raised, :error, {:unexpected_sequence, "-1.0e999"}}
+"1.5e999" -> {:raised, :error, {:unexpected_sequence, "1.5e999"}}
+"0.1e-999" -> {:ok, 0.0}
+== decode/3 edge inputs, default decoders
+"" -> {:raised, :error, :unexpected_end}
+" " -> {:raised, :error, :unexpected_end}
+"1" -> {:ok, {1, :acc0, ""}}
+"-" -> {:raised, :error, :unexpected_end}
+"-1" -> {:ok, {-1, :acc0, ""}}
+"0" -> {:ok, {0, :acc0, ""}}
+"01" -> {:ok, {0, :acc0, "1"}}
+"0." -> {:raised, :error, :unexpected_end}
+"0.1" -> {:ok, {0.1, :acc0, ""}}
+"0e" -> {:raised, :error, :unexpected_end}
+"0e+" -> {:raised, :error, :unexpected_end}
+"0E5" -> {:ok, {0.0, :acc0, ""}}
+"1e" -> {:raised, :error, :unexpected_end}
+"1e+" -> {:raised, :error, :unexpected_end}
+"1.e1" -> {:raised, :error, {:invalid_byte, 101}}
+"1.5" -> {:ok, {1.5, :acc0, ""}}
+"1.5e" -> {:raised, :error, :unexpected_end}
+"1.5e+" -> {:raised, :error, :unexpected_end}
+"1.5e5" -> {:ok, {150000.0, :acc0, ""}}
+"1.5e+5x" -> {:ok, {150000.0, :acc0, "x"}}
+"123abc" -> {:ok, {123, :acc0, "abc"}}
+"-0" -> {:ok, {0, :acc0, ""}}
+"-01" -> {:ok, {0, :acc0, "1"}}
+"--1" -> {:raised, :error, {:invalid_byte, 45}}
+"+1" -> {:raised, :error, {:invalid_byte, 43}}
+".5" -> {:raised, :error, {:invalid_byte, 46}}
+"1.5.5" -> {:ok, {1.5, :acc0, ".5"}}
+"1e5e5" -> {:ok, {100000.0, :acc0, "e5"}}
+"t" -> {:raised, :error, :unexpected_end}
+"tr" -> {:raised, :error, :unexpected_end}
+"tru" -> {:raised, :error, :unexpected_end}
+"true" -> {:ok, {true, :acc0, ""}}
+"truee" -> {:ok, {true, :acc0, "e"}}
+"trux" -> {:raised, :error, :unexpected_end}
+"f" -> {:raised, :error, :unexpected_end}
+"fals" -> {:raised, :error, :unexpected_end}
+"false" -> {:ok, {false, :acc0, ""}}
+"n" -> {:raised, :error, :unexpected_end}
+"nul" -> {:raised, :error, :unexpected_end}
+"null" -> {:ok, {:null, :acc0, ""}}
+"nulll" -> {:ok, {:null, :acc0, "l"}}
+"nan" -> {:raised, :error, :unexpected_end}
+"\"" -> {:raised, :error, :unexpected_end}
+"\"a" -> {:raised, :error, :unexpected_end}
+"\"abc" -> {:raised, :error, :unexpected_end}
+"\"abc\"" -> {:ok, {"abc", :acc0, ""}}
+"\"abc\"x" -> {:ok, {"abc", :acc0, "x"}}
+"\"\\" -> {:raised, :error, :unexpected_end}
+"\"\\u" -> {:raised, :error, :unexpected_end}
+"\"\\u1" -> {:raised, :error, :unexpected_end}
+"\"\\u12" -> {:raised, :error, :unexpected_end}
+"\"\\u123" -> {:raised, :error, :unexpected_end}
+"\"\\u1234\"" -> {:ok, {"ሴ", :acc0, ""}}
+"\"\\u12G4\"" -> {:raised, :error, {:unexpected_sequence, "\\u12G4"}}
+"\"\\uzzzz\"" -> {:raised, :error, {:unexpected_sequence, "\\uzzzz"}}
+"\"\\ud800\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\u" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\udc00\"" -> {:ok, {"𐀀", :acc0, ""}}
+"\"\\ud800\\u0041\"" -> {:raised, :error, {:unexpected_sequence, "\\ud800\\u0041"}}
+"\"\\udc00\"" -> {:raised, :error, {:unexpected_sequence, "\\udc00"}}
+"\"\\ud800x\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud83d\\ude00\"" -> {:ok, {"😀", :acc0, ""}}
+"\"\\ud83d\\ude0" -> {:raised, :error, :unexpected_end}
+"\"\\uDBFF\\uDFFF\"" -> {:ok, {"􏿿", :acc0, ""}}
+"\"\\uD800\\uDBFF\"" -> {:raised, :error, {:unexpected_sequence, "\\uD800\\uDBFF"}}
+"\"\\u0000\\u001f\"" -> {:ok, {<<0, 31>>, :acc0, ""}}
+"\"\\x\"" -> {:raised, :error, {:invalid_byte, 120}}
+"\"\\q\"" -> {:raised, :error, {:invalid_byte, 113}}
+"\"\\/\"" -> {:ok, {"/", :acc0, ""}}
+"\"a\\nb\"" -> {:ok, {"a\nb", :acc0, ""}}
+"\"\n\"" -> {:raised, :error, {:invalid_byte, 10}}
+"\"\t\"" -> {:raised, :error, {:invalid_byte, 9}}
+<<34, 1, 34>> -> {:raised, :error, {:invalid_byte, 1}}
+"\"\d\"" -> {:ok, {"\d", :acc0, ""}}
+"\"é\"" -> {:ok, {"é", :acc0, ""}}
+<<34, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 195, 40, 34>> -> {:raised, :error, {:invalid_byte, 40}}
+<<34, 226, 130>> -> {:raised, :error, :unexpected_end}
+"\"€\"" -> {:ok, {"€", :acc0, ""}}
+<<34, 240, 159, 152>> -> {:raised, :error, :unexpected_end}
+"\"😀\"" -> {:ok, {"😀", :acc0, ""}}
+<<34, 192, 128, 34>> -> {:raised, :error, {:invalid_byte, 192}}
+<<34, 237, 160, 128, 34>> -> {:raised, :error, {:invalid_byte, 160}}
+<<34, 244, 144, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 144}}
+<<34, 128, 34>> -> {:raised, :error, {:invalid_byte, 128}}
+<<34, 255, 34>> -> {:raised, :error, {:invalid_byte, 255}}
+<<34, 248, 136, 128, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 248}}
+"\"abcdefghéijklmnopq\"" -> {:ok, {"abcdefghéijklmnopq", :acc0, ""}}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195, 169, 105, 106, 107, 108, 109, 110, 111, 112, 113, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195>> -> {:raised, :error, :unexpected_end}
+"[" -> {:raised, :error, :unexpected_end}
+"[]" -> {:ok, {[], :acc0, ""}}
+"[ ]" -> {:ok, {[], :acc0, ""}}
+"[1" -> {:raised, :error, :unexpected_end}
+"[1," -> {:raised, :error, :unexpected_end}
+"[1,]" -> {:raised, :error, {:invalid_byte, 93}}
+"[1 2]" -> {:raised, :error, {:invalid_byte, 50}}
+"[,1]" -> {:raised, :error, {:invalid_byte, 44}}
+"[1,2]" -> {:ok, {[1, 2], :acc0, ""}}
+"[1]x" -> {:ok, {[1], :acc0, "x"}}
+"[[]]" -> {:ok, {[[]], :acc0, ""}}
+"[[[" -> {:raised, :error, :unexpected_end}
+"[1,[2,[3,[]]]]" -> {:ok, {[1, [2, [3, []]]], :acc0, ""}}
+"[1 " -> {:raised, :error, :unexpected_end}
+"[1 ," -> {:raised, :error, :unexpected_end}
+"[ 1 , 2 ]" -> {:ok, {[1, 2], :acc0, ""}}
+"{" -> {:raised, :error, :unexpected_end}
+"{}" -> {:ok, {%{}, :acc0, ""}}
+"{ }" -> {:ok, {%{}, :acc0, ""}}
+"{\"a\"" -> {:raised, :error, :unexpected_end}
+"{\"a\":" -> {:raised, :error, :unexpected_end}
+"{\"a\":1" -> {:raised, :error, :unexpected_end}
+"{\"a\":1," -> {:raised, :error, :unexpected_end}
+"{\"a\":1,}" -> {:raised, :error, {:invalid_byte, 125}}
+"{\"a\" 1}" -> {:raised, :error, {:invalid_byte, 49}}
+"{a:1}" -> {:raised, :error, {:invalid_byte, 97}}
+"{\"a\":1}" -> {:ok, {%{"a" => 1}, :acc0, ""}}
+"{\"a\":1,\"a\":2}" -> {:ok, {%{"a" => 1}, :acc0, ""}}
+"{\"a\":{\"b\":[1,{\"c\":null}]}}" -> {:ok, {%{"a" => %{"b" => [1, %{"c" => :null}]}}, :acc0, ""}}
+"{1:2}" -> {:raised, :error, {:invalid_byte, 49}}
+"{\"a\":1 \"b\":2}" -> {:raised, :error, {:invalid_byte, 34}}
+"{\"a\" :" -> {:raised, :error, :unexpected_end}
+"{\"a\": 1 , " -> {:raised, :error, :unexpected_end}
+"{ \"k\" : [ ] }" -> {:ok, {%{"k" => []}, :acc0, ""}}
+"\u00A0" -> {:raised, :error, {:invalid_byte, 194}}
+"\uFEFF1" -> {:raised, :error, {:invalid_byte, 239}}
+"1 2" -> {:ok, {1, :acc0, " 2"}}
+"1 " -> {:ok, {1, :acc0, ""}}
+" 1" -> {:ok, {1, :acc0, ""}}
+"\n1\n" -> {:ok, {1, :acc0, ""}}
+<<49, 0>> -> {:ok, {1, :acc0, <<0>>}}
+<<0>> -> {:raised, :error, {:invalid_byte, 0}}
+"}" -> {:raised, :error, {:invalid_byte, 125}}
+"]" -> {:raised, :error, {:invalid_byte, 93}}
+"," -> {:raised, :error, {:invalid_byte, 44}}
+":" -> {:raised, :error, {:invalid_byte, 58}}
+"x" -> {:raised, :error, {:invalid_byte, 120}}
+"[x]" -> {:raised, :error, {:invalid_byte, 120}}
+"{\"a\":x}" -> {:raised, :error, {:invalid_byte, 120}}
+"[1,x]" -> {:raised, :error, {:invalid_byte, 120}}
+"[tru" -> {:raised, :error, :unexpected_end}
+"[nul]" -> {:raised, :error, :unexpected_end}
+"{\"a\":tr" -> {:raised, :error, :unexpected_end}
+"[\"abc" -> {:raised, :error, :unexpected_end}
+"[\"abc\\" -> {:raised, :error, :unexpected_end}
+"[\"abc\\u00" -> {:raised, :error, :unexpected_end}
+"[\"\\ud800" -> {:raised, :error, :unexpected_end}
+"{\"a\\u12\"" -> {:raised, :error, :unexpected_end}
+"1.7976931348623157e309" -> {:raised, :error, {:unexpected_sequence, "1.7976931348623157e309"}}
+"1e999" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"[1e999]" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"-1e999" -> {:raised, :error, {:unexpected_sequence, "-1.0e999"}}
+"1.5e999" -> {:raised, :error, {:unexpected_sequence, "1.5e999"}}
+"0.1e-999" -> {:ok, {0.0, :acc0, ""}}
+== decode/3 edge inputs, every decoder
+"" -> {:raised, :error, :unexpected_end}
+" " -> {:raised, :error, :unexpected_end}
+"1" -> {:ok, {{:i, "1"}, 0, ""}}
+"-" -> {:raised, :error, :unexpected_end}
+"-1" -> {:ok, {{:i, "-1"}, 0, ""}}
+"0" -> {:ok, {{:i, "0"}, 0, ""}}
+"01" -> {:ok, {{:i, "0"}, 0, "1"}}
+"0." -> {:raised, :error, :unexpected_end}
+"0.1" -> {:ok, {{:f, "0.1"}, 0, ""}}
+"0e" -> {:raised, :error, :unexpected_end}
+"0e+" -> {:raised, :error, :unexpected_end}
+"0E5" -> {:ok, {{:f, "0.0e5"}, 0, ""}}
+"1e" -> {:raised, :error, :unexpected_end}
+"1e+" -> {:raised, :error, :unexpected_end}
+"1.e1" -> {:raised, :error, {:invalid_byte, 101}}
+"1.5" -> {:ok, {{:f, "1.5"}, 0, ""}}
+"1.5e" -> {:raised, :error, :unexpected_end}
+"1.5e+" -> {:raised, :error, :unexpected_end}
+"1.5e5" -> {:ok, {{:f, "1.5e5"}, 0, ""}}
+"1.5e+5x" -> {:ok, {{:f, "1.5e+5"}, 0, "x"}}
+"123abc" -> {:ok, {{:i, "123"}, 0, "abc"}}
+"-0" -> {:ok, {{:i, "0"}, 0, ""}}
+"-01" -> {:ok, {{:i, "0"}, 0, "1"}}
+"--1" -> {:raised, :error, {:invalid_byte, 45}}
+"+1" -> {:raised, :error, {:invalid_byte, 43}}
+".5" -> {:raised, :error, {:invalid_byte, 46}}
+"1.5.5" -> {:ok, {{:f, "1.5"}, 0, ".5"}}
+"1e5e5" -> {:ok, {{:f, "1.0e5"}, 0, "e5"}}
+"t" -> {:raised, :error, :unexpected_end}
+"tr" -> {:raised, :error, :unexpected_end}
+"tru" -> {:raised, :error, :unexpected_end}
+"true" -> {:ok, {true, 0, ""}}
+"truee" -> {:ok, {true, 0, "e"}}
+"trux" -> {:raised, :error, :unexpected_end}
+"f" -> {:raised, :error, :unexpected_end}
+"fals" -> {:raised, :error, :unexpected_end}
+"false" -> {:ok, {false, 0, ""}}
+"n" -> {:raised, :error, :unexpected_end}
+"nul" -> {:raised, :error, :unexpected_end}
+"null" -> {:ok, {:NULL, 0, ""}}
+"nulll" -> {:ok, {:NULL, 0, "l"}}
+"nan" -> {:raised, :error, :unexpected_end}
+"\"" -> {:raised, :error, :unexpected_end}
+"\"a" -> {:raised, :error, :unexpected_end}
+"\"abc" -> {:raised, :error, :unexpected_end}
+"\"abc\"" -> {:ok, {{:s, "abc"}, 0, ""}}
+"\"abc\"x" -> {:ok, {{:s, "abc"}, 0, "x"}}
+"\"\\" -> {:raised, :error, :unexpected_end}
+"\"\\u" -> {:raised, :error, :unexpected_end}
+"\"\\u1" -> {:raised, :error, :unexpected_end}
+"\"\\u12" -> {:raised, :error, :unexpected_end}
+"\"\\u123" -> {:raised, :error, :unexpected_end}
+"\"\\u1234\"" -> {:ok, {{:s, "ሴ"}, 0, ""}}
+"\"\\u12G4\"" -> {:raised, :error, {:unexpected_sequence, "\\u12G4"}}
+"\"\\uzzzz\"" -> {:raised, :error, {:unexpected_sequence, "\\uzzzz"}}
+"\"\\ud800\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\u" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\udc00\"" -> {:ok, {{:s, "𐀀"}, 0, ""}}
+"\"\\ud800\\u0041\"" -> {:raised, :error, {:unexpected_sequence, "\\ud800\\u0041"}}
+"\"\\udc00\"" -> {:raised, :error, {:unexpected_sequence, "\\udc00"}}
+"\"\\ud800x\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud83d\\ude00\"" -> {:ok, {{:s, "😀"}, 0, ""}}
+"\"\\ud83d\\ude0" -> {:raised, :error, :unexpected_end}
+"\"\\uDBFF\\uDFFF\"" -> {:ok, {{:s, "􏿿"}, 0, ""}}
+"\"\\uD800\\uDBFF\"" -> {:raised, :error, {:unexpected_sequence, "\\uD800\\uDBFF"}}
+"\"\\u0000\\u001f\"" -> {:ok, {{:s, <<0, 31>>}, 0, ""}}
+"\"\\x\"" -> {:raised, :error, {:invalid_byte, 120}}
+"\"\\q\"" -> {:raised, :error, {:invalid_byte, 113}}
+"\"\\/\"" -> {:ok, {{:s, "/"}, 0, ""}}
+"\"a\\nb\"" -> {:ok, {{:s, "a\nb"}, 0, ""}}
+"\"\n\"" -> {:raised, :error, {:invalid_byte, 10}}
+"\"\t\"" -> {:raised, :error, {:invalid_byte, 9}}
+<<34, 1, 34>> -> {:raised, :error, {:invalid_byte, 1}}
+"\"\d\"" -> {:ok, {{:s, "\d"}, 0, ""}}
+"\"é\"" -> {:ok, {{:s, "é"}, 0, ""}}
+<<34, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 195, 40, 34>> -> {:raised, :error, {:invalid_byte, 40}}
+<<34, 226, 130>> -> {:raised, :error, :unexpected_end}
+"\"€\"" -> {:ok, {{:s, "€"}, 0, ""}}
+<<34, 240, 159, 152>> -> {:raised, :error, :unexpected_end}
+"\"😀\"" -> {:ok, {{:s, "😀"}, 0, ""}}
+<<34, 192, 128, 34>> -> {:raised, :error, {:invalid_byte, 192}}
+<<34, 237, 160, 128, 34>> -> {:raised, :error, {:invalid_byte, 160}}
+<<34, 244, 144, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 144}}
+<<34, 128, 34>> -> {:raised, :error, {:invalid_byte, 128}}
+<<34, 255, 34>> -> {:raised, :error, {:invalid_byte, 255}}
+<<34, 248, 136, 128, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 248}}
+"\"abcdefghéijklmnopq\"" -> {:ok, {{:s, "abcdefghéijklmnopq"}, 0, ""}}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195, 169, 105, 106, 107, 108, 109, 110, 111, 112, 113, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195>> -> {:raised, :error, :unexpected_end}
+"[" -> {:raised, :error, :unexpected_end}
+"[]" -> {:ok, {{:arr, [as: 0]}, 0, ""}}
+"[ ]" -> {:ok, {{:arr, [as: 0]}, 0, ""}}
+"[1" -> {:raised, :error, :unexpected_end}
+"[1," -> {:raised, :error, :unexpected_end}
+"[1,]" -> {:raised, :error, {:invalid_byte, 93}}
+"[1 2]" -> {:raised, :error, {:invalid_byte, 50}}
+"[,1]" -> {:raised, :error, {:invalid_byte, 44}}
+"[1,2]" -> {:ok, {{:arr, [as: 0, i: "1", i: "2"]}, 0, ""}}
+"[1]x" -> {:ok, {{:arr, [as: 0, i: "1"]}, 0, "x"}}
+"[[]]" -> {:ok, {{:arr, [as: 0, arr: [as: [as: 0]]]}, 0, ""}}
+"[[[" -> {:raised, :error, :unexpected_end}
+"[1,[2,[3,[]]]]" -> {:ok, {{:arr, [as: 0, i: "1", arr: [as: [i: "1", as: 0], i: "2", arr: [as: [i: "2", as: [i: "1", as: 0]], i: "3", arr: [as: [i: "3", as: [i: "2", as: [i: "1", as: 0]]]]]]]}, 0, ""}}
+"[1 " -> {:raised, :error, :unexpected_end}
+"[1 ," -> {:raised, :error, :unexpected_end}
+"[ 1 , 2 ]" -> {:ok, {{:arr, [as: 0, i: "1", i: "2"]}, 0, ""}}
+"{" -> {:raised, :error, :unexpected_end}
+"{}" -> {:ok, {{:obj, [os: 0]}, 0, ""}}
+"{ }" -> {:ok, {{:obj, [os: 0]}, 0, ""}}
+"{\"a\"" -> {:raised, :error, :unexpected_end}
+"{\"a\":" -> {:raised, :error, :unexpected_end}
+"{\"a\":1" -> {:raised, :error, :unexpected_end}
+"{\"a\":1," -> {:raised, :error, :unexpected_end}
+"{\"a\":1,}" -> {:raised, :error, {:invalid_byte, 125}}
+"{\"a\" 1}" -> {:raised, :error, {:invalid_byte, 49}}
+"{a:1}" -> {:raised, :error, {:invalid_byte, 97}}
+"{\"a\":1}" -> {:ok, {{:obj, [{:os, 0}, {{:s, "a"}, {:i, "1"}}]}, 0, ""}}
+"{\"a\":1,\"a\":2}" -> {:ok, {{:obj, [{:os, 0}, {{:s, "a"}, {:i, "1"}}, {{:s, "a"}, {:i, "2"}}]}, 0, ""}}
+"{\"a\":{\"b\":[1,{\"c\":null}]}}" -> {:ok, {{:obj, [{:os, 0}, {{:s, "a"}, {:obj, [{:os, [os: 0]}, {{:s, "b"}, {:arr, [as: [os: [os: 0]], i: "1", obj: [{:os, [i: "1", as: [os: [os: 0]]]}, {{:s, "c"}, :NULL}]]}}]}}]}, 0, ""}}
+"{1:2}" -> {:raised, :error, {:invalid_byte, 49}}
+"{\"a\":1 \"b\":2}" -> {:raised, :error, {:invalid_byte, 34}}
+"{\"a\" :" -> {:raised, :error, :unexpected_end}
+"{\"a\": 1 , " -> {:raised, :error, :unexpected_end}
+"{ \"k\" : [ ] }" -> {:ok, {{:obj, [{:os, 0}, {{:s, "k"}, {:arr, [as: [os: 0]]}}]}, 0, ""}}
+"\u00A0" -> {:raised, :error, {:invalid_byte, 194}}
+"\uFEFF1" -> {:raised, :error, {:invalid_byte, 239}}
+"1 2" -> {:ok, {{:i, "1"}, 0, " 2"}}
+"1 " -> {:ok, {{:i, "1"}, 0, ""}}
+" 1" -> {:ok, {{:i, "1"}, 0, ""}}
+"\n1\n" -> {:ok, {{:i, "1"}, 0, ""}}
+<<49, 0>> -> {:ok, {{:i, "1"}, 0, <<0>>}}
+<<0>> -> {:raised, :error, {:invalid_byte, 0}}
+"}" -> {:raised, :error, {:invalid_byte, 125}}
+"]" -> {:raised, :error, {:invalid_byte, 93}}
+"," -> {:raised, :error, {:invalid_byte, 44}}
+":" -> {:raised, :error, {:invalid_byte, 58}}
+"x" -> {:raised, :error, {:invalid_byte, 120}}
+"[x]" -> {:raised, :error, {:invalid_byte, 120}}
+"{\"a\":x}" -> {:raised, :error, {:invalid_byte, 120}}
+"[1,x]" -> {:raised, :error, {:invalid_byte, 120}}
+"[tru" -> {:raised, :error, :unexpected_end}
+"[nul]" -> {:raised, :error, :unexpected_end}
+"{\"a\":tr" -> {:raised, :error, :unexpected_end}
+"[\"abc" -> {:raised, :error, :unexpected_end}
+"[\"abc\\" -> {:raised, :error, :unexpected_end}
+"[\"abc\\u00" -> {:raised, :error, :unexpected_end}
+"[\"\\ud800" -> {:raised, :error, :unexpected_end}
+"{\"a\\u12\"" -> {:raised, :error, :unexpected_end}
+"1.7976931348623157e309" -> {:ok, {{:f, "1.7976931348623157e309"}, 0, ""}}
+"1e999" -> {:ok, {{:f, "1.0e999"}, 0, ""}}
+"[1e999]" -> {:ok, {{:arr, [as: 0, f: "1.0e999"]}, 0, ""}}
+"-1e999" -> {:ok, {{:f, "-1.0e999"}, 0, ""}}
+"1.5e999" -> {:ok, {{:f, "1.5e999"}, 0, ""}}
+"0.1e-999" -> {:ok, {{:f, "0.1e-999"}, 0, ""}}
+== decode/3 edge inputs, raising float decoder
+"" -> {:raised, :error, :unexpected_end}
+" " -> {:raised, :error, :unexpected_end}
+"1" -> {:ok, {1, 0, ""}}
+"-" -> {:raised, :error, :unexpected_end}
+"-1" -> {:ok, {-1, 0, ""}}
+"0" -> {:ok, {0, 0, ""}}
+"01" -> {:ok, {0, 0, "1"}}
+"0." -> {:raised, :error, :unexpected_end}
+"0.1" -> {:raised, :error, {:unexpected_sequence, "0.1"}}
+"0e" -> {:raised, :error, :unexpected_end}
+"0e+" -> {:raised, :error, :unexpected_end}
+"0E5" -> {:raised, :error, {:unexpected_sequence, "0.0e5"}}
+"1e" -> {:raised, :error, :unexpected_end}
+"1e+" -> {:raised, :error, :unexpected_end}
+"1.e1" -> {:raised, :error, {:invalid_byte, 101}}
+"1.5" -> {:raised, :error, {:unexpected_sequence, "1.5"}}
+"1.5e" -> {:raised, :error, :unexpected_end}
+"1.5e+" -> {:raised, :error, :unexpected_end}
+"1.5e5" -> {:raised, :error, {:unexpected_sequence, "1.5e5"}}
+"1.5e+5x" -> {:raised, :error, {:unexpected_sequence, "1.5e+5"}}
+"123abc" -> {:ok, {123, 0, "abc"}}
+"-0" -> {:ok, {0, 0, ""}}
+"-01" -> {:ok, {0, 0, "1"}}
+"--1" -> {:raised, :error, {:invalid_byte, 45}}
+"+1" -> {:raised, :error, {:invalid_byte, 43}}
+".5" -> {:raised, :error, {:invalid_byte, 46}}
+"1.5.5" -> {:raised, :error, {:unexpected_sequence, "1.5"}}
+"1e5e5" -> {:raised, :error, {:unexpected_sequence, "1.0e5"}}
+"t" -> {:raised, :error, :unexpected_end}
+"tr" -> {:raised, :error, :unexpected_end}
+"tru" -> {:raised, :error, :unexpected_end}
+"true" -> {:ok, {true, 0, ""}}
+"truee" -> {:ok, {true, 0, "e"}}
+"trux" -> {:raised, :error, :unexpected_end}
+"f" -> {:raised, :error, :unexpected_end}
+"fals" -> {:raised, :error, :unexpected_end}
+"false" -> {:ok, {false, 0, ""}}
+"n" -> {:raised, :error, :unexpected_end}
+"nul" -> {:raised, :error, :unexpected_end}
+"null" -> {:ok, {:null, 0, ""}}
+"nulll" -> {:ok, {:null, 0, "l"}}
+"nan" -> {:raised, :error, :unexpected_end}
+"\"" -> {:raised, :error, :unexpected_end}
+"\"a" -> {:raised, :error, :unexpected_end}
+"\"abc" -> {:raised, :error, :unexpected_end}
+"\"abc\"" -> {:ok, {"abc", 0, ""}}
+"\"abc\"x" -> {:ok, {"abc", 0, "x"}}
+"\"\\" -> {:raised, :error, :unexpected_end}
+"\"\\u" -> {:raised, :error, :unexpected_end}
+"\"\\u1" -> {:raised, :error, :unexpected_end}
+"\"\\u12" -> {:raised, :error, :unexpected_end}
+"\"\\u123" -> {:raised, :error, :unexpected_end}
+"\"\\u1234\"" -> {:ok, {"ሴ", 0, ""}}
+"\"\\u12G4\"" -> {:raised, :error, {:unexpected_sequence, "\\u12G4"}}
+"\"\\uzzzz\"" -> {:raised, :error, {:unexpected_sequence, "\\uzzzz"}}
+"\"\\ud800\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\u" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\udc00\"" -> {:ok, {"𐀀", 0, ""}}
+"\"\\ud800\\u0041\"" -> {:raised, :error, {:unexpected_sequence, "\\ud800\\u0041"}}
+"\"\\udc00\"" -> {:raised, :error, {:unexpected_sequence, "\\udc00"}}
+"\"\\ud800x\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud83d\\ude00\"" -> {:ok, {"😀", 0, ""}}
+"\"\\ud83d\\ude0" -> {:raised, :error, :unexpected_end}
+"\"\\uDBFF\\uDFFF\"" -> {:ok, {"􏿿", 0, ""}}
+"\"\\uD800\\uDBFF\"" -> {:raised, :error, {:unexpected_sequence, "\\uD800\\uDBFF"}}
+"\"\\u0000\\u001f\"" -> {:ok, {<<0, 31>>, 0, ""}}
+"\"\\x\"" -> {:raised, :error, {:invalid_byte, 120}}
+"\"\\q\"" -> {:raised, :error, {:invalid_byte, 113}}
+"\"\\/\"" -> {:ok, {"/", 0, ""}}
+"\"a\\nb\"" -> {:ok, {"a\nb", 0, ""}}
+"\"\n\"" -> {:raised, :error, {:invalid_byte, 10}}
+"\"\t\"" -> {:raised, :error, {:invalid_byte, 9}}
+<<34, 1, 34>> -> {:raised, :error, {:invalid_byte, 1}}
+"\"\d\"" -> {:ok, {"\d", 0, ""}}
+"\"é\"" -> {:ok, {"é", 0, ""}}
+<<34, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 195, 40, 34>> -> {:raised, :error, {:invalid_byte, 40}}
+<<34, 226, 130>> -> {:raised, :error, :unexpected_end}
+"\"€\"" -> {:ok, {"€", 0, ""}}
+<<34, 240, 159, 152>> -> {:raised, :error, :unexpected_end}
+"\"😀\"" -> {:ok, {"😀", 0, ""}}
+<<34, 192, 128, 34>> -> {:raised, :error, {:invalid_byte, 192}}
+<<34, 237, 160, 128, 34>> -> {:raised, :error, {:invalid_byte, 160}}
+<<34, 244, 144, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 144}}
+<<34, 128, 34>> -> {:raised, :error, {:invalid_byte, 128}}
+<<34, 255, 34>> -> {:raised, :error, {:invalid_byte, 255}}
+<<34, 248, 136, 128, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 248}}
+"\"abcdefghéijklmnopq\"" -> {:ok, {"abcdefghéijklmnopq", 0, ""}}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195, 169, 105, 106, 107, 108, 109, 110, 111, 112, 113, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195>> -> {:raised, :error, :unexpected_end}
+"[" -> {:raised, :error, :unexpected_end}
+"[]" -> {:ok, {[], 0, ""}}
+"[ ]" -> {:ok, {[], 0, ""}}
+"[1" -> {:raised, :error, :unexpected_end}
+"[1," -> {:raised, :error, :unexpected_end}
+"[1,]" -> {:raised, :error, {:invalid_byte, 93}}
+"[1 2]" -> {:raised, :error, {:invalid_byte, 50}}
+"[,1]" -> {:raised, :error, {:invalid_byte, 44}}
+"[1,2]" -> {:ok, {[1, 2], 0, ""}}
+"[1]x" -> {:ok, {[1], 0, "x"}}
+"[[]]" -> {:ok, {[[]], 0, ""}}
+"[[[" -> {:raised, :error, :unexpected_end}
+"[1,[2,[3,[]]]]" -> {:ok, {[1, [2, [3, []]]], 0, ""}}
+"[1 " -> {:raised, :error, :unexpected_end}
+"[1 ," -> {:raised, :error, :unexpected_end}
+"[ 1 , 2 ]" -> {:ok, {[1, 2], 0, ""}}
+"{" -> {:raised, :error, :unexpected_end}
+"{}" -> {:ok, {%{}, 0, ""}}
+"{ }" -> {:ok, {%{}, 0, ""}}
+"{\"a\"" -> {:raised, :error, :unexpected_end}
+"{\"a\":" -> {:raised, :error, :unexpected_end}
+"{\"a\":1" -> {:raised, :error, :unexpected_end}
+"{\"a\":1," -> {:raised, :error, :unexpected_end}
+"{\"a\":1,}" -> {:raised, :error, {:invalid_byte, 125}}
+"{\"a\" 1}" -> {:raised, :error, {:invalid_byte, 49}}
+"{a:1}" -> {:raised, :error, {:invalid_byte, 97}}
+"{\"a\":1}" -> {:ok, {%{"a" => 1}, 0, ""}}
+"{\"a\":1,\"a\":2}" -> {:ok, {%{"a" => 1}, 0, ""}}
+"{\"a\":{\"b\":[1,{\"c\":null}]}}" -> {:ok, {%{"a" => %{"b" => [1, %{"c" => :null}]}}, 0, ""}}
+"{1:2}" -> {:raised, :error, {:invalid_byte, 49}}
+"{\"a\":1 \"b\":2}" -> {:raised, :error, {:invalid_byte, 34}}
+"{\"a\" :" -> {:raised, :error, :unexpected_end}
+"{\"a\": 1 , " -> {:raised, :error, :unexpected_end}
+"{ \"k\" : [ ] }" -> {:ok, {%{"k" => []}, 0, ""}}
+"\u00A0" -> {:raised, :error, {:invalid_byte, 194}}
+"\uFEFF1" -> {:raised, :error, {:invalid_byte, 239}}
+"1 2" -> {:ok, {1, 0, " 2"}}
+"1 " -> {:ok, {1, 0, ""}}
+" 1" -> {:ok, {1, 0, ""}}
+"\n1\n" -> {:ok, {1, 0, ""}}
+<<49, 0>> -> {:ok, {1, 0, <<0>>}}
+<<0>> -> {:raised, :error, {:invalid_byte, 0}}
+"}" -> {:raised, :error, {:invalid_byte, 125}}
+"]" -> {:raised, :error, {:invalid_byte, 93}}
+"," -> {:raised, :error, {:invalid_byte, 44}}
+":" -> {:raised, :error, {:invalid_byte, 58}}
+"x" -> {:raised, :error, {:invalid_byte, 120}}
+"[x]" -> {:raised, :error, {:invalid_byte, 120}}
+"{\"a\":x}" -> {:raised, :error, {:invalid_byte, 120}}
+"[1,x]" -> {:raised, :error, {:invalid_byte, 120}}
+"[tru" -> {:raised, :error, :unexpected_end}
+"[nul]" -> {:raised, :error, :unexpected_end}
+"{\"a\":tr" -> {:raised, :error, :unexpected_end}
+"[\"abc" -> {:raised, :error, :unexpected_end}
+"[\"abc\\" -> {:raised, :error, :unexpected_end}
+"[\"abc\\u00" -> {:raised, :error, :unexpected_end}
+"[\"\\ud800" -> {:raised, :error, :unexpected_end}
+"{\"a\\u12\"" -> {:raised, :error, :unexpected_end}
+"1.7976931348623157e309" -> {:raised, :error, {:unexpected_sequence, "1.7976931348623157e309"}}
+"1e999" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"[1e999]" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"-1e999" -> {:raised, :error, {:unexpected_sequence, "-1.0e999"}}
+"1.5e999" -> {:raised, :error, {:unexpected_sequence, "1.5e999"}}
+"0.1e-999" -> {:raised, :error, {:unexpected_sequence, "0.1e-999"}}
+== decode/1 every prefix of the edge inputs: 972 cases, digest 1953035102
+== decode/3 every prefix of the edge inputs: 972 cases, digest 829305675
+== decode/1 deep and long inputs
+2000 -> {:ok, [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}
+1000 -> {:raised, :error, :unexpected_end}
+1801 -> {:ok, %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => %{"a" => 1}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}
+1000 -> {:raised, :error, {:invalid_byte, 97}}
+1002 -> {:ok, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+1002 -> {:ok, "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"}
+20 -> {:ok, "aaaaaaa\nbbbbbbbbb"}
+36 -> {:ok, "aaaaaaaaébbbbbbbb😀"}
+== decode with bad decoders
+[:array_start] -> {:raised, :error, :function_clause}
+[:bogus] -> {:raised, :error, :function_clause}
+[:float] -> {:raised, :error, :function_clause}
+== decode/1 generated documents: 300 cases, digest 395834909
+== decode/3 generated documents with trailing data: 300 cases, digest 3613980227
+== decode/1 mutated documents: 600 cases, digest 4184663884
+== decode_continue every single split: 3504 cases, digest 1693730893
+== decode_start state of every prefix: 3504 cases, digest 41060337
+== decode_continue byte at a time
+"1.5e+" -> {:raised, :error, :unexpected_end}
+"1.5e5" -> {:ok, {150000.0, :a, ""}}
+"1.5e+5x" -> {:ok, {{150000.0, :a, "x"}, []}}
+"123abc" -> {:ok, {{123, :a, "a"}, ["b", "c"]}}
+"1.5.5" -> {:ok, {{1.5, :a, "."}, ["5"]}}
+"1e5e5" -> {:ok, {{100000.0, :a, "e"}, ["5"]}}
+"truee" -> {:ok, {{true, :a, ""}, ["e"]}}
+"false" -> {:ok, {{false, :a, ""}, []}}
+"nulll" -> {:ok, {{:null, :a, ""}, ["l"]}}
+"\"abc\"" -> {:ok, {{"abc", :a, ""}, []}}
+"\"abc\"x" -> {:ok, {{"abc", :a, ""}, ["x"]}}
+"\"\\u12" -> {:raised, :error, :unexpected_end}
+"\"\\u123" -> {:raised, :error, :unexpected_end}
+"\"\\u1234\"" -> {:ok, {{"ሴ", :a, ""}, []}}
+"\"\\u12G4\"" -> {:raised, :error, {:unexpected_sequence, "\\u12G4"}}
+"\"\\uzzzz\"" -> {:raised, :error, {:unexpected_sequence, "\\uzzzz"}}
+"\"\\ud800\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\u" -> {:raised, :error, :unexpected_end}
+"\"\\ud800\\udc00\"" -> {:ok, {{"𐀀", :a, ""}, []}}
+"\"\\ud800\\u0041\"" -> {:raised, :error, {:unexpected_sequence, "\\ud800\\u0041"}}
+"\"\\udc00\"" -> {:raised, :error, {:unexpected_sequence, "\\udc00"}}
+"\"\\ud800x\"" -> {:raised, :error, :unexpected_end}
+"\"\\ud83d\\ude00\"" -> {:ok, {{"😀", :a, ""}, []}}
+"\"\\ud83d\\ude0" -> {:raised, :error, :unexpected_end}
+"\"\\uDBFF\\uDFFF\"" -> {:ok, {{"􏿿", :a, ""}, []}}
+"\"\\uD800\\uDBFF\"" -> {:raised, :error, {:unexpected_sequence, "\\uD800\\uDBFF"}}
+"\"\\u0000\\u001f\"" -> {:ok, {{<<0, 31>>, :a, ""}, []}}
+"\"a\\nb\"" -> {:ok, {{"a\nb", :a, ""}, []}}
+"\"€\"" -> {:ok, {{"€", :a, ""}, []}}
+"\"😀\"" -> {:ok, {{"😀", :a, ""}, []}}
+<<34, 237, 160, 128, 34>> -> {:raised, :error, {:invalid_byte, 160}}
+<<34, 244, 144, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 144}}
+<<34, 248, 136, 128, 128, 128, 34>> -> {:raised, :error, {:invalid_byte, 248}}
+"\"abcdefghéijklmnopq\"" -> {:ok, {{"abcdefghéijklmnopq", :a, ""}, []}}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195, 169, 105, 106, 107, 108, 109, 110, 111, 112, 113, 195>> -> {:raised, :error, :unexpected_end}
+<<34, 97, 98, 99, 100, 101, 102, 103, 104, 92, 110, 195>> -> {:raised, :error, :unexpected_end}
+"[1 2]" -> {:raised, :error, {:invalid_byte, 50}}
+"[1,2]" -> {:ok, {{[1, 2], :a, ""}, []}}
+"[1,[2,[3,[]]]]" -> {:ok, {{[1, [2, [3, []]]], :a, ""}, []}}
+"[ 1 , 2 ]" -> {:ok, {{[1, 2], :a, ""}, []}}
+"{\"a\":" -> {:raised, :error, :unexpected_end}
+"{\"a\":1" -> {:raised, :error, :unexpected_end}
+"{\"a\":1," -> {:raised, :error, :unexpected_end}
+"{\"a\":1,}" -> {:raised, :error, {:invalid_byte, 125}}
+"{\"a\" 1}" -> {:raised, :error, {:invalid_byte, 49}}
+"{a:1}" -> {:raised, :error, {:invalid_byte, 97}}
+"{\"a\":1}" -> {:ok, {{%{"a" => 1}, :a, ""}, []}}
+"{\"a\":1,\"a\":2}" -> {:ok, {{%{"a" => 1}, :a, ""}, []}}
+"{\"a\":{\"b\":[1,{\"c\":null}]}}" -> {:ok, {{%{"a" => %{"b" => [1, %{"c" => :null}]}}, :a, ""}, []}}
+"{1:2}" -> {:raised, :error, {:invalid_byte, 49}}
+"{\"a\":1 \"b\":2}" -> {:raised, :error, {:invalid_byte, 34}}
+"{\"a\" :" -> {:raised, :error, :unexpected_end}
+"{\"a\": 1 , " -> {:raised, :error, :unexpected_end}
+"{ \"k\" : [ ] }" -> {:ok, {{%{"k" => []}, :a, ""}, []}}
+"{\"a\":x}" -> {:raised, :error, {:invalid_byte, 120}}
+"[1,x]" -> {:raised, :error, {:invalid_byte, 120}}
+"[nul]" -> {:raised, :error, :unexpected_end}
+"{\"a\":tr" -> {:raised, :error, :unexpected_end}
+"[\"abc" -> {:raised, :error, :unexpected_end}
+"[\"abc\\" -> {:raised, :error, :unexpected_end}
+"[\"abc\\u00" -> {:raised, :error, :unexpected_end}
+"[\"\\ud800" -> {:raised, :error, :unexpected_end}
+"{\"a\\u12\"" -> {:raised, :error, :unexpected_end}
+"1.7976931348623157e309" -> {:raised, :error, {:unexpected_sequence, "1.7976931348623157e309"}}
+"1e999" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"[1e999]" -> {:raised, :error, {:unexpected_sequence, "1.0e999"}}
+"-1e999" -> {:raised, :error, {:unexpected_sequence, "-1.0e999"}}
+"1.5e999" -> {:raised, :error, {:unexpected_sequence, "1.5e999"}}
+"0.1e-999" -> {:ok, {0.0, :a, ""}}
+"false" -> {:ok, {{false, :a, ""}, []}}
+"{\"a\"\r\n:{\"é€😀日本語\":\r\n3e+7\r\n}\n,\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"\n:[\r\n{\"\\u00e9\\u20ac\"\n:\r\n[ ] ,\"\\ud83d\\ude00\" :\t {\r\n}\t ,\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"\n:[\n-1e400 ]\n,\"\\n\\t\\\"\\\\\\/\\b\\f\\r\" :{\"\\u00e9\\u20ac\"\r\n:\"hello world 12345678 abcdefgh\"}\r\n},\"\\u00e9\\u20ac\"\t ,\nnull\t ]\t ,\"\" :[]\t ,\"\\ud83d\\ude00\":{}}" -> {:raised, :error, {:unexpected_sequence, "-1.0e400"}}
+"\"x\\u0041y\"" -> {:ok, {{"xAy", :a, ""}, []}}
+"\"é€😀日本語\"" -> {:ok, {{"é€😀日本語", :a, ""}, []}}
+"\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"" -> {:ok, {{"\n\t\"\\/\b\f\r", :a, ""}, []}}
+"[ 1e400,\nnull\r\n, [],\r\n[\n]\t ]" -> {:raised, :error, {:unexpected_sequence, "1.0e400"}}
+"[ {\"\":\r\n\"\\ud83d\\ude00\" ,\"\" :{ }\t }\n, \"\\ud83d\\ude00\"\n,\t 0.000001]" -> {:ok, {{[%{"" => "😀"}, "😀", 1.0e-6], :a, ""}, []}}
+"false" -> {:ok, {{false, :a, ""}, []}}
+"0.000001" -> {:ok, {1.0e-6, :a, ""}}
+"{\"é€😀日本語\": [ ]\t ,\"plain 8bytes+ and more text here\":{},\"hello world 12345678 abcdefgh\"\t :\r\n{ } }" -> {:ok, {{%{"hello world 12345678 abcdefgh" => %{}, "plain 8bytes+ and more text here" => %{}, "é€😀日本語" => []}, :a, ""}, []}}
+"[{\"\\u00e9\\u20ac\":{\"é€😀日本語\"\r\n:\t {\"\"\n:5e-324,\"\\ud83d\\ude00\":\"a\" ,\"hello world 12345678 abcdefgh\" :\t 1E2 }\t ,\"\\ud83d\\ude00\"\t :\t [123456789, \"a\"\t ,false,\n1\r\n]},\"hello world 12345678 abcdefgh\":\n\"\"\r\n} ,\r\nfalse\t , { },\n{\t } ]" -> {:ok, {{[%{"hello world 12345678 abcdefgh" => "", "é€" => %{"é€😀日本語" => %{"" => 5.0e-324, "hello world 12345678 abcdefgh" => 100.0, "😀" => "a"}, "😀" => [123456789, "a", false, 1]}}, false, %{}, %{}], :a, ""}, []}}
+"-1e400" -> {:raised, :error, {:unexpected_sequence, "-1.0e400"}}
+"{\"\\u00e9\\u20ac\"\r\n: { }\t ,\"\\ud83d\\ude00\" :\r\n{\"a\"\t :{\r\n}\n,\"hello world 12345678 abcdefgh\" :false\t }\n,\"\\ud83d\\ude00\":[\r\n[ [\nfalse ,\r\n\"plain 8bytes+ and more text here\"\n]], 1e400\n,\n{\r\n}\t , {\"x\\u0041y\" :\r\n{\"\"\r\n:\nnull\r\n,\"\\u00e9\\u20ac\"\t :\n\"x\\u0041y\",\"\\n\\t\\\"\\\\\\/\\b\\f\\r\":false\t ,\"hello world 12345678 abcdefgh\"\n: \"\"} ,\"plain 8bytes+ and more text here\":1,\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"\r\n:\"\\u0000\"\r\n,\"\" :\"plain 8bytes+ and more text here\" }\n]}" -> {:raised, :error, {:unexpected_sequence, "1.0e400"}}
+"[\t {\"x\\u0041y\"\n:\t {\"plain 8bytes+ and more text here\"\r\n:\n[false,\"\\u0000\"\t , \"\\ud83d\\ude00\"\t ,\t false],\"plain 8bytes+ and more text here\" :\r\n{}\r\n,\"\"\n:{\"x\\u0041y\"\r\n:\ntrue,\"\\u0000\"\r\n:\r\nnull\r\n,\"\\ud83d\\ude00\" :\r\n1,\"\"\n: -98765} } },[{\"x\\u0041y\" :\t \"é€😀日本語\"\n},[[\t ]\t , {\"x\\u0041y\":\t \"plain 8bytes+ and more text here\",\"hello world 12345678 abcdefgh\":\n\"é€😀日本語\" },\nnull\r\n] ,\n[]\t ]\r\n,true]" -> {:ok, {{[%{"xAy" => %{"" => %{"" => -98765, "xAy" => true, "😀" => 1, <<0>> => :null}, "plain 8bytes+ and more text here" => [false, <<0>>, "😀", false]}}, [%{"xAy" => "é€😀日本語"}, [[], %{"hello world 12345678 abcdefgh" => "é€😀日本語", "xAy" => "plain 8bytes+ and more text here"}, :null], []], true], :a, ""}, []}}
+"{\"\"\t :\r\n{\"plain 8bytes+ and more text here\"\t :\r\n[\r\n]\t ,\"é€😀日本語\"\n:\t false\t } ,\"x\\u0041y\" :\t [\n]\t }" -> {:ok, {{%{"" => %{"plain 8bytes+ and more text here" => [], "é€😀日本語" => false}, "xAy" => []}, :a, ""}, []}}
+"{\"\\u00e9\\u20ac\":\r\n{}\t ,\"plain 8bytes+ and more text here\"\n: \"\\u0000\"}" -> {:ok, {{%{"plain 8bytes+ and more text here" => <<0>>, "é€" => %{}}, :a, ""}, []}}
+"[\n\"\\ud83d\\ude00\"\r\n,\n10\r\n]" -> {:ok, {{["😀", 10], :a, ""}, []}}
+"{\"é€😀日本語\": [ [\n\"\\ud83d\\ude00\"\n, 1E2\t ]\t ,[\r\n-98765]\t ] ,\"hello world 12345678 abcdefgh\":\r\n{} }" -> {:ok, {{%{"hello world 12345678 abcdefgh" => %{}, "é€😀日本語" => [["😀", 100.0], [-98765]]}, :a, ""}, []}}
+"1.0E5" -> {:ok, {100000.0, :a, ""}}
+"false" -> {:ok, {{false, :a, ""}, []}}
+"[\r\n{\r\n}\r\n]" -> {:ok, {{[%{}], :a, ""}, []}}
+"[[\t [[1.5e10\r\n,\"\",\t \"\\ud83d\\ude00\"]\t ]\r\n,\r\n0.5 ,\n-1e400\t ]\r\n,\nfalse,{\"\\u00e9\\u20ac\"\r\n:\t null\n,\"a\"\t :\t \"x\\u0041y\"\t ,\"a\":\n{ } ,\"a\":\r\n\"\\ud83d\\ude00\"\t }\t , \"\\u00e9\\u20ac\"]" -> {:raised, :error, {:unexpected_sequence, "-1.0e400"}}
+"{\"\\n\\t\\\"\\\\\\/\\b\\f\\r\" :\t \"\\n\\t\\\"\\\\\\/\\b\\f\\r\"\t ,\"plain 8bytes+ and more text here\"\n: null\n,\"x\\u0041y\" :\r\n1.7976931348623157e308 ,\"\\u00e9\\u20ac\":\n[\n]\n}" -> {:ok, {{%{"\n\t\"\\/\b\f\r" => "\n\t\"\\/\b\f\r", "plain 8bytes+ and more text here" => :null, "xAy" => 1.7976931348623157e308, "é€" => []}, :a, ""}, []}}
+"[\t []\n,\t [\t ]\r\n]" -> {:ok, {{[[], []], :a, ""}, []}}
+"{\"x\\u0041y\" :\n{\t }\r\n,\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"\n:{}\t }" -> {:ok, {{%{"\n\t\"\\/\b\f\r" => %{}, "xAy" => %{}}, :a, ""}, []}}
+"\"hello world 12345678 abcdefgh\"" -> {:ok, {{"hello world 12345678 abcdefgh", :a, ""}, []}}
+"[\r\nnull, {}]" -> {:ok, {{[:null, %{}], :a, ""}, []}}
+"{\"\\ud83d\\ude00\"\r\n:\t null}" -> {:ok, {{%{"😀" => :null}, :a, ""}, []}}
+== decode_continue on bad states
+:bogus -> {:raised, :error, :function_clause}
+{1, 2} -> {:raised, :error, :function_clause}
+nil -> {:raised, :error, :function_clause}
+{:eoi, :bogus} -> {:raised, :error, :unexpected_end}
+{:eoi, {1, 2}} -> {:raised, :error, :unexpected_end}
+{:eoi, nil} -> {:raised, :error, :unexpected_end}
+== encode and format of binaries: 256 cases, digest 3905695980
+== encode and format of fixed terms: 435 cases, digest 1895901736
+== encode and format of generated terms: 5400 cases, digest 1119032202
+== encode_binary_escape_all per code point
+255 -> {:ok, [[~c"\"", ~c"\\u00" | "FF"], 34]}
+256 -> {:ok, [[~c"\"", ~c"\\u0" | "100"], 34]}
+2047 -> {:ok, [[~c"\"", ~c"\\u0" | "7FF"], 34]}
+2048 -> {:ok, [[~c"\"", ~c"\\u0" | "800"], 34]}
+4095 -> {:ok, [[~c"\"", ~c"\\u0" | "FFF"], 34]}
+4096 -> {:ok, [[~c"\"", ~c"\\u" | "1000"], 34]}
+65535 -> {:ok, [[~c"\"", ~c"\\u" | "FFFF"], 34]}
+65536 -> {:ok, [[~c"\"", ~c"\\uD", "800", ~c"\\uD" | "C00"], 34]}
+1114111 -> {:ok, [[~c"\"", ~c"\\uD", "BFF", ~c"\\uD" | "FFF"], 34]}
+65 -> {:ok, [34, "A", 34]}
+233 -> {:ok, [[~c"\"", ~c"\\u00" | "E9"], 34]}
+8364 -> {:ok, [[~c"\"", ~c"\\u" | "20AC"], 34]}
+128512 -> {:ok, [[~c"\"", ~c"\\uD", "83D", ~c"\\uD" | "E00"], 34]}
+{:mid, 255} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u00" | "FF"], "ij", 34]}
+{:mid, 256} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u0" | "100"], "ij", 34]}
+{:mid, 2047} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u0" | "7FF"], "ij", 34]}
+{:mid, 2048} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u0" | "800"], "ij", 34]}
+{:mid, 4095} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u0" | "FFF"], "ij", 34]}
+{:mid, 4096} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u" | "1000"], "ij", 34]}
+{:mid, 65535} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u" | "FFFF"], "ij", 34]}
+{:mid, 65536} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\uD", "800", ~c"\\uD" | "C00"], "ij", 34]}
+{:mid, 1114111} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\uD", "BFF", ~c"\\uD" | "FFF"], "ij", 34]}
+{:mid, 65} -> {:ok, [34, "abcdefghAij", 34]}
+{:mid, 233} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u00" | "E9"], "ij", 34]}
+{:mid, 8364} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\u" | "20AC"], "ij", 34]}
+{:mid, 128512} -> {:ok, [[[~c"\"" | "abcdefgh"], ~c"\\uD", "83D", ~c"\\uD" | "E00"], "ij", 34]}
+== encode with a custom encoder
+{:ts, 5} -> {:ok, ["\"t", "5", "\""]}
+[a: {:ts, 1}, b: 2] -> {:ok, [123, [[34, "a", 34], 58, "\"t", "1", "\""], [[44, [34, "b", 34], 58 | "2"]], 125]}
+[[a: 1], [b: 2]] -> {:ok, [91, [123, [[34, "a", 34], 58 | "1"], [], 125], 44, [123, [[34, "b", 34], 58 | "2"], [], 125], 93]}
+%{"x" => {:ts, 9}} -> {:ok, [123, [[34, "x", 34], 58, "\"t", "9", "\""], [], 125]}
+== decode then encode and format: 600 cases, digest 636904168

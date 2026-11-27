@@ -1,0 +1,25 @@
+#---
+# purpose: "An atom given as the encoder of OtpJSON.encode/2, whose spec says a two-argument function, is refused at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+# OTP's json.erl treats the spec as advisory: on the BEAM the call compiles and
+# fails with function_clause at run time. fz refuses the call at compile time.
+# The module holds the port's encode/2 with its type, spec, guard and clause
+# head; fixtures/01860 holds the whole port.
+defmodule OtpJSON do
+  @type encoder() :: (dynamic(), encoder() -> iodata())
+
+  @spec encode(dynamic(), encoder()) :: iodata()
+  def encode(term, encoder) when is_function(encoder, 2) do
+    encoder.(term, encoder)
+  end
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(OtpJSON.encode(1, :not_an_encoder))
+  end
+end
+
+Main.main()

@@ -1,0 +1,2238 @@
+#---
+# purpose: "OTP 28.3's json.erl, ported line for line, decodes and encodes exactly as it does on the BEAM"
+# oracle: self
+# oracle.stamp: 1d49bea53999d51b
+#---
+#
+# A line-for-line port of OTP 28.3 stdlib-7.2 json.erl (lib/stdlib/src/json.erl)
+# into Elixir syntax. Function order, clause order, argument order and
+# variable names follow the Erlang source; Erlang names are snake_cased.
+# Wherever Elixir syntax forces a different shape, a `# erl:` comment quotes
+# the original line. Documentation strings are omitted. One change is not
+# forced by syntax: the wrapper in format_value/3's atom clause (json.erl:660),
+# marked "Deviation" where it stands.
+defmodule OtpJSON do
+  import Bitwise
+  require Record
+
+  # erl: -dialyzer(no_improper_lists).
+  # erl: -compile(warn_missing_spec).
+
+  @compile {:inline,
+            [
+              encode_atom: 2,
+              encode_integer: 1,
+              encode_float: 1,
+              encode_object: 1,
+              escape: 1,
+              escape_binary: 1,
+              escape_all: 1,
+              utf8t: 0,
+              utf8s: 0,
+              utf8s0: 0,
+              hex_to_int: 4,
+              string: 6
+            ]}
+
+  # erl: -include("json.hrl").
+  # json.hrl
+  defguardp is_1_to_9(x)
+            when x === ?1 or
+                   x === ?2 or
+                   x === ?3 or
+                   x === ?4 or
+                   x === ?5 or
+                   x === ?6 or
+                   x === ?7 or
+                   x === ?8 or
+                   x === ?9
+
+  defguardp is_0_to_9(x) when x >= ?0 and x <= ?9
+
+  # erl: -define(is_ws(X), X =:= $\s; X =:= $\t; X =:= $\r; X =:= $\n).
+  defguardp is_ws(x) when x === ?\s or x === ?\t or x === ?\r or x === ?\n
+
+  defguardp is_ascii_escape(byte)
+            when byte === 0 or
+                   byte === 1 or
+                   byte === 2 or
+                   byte === 3 or
+                   byte === 4 or
+                   byte === 5 or
+                   byte === 6 or
+                   byte === 7 or
+                   byte === 8 or
+                   byte === 9 or
+                   byte === 10 or
+                   byte === 11 or
+                   byte === 12 or
+                   byte === 13 or
+                   byte === 14 or
+                   byte === 15 or
+                   byte === 16 or
+                   byte === 17 or
+                   byte === 18 or
+                   byte === 19 or
+                   byte === 20 or
+                   byte === 21 or
+                   byte === 22 or
+                   byte === 23 or
+                   byte === 24 or
+                   byte === 25 or
+                   byte === 26 or
+                   byte === 27 or
+                   byte === 28 or
+                   byte === 29 or
+                   byte === 30 or
+                   byte === 31 or
+                   byte === 34 or
+                   byte === 92
+
+  defguardp is_ascii_plain(byte)
+            when byte === 32 or
+                   byte === 33 or
+                   byte === 35 or
+                   byte === 36 or
+                   byte === 37 or
+                   byte === 38 or
+                   byte === 39 or
+                   byte === 40 or
+                   byte === 41 or
+                   byte === 42 or
+                   byte === 43 or
+                   byte === 44 or
+                   byte === 45 or
+                   byte === 46 or
+                   byte === 47 or
+                   byte === 48 or
+                   byte === 49 or
+                   byte === 50 or
+                   byte === 51 or
+                   byte === 52 or
+                   byte === 53 or
+                   byte === 54 or
+                   byte === 55 or
+                   byte === 56 or
+                   byte === 57 or
+                   byte === 58 or
+                   byte === 59 or
+                   byte === 60 or
+                   byte === 61 or
+                   byte === 62 or
+                   byte === 63 or
+                   byte === 64 or
+                   byte === 65 or
+                   byte === 66 or
+                   byte === 67 or
+                   byte === 68 or
+                   byte === 69 or
+                   byte === 70 or
+                   byte === 71 or
+                   byte === 72 or
+                   byte === 73 or
+                   byte === 74 or
+                   byte === 75 or
+                   byte === 76 or
+                   byte === 77 or
+                   byte === 78 or
+                   byte === 79 or
+                   byte === 80 or
+                   byte === 81 or
+                   byte === 82 or
+                   byte === 83 or
+                   byte === 84 or
+                   byte === 85 or
+                   byte === 86 or
+                   byte === 87 or
+                   byte === 88 or
+                   byte === 89 or
+                   byte === 90 or
+                   byte === 91 or
+                   byte === 93 or
+                   byte === 94 or
+                   byte === 95 or
+                   byte === 96 or
+                   byte === 97 or
+                   byte === 98 or
+                   byte === 99 or
+                   byte === 100 or
+                   byte === 101 or
+                   byte === 102 or
+                   byte === 103 or
+                   byte === 104 or
+                   byte === 105 or
+                   byte === 106 or
+                   byte === 107 or
+                   byte === 108 or
+                   byte === 109 or
+                   byte === 110 or
+                   byte === 111 or
+                   byte === 112 or
+                   byte === 113 or
+                   byte === 114 or
+                   byte === 115 or
+                   byte === 116 or
+                   byte === 117 or
+                   byte === 118 or
+                   byte === 119 or
+                   byte === 120 or
+                   byte === 121 or
+                   byte === 122 or
+                   byte === 123 or
+                   byte === 124 or
+                   byte === 125 or
+                   byte === 126 or
+                   byte === 127
+
+  defguardp are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8)
+            when is_ascii_plain(b1) and
+                   is_ascii_plain(b2) and
+                   is_ascii_plain(b3) and
+                   is_ascii_plain(b4) and
+                   is_ascii_plain(b5) and
+                   is_ascii_plain(b6) and
+                   is_ascii_plain(b7) and
+                   is_ascii_plain(b8)
+
+  # erl: -define(UTF8_ACCEPT, 0).
+  defmacrop utf8_accept(), do: 0
+  # erl: -define(UTF8_REJECT, 12).
+  defmacrop utf8_reject(), do: 12
+
+  #
+  # Encoding implementation
+  #
+
+  @type encoder() :: (dynamic(), encoder() -> iodata())
+
+  @type encode_value() ::
+          integer()
+          | float()
+          | boolean()
+          | :null
+          | binary()
+          | atom()
+          | list(encode_value())
+          | encode_map(encode_value())
+
+  @type encode_map(value) :: %{optional(binary() | atom() | integer()) => value}
+
+  @spec encode(encode_value()) :: iodata()
+  def encode(term), do: encode(term, &do_encode/2)
+
+  @spec encode(dynamic(), encoder()) :: iodata()
+  def encode(term, encoder) when is_function(encoder, 2) do
+    encoder.(term, encoder)
+  end
+
+  @spec encode_value(dynamic(), encoder()) :: iodata()
+  def encode_value(value, encode) do
+    do_encode(value, encode)
+  end
+
+  @spec do_encode(dynamic(), encoder()) :: iodata()
+  defp do_encode(value, encode) when is_atom(value) do
+    encode_atom(value, encode)
+  end
+
+  defp do_encode(value, _encode) when is_binary(value) do
+    escape_binary(value)
+  end
+
+  defp do_encode(value, _encode) when is_integer(value) do
+    encode_integer(value)
+  end
+
+  defp do_encode(value, _encode) when is_float(value) do
+    encode_float(value)
+  end
+
+  defp do_encode(value, encode) when is_list(value) do
+    do_encode_list(value, encode)
+  end
+
+  defp do_encode(value, encode) when is_map(value) do
+    do_encode_map(value, encode)
+  end
+
+  defp do_encode(other, _encode) do
+    :erlang.error({:unsupported_type, other})
+  end
+
+  @spec encode_atom(atom(), encoder()) :: iodata()
+  def encode_atom(:null, _encode), do: <<"null">>
+  def encode_atom(true, _encode), do: <<"true">>
+  def encode_atom(false, _encode), do: <<"false">>
+  def encode_atom(other, encode), do: encode.(:erlang.atom_to_binary(other, :utf8), encode)
+
+  @spec encode_integer(integer()) :: iodata()
+  def encode_integer(integer), do: :erlang.integer_to_binary(integer)
+
+  @spec encode_float(float()) :: iodata()
+  def encode_float(float), do: :erlang.float_to_binary(float, [:short])
+
+  @spec encode_list(list(), encoder()) :: iodata()
+  def encode_list(list, encode) when is_list(list) do
+    do_encode_list(list, encode)
+  end
+
+  defp do_encode_list([], _encode) do
+    <<"[]">>
+  end
+
+  defp do_encode_list([first | rest], encode) when is_function(encode, 2) do
+    [?[, encode.(first, encode) | list_loop(rest, encode)]
+  end
+
+  # erl: list_loop([], _Encode) -> "]";
+  defp list_loop([], _encode), do: ~c"]"
+  defp list_loop([elem | rest], encode), do: [?,, encode.(elem, encode) | list_loop(rest, encode)]
+
+  @spec encode_map(encode_map(dynamic()), encoder()) :: iodata()
+  def encode_map(map, encode) when is_map(map) do
+    do_encode_map(map, encode)
+  end
+
+  # erl: encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || Key := Value <- Map]).
+  defp do_encode_map(map, encode) when is_function(encode, 2) do
+    encode_object(do_encode_map_lc(:maps.iterator(map), encode))
+  end
+
+  defp do_encode_map_lc(iter, encode) do
+    case :maps.next(iter) do
+      {key, value, iter1} ->
+        [[?,, key(key, encode), ?: | encode.(value, encode)] | do_encode_map_lc(iter1, encode)]
+
+      :none ->
+        []
+    end
+  end
+
+  @spec encode_map_checked(map(), encoder()) :: iodata()
+  def encode_map_checked(map, encode) do
+    do_encode_checked(:maps.to_list(map), encode)
+  end
+
+  @spec encode_key_value_list([{term(), term()}], encoder()) :: iodata()
+  # erl: encode_object([[$,, key(Key, Encode), $: | Encode(Value, Encode)] || {Key, Value} <- List]).
+  def encode_key_value_list(list, encode) when is_function(encode, 2) do
+    encode_object(encode_key_value_list_lc(list, encode))
+  end
+
+  defp encode_key_value_list_lc([{key, value} | t], encode) do
+    [[?,, key(key, encode), ?: | encode.(value, encode)] | encode_key_value_list_lc(t, encode)]
+  end
+
+  defp encode_key_value_list_lc([_ | t], encode), do: encode_key_value_list_lc(t, encode)
+  defp encode_key_value_list_lc([], _encode), do: []
+  defp encode_key_value_list_lc(other, _encode), do: :erlang.error({:bad_generator, other})
+
+  @spec encode_key_value_list_checked([{term(), term()}], encoder()) :: iodata()
+  def encode_key_value_list_checked(list, encode) do
+    do_encode_checked(list, encode)
+  end
+
+  defp do_encode_checked(list, encode) when is_function(encode, 2) do
+    encode_object(do_encode_checked(list, encode, %{}))
+  end
+
+  defp do_encode_checked([{key, value} | rest], encode, visited0) do
+    encoded_key = :erlang.iolist_to_binary(key(key, encode))
+
+    case :erlang.is_map_key(encoded_key, visited0) do
+      true ->
+        :erlang.error({:duplicate_key, key})
+
+      _ ->
+        # erl: Visited = Visited0#{EncodedKey => true},
+        visited = :maps.put(encoded_key, true, visited0)
+
+        [
+          [?,, encoded_key, ?: | encode.(value, encode)]
+          | do_encode_checked(rest, encode, visited)
+        ]
+    end
+  end
+
+  defp do_encode_checked([], _, _) do
+    []
+  end
+
+  # Dispatching any value through `Encode` could allow incorrect
+  # JSON to be emitted (with keys not being strings). To avoid this,
+  # the default encoder only supports binaries, atoms, and numbers.
+  # Customisation is possible by overriding how maps are encoded in general.
+  defp key(key, encode) when is_binary(key), do: encode.(key, encode)
+  defp key(key, encode) when is_atom(key), do: encode.(:erlang.atom_to_binary(key, :utf8), encode)
+  defp key(key, _encode) when is_integer(key), do: [?", encode_integer(key), ?"]
+  defp key(key, _encode) when is_float(key), do: [?", encode_float(key), ?"]
+
+  defp encode_object([]), do: <<"{}">>
+  defp encode_object([[_comma | entry] | rest]), do: [?{, entry, rest, ?}]
+
+  @spec encode_binary(binary()) :: iodata()
+  def encode_binary(bin) when is_binary(bin) do
+    escape_binary(bin)
+  end
+
+  @spec encode_binary_escape_all(binary()) :: iodata()
+  def encode_binary_escape_all(bin) when is_binary(bin) do
+    escape_all(bin)
+  end
+
+  defp escape_binary(bin), do: escape_binary_ascii(bin, [?"], bin, 0, 0)
+
+  defp escape_binary_ascii(binary, acc, orig, skip, len) do
+    case binary do
+      <<b1, b2, b3, b4, b5, b6, b7, b8, rest::binary>>
+      when are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8) ->
+        escape_binary_ascii(rest, acc, orig, skip, len + 8)
+
+      other ->
+        escape_binary(other, acc, orig, skip, len)
+    end
+  end
+
+  defp escape_binary(<<byte, rest::binary>>, acc, orig, skip, len) when is_ascii_plain(byte) do
+    # we got here because there were either less than 8 bytes left
+    # or we have an escape in the next 8 bytes,
+    # escape_binary_ascii would fail and dispatch here anyway
+    escape_binary(rest, acc, orig, skip, len + 1)
+  end
+
+  defp escape_binary(<<byte, rest::binary>>, acc, orig, skip0, len) when is_ascii_escape(byte) do
+    escape = escape(byte)
+    skip = skip0 + len + 1
+
+    case len do
+      0 ->
+        escape_binary_ascii(rest, [acc | escape], orig, skip, 0)
+
+      _ ->
+        part = :erlang.binary_part(orig, skip0, len)
+        escape_binary_ascii(rest, [acc, part | escape], orig, skip, 0)
+    end
+  end
+
+  defp escape_binary(<<byte, rest::binary>>, acc, orig, skip, len) do
+    case :erlang.element(byte - 127, utf8s0()) do
+      utf8_reject() ->
+        invalid_byte(orig, skip + len)
+
+      # all accept cases are ASCII, already covered above
+      state ->
+        escape_binary_utf8(rest, acc, orig, skip, len, state)
+    end
+  end
+
+  defp escape_binary(_, _acc, orig, 0, _len) do
+    [?", orig, ?"]
+  end
+
+  defp escape_binary(_, acc, _orig, _skip, 0) do
+    [acc, ?"]
+  end
+
+  defp escape_binary(_, acc, orig, skip, len) do
+    part = :erlang.binary_part(orig, skip, len)
+    [acc, part, ?"]
+  end
+
+  defp escape_binary_utf8(<<byte, rest::binary>>, acc, orig, skip, len, state0) do
+    type = :erlang.element(byte + 1, utf8t())
+
+    case :erlang.element(state0 + type, utf8s()) do
+      utf8_accept() -> escape_binary_ascii(rest, acc, orig, skip, len + 2)
+      utf8_reject() -> invalid_byte(orig, skip + len + 1)
+      state -> escape_binary_utf8(rest, acc, orig, skip, len + 1, state)
+    end
+  end
+
+  defp escape_binary_utf8(_, _acc, orig, skip, len, _state) do
+    unexpected_utf8(orig, skip + len + 1)
+  end
+
+  defp escape_all(bin), do: escape_all_ascii(bin, [?"], bin, 0, 0)
+
+  defp escape_all_ascii(binary, acc, orig, skip, len) do
+    case binary do
+      <<b1, b2, b3, b4, b5, b6, b7, b8, rest::binary>>
+      when are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8) ->
+        escape_all_ascii(rest, acc, orig, skip, len + 8)
+
+      other ->
+        escape_all(other, acc, orig, skip, len)
+    end
+  end
+
+  defp escape_all(<<byte, rest::binary>>, acc, orig, skip, len) when is_ascii_plain(byte) do
+    escape_all(rest, acc, orig, skip, len + 1)
+  end
+
+  defp escape_all(<<byte, rest::bits>>, acc, orig, skip, len) when is_ascii_escape(byte) do
+    escape = escape(byte)
+
+    case len do
+      0 ->
+        escape_all(rest, [acc | escape], orig, skip + 1, 0)
+
+      _ ->
+        part = :erlang.binary_part(orig, skip, len)
+        escape_all(rest, [acc, part | escape], orig, skip + len + 1, 0)
+    end
+  end
+
+  defp escape_all(<<char::utf8, rest::bits>>, acc, orig, skip, 0) do
+    escape_char(rest, acc, orig, skip, char)
+  end
+
+  defp escape_all(<<char::utf8, rest::bits>>, acc, orig, skip, len) do
+    part = :erlang.binary_part(orig, skip, len)
+    escape_char(rest, [acc | part], orig, skip + len, char)
+  end
+
+  defp escape_all(<<>>, _acc, orig, 0, _len) do
+    [?", orig, ?"]
+  end
+
+  defp escape_all(<<>>, acc, _orig, _skip, 0) do
+    [acc, ?"]
+  end
+
+  defp escape_all(<<>>, acc, orig, skip, len) do
+    part = :erlang.binary_part(orig, skip, len)
+    [acc, part, ?"]
+  end
+
+  defp escape_all(_other, _acc, orig, skip, len) do
+    invalid_byte(orig, skip + len)
+  end
+
+  # erl: Acc1 = [Acc, "\\u00" | integer_to_binary(Char, 16)],   (a "..." literal is a list in Erlang)
+  defp escape_char(<<rest::bits>>, acc, orig, skip, char) when char <= 0xFF do
+    acc1 = [acc, ~c"\\u00" | :erlang.integer_to_binary(char, 16)]
+    escape_all(rest, acc1, orig, skip + 2, 0)
+  end
+
+  defp escape_char(<<rest::bits>>, acc, orig, skip, char) when char <= 0x7FF do
+    acc1 = [acc, ~c"\\u0" | :erlang.integer_to_binary(char, 16)]
+    escape_all(rest, acc1, orig, skip + 2, 0)
+  end
+
+  defp escape_char(<<rest::bits>>, acc, orig, skip, char) when char <= 0xFFF do
+    acc1 = [acc, ~c"\\u0" | :erlang.integer_to_binary(char, 16)]
+    escape_all(rest, acc1, orig, skip + 3, 0)
+  end
+
+  defp escape_char(<<rest::bits>>, acc, orig, skip, char) when char <= 0xFFFF do
+    acc1 = [acc, ~c"\\u" | :erlang.integer_to_binary(char, 16)]
+    escape_all(rest, acc1, orig, skip + 3, 0)
+  end
+
+  defp escape_char(<<rest::bits>>, acc, orig, skip, char0) do
+    char = char0 - 0x10000
+    first = :erlang.integer_to_binary(bor(0x800, bsr(char, 10)), 16)
+    second = :erlang.integer_to_binary(bor(0xC00, band(char, 0x3FF)), 16)
+    acc1 = [acc, ~c"\\uD", first, ~c"\\uD" | second]
+    escape_all(rest, acc1, orig, skip + 4, 0)
+  end
+
+  # erl: escape($\x00) -> ... ($\xNN has no Elixir spelling: written 0xNN)
+  @spec escape(byte()) :: binary() | :no
+  defp escape(0x00), do: <<"\\u0000">>
+  defp escape(0x01), do: <<"\\u0001">>
+  defp escape(0x02), do: <<"\\u0002">>
+  defp escape(0x03), do: <<"\\u0003">>
+  defp escape(0x04), do: <<"\\u0004">>
+  defp escape(0x05), do: <<"\\u0005">>
+  defp escape(0x06), do: <<"\\u0006">>
+  defp escape(0x07), do: <<"\\u0007">>
+  defp escape(?\b), do: <<"\\b">>
+  defp escape(?\t), do: <<"\\t">>
+  defp escape(?\n), do: <<"\\n">>
+  defp escape(0x0B), do: <<"\\u000B">>
+  defp escape(?\f), do: <<"\\f">>
+  defp escape(?\r), do: <<"\\r">>
+  defp escape(0x0E), do: <<"\\u000E">>
+  defp escape(0x0F), do: <<"\\u000F">>
+  defp escape(0x10), do: <<"\\u0010">>
+  defp escape(0x11), do: <<"\\u0011">>
+  defp escape(0x12), do: <<"\\u0012">>
+  defp escape(0x13), do: <<"\\u0013">>
+  defp escape(0x14), do: <<"\\u0014">>
+  defp escape(0x15), do: <<"\\u0015">>
+  defp escape(0x16), do: <<"\\u0016">>
+  defp escape(0x17), do: <<"\\u0017">>
+  defp escape(0x18), do: <<"\\u0018">>
+  defp escape(0x19), do: <<"\\u0019">>
+  defp escape(0x1A), do: <<"\\u001A">>
+  defp escape(0x1B), do: <<"\\u001B">>
+  defp escape(0x1C), do: <<"\\u001C">>
+  defp escape(0x1D), do: <<"\\u001D">>
+  defp escape(0x1E), do: <<"\\u001E">>
+  defp escape(0x1F), do: <<"\\u001F">>
+  defp escape(?"), do: <<"\\\"">>
+  defp escape(?\\), do: <<"\\\\">>
+  defp escape(_), do: :no
+
+  # This is an adapted table from "Flexible and Economical UTF-8 Decoding" by Bjoern Hoehrmann.
+  # http://bjoern.hoehrmann.de/utf-8/decoder/dfa/
+
+  # Map character to character class
+  defp utf8t() do
+    {
+          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+          1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+          7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+          8,8,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+         10,3,3,3,3,3,3,3,3,3,3,3,3,4,3,3, 11,6,6,6,5,8,8,8,8,8,8,8,8,8,8,8
+    }
+  end
+
+  # Transition table mapping combination of state & class to next state
+  defp utf8s() do
+    {
+             12,24,36,60,96,84,12,12,12,48,72, 12,12,12,12,12,12,12,12,12,12,12,12,
+          12, 0,12,12,12,12,12, 0,12, 0,12,12, 12,24,12,12,12,12,12,24,12,24,12,12,
+          12,12,12,12,12,12,12,24,12,12,12,12, 12,24,12,12,12,12,12,12,12,24,12,12,
+          12,12,12,12,12,12,12,36,12,36,12,12, 12,36,12,12,12,12,12,36,12,36,12,12,
+          12,36,12,12,12,12,12,12,12,12,12,12
+    }
+  end
+
+  # Optimisation for 1st byte direct state lookup,
+  # we know starting state is 0 and ASCII bytes were already handled
+  defp utf8s0() do
+    {
+          12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,
+          12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,
+          12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,
+          12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,12,
+          12,12,24,24,24,24,24,24,24,24,24,24,24,24,24,24,
+          24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,
+          48,36,36,36,36,36,36,36,36,36,36,36,36,60,36,36,
+          72,84,84,84,96,12,12,12,12,12,12,12,12,12,12,12
+    }
+  end
+
+  defp invalid_byte(bin, skip) do
+    byte = :binary.at(bin, skip)
+    :erlang.error({:invalid_byte, byte}, :none, error_info(skip))
+  end
+
+  defp error_info(skip) do
+    [{:error_info, %{cause: %{position: skip}, module: :erl_stdlib_errors}}]
+  end
+
+  #
+  # Format implementation
+  #
+
+  @type formatter() :: (dynamic(), formatter(), map() -> iodata())
+
+  @spec format(encode_value()) :: iodata()
+  def format(term) do
+    enc = &format_value/3
+    format(term, enc, %{})
+  end
+
+  @spec format(encode_value(), map()) :: iodata()
+  @spec format(dynamic(), formatter()) :: iodata()
+  def format(term, options) when is_map(options) do
+    enc = &format_value/3
+    format(term, enc, options)
+  end
+
+  def format(term, encoder) when is_function(encoder, 3) do
+    format(term, encoder, %{})
+  end
+
+  @spec format(dynamic(), formatter(), map()) :: iodata()
+  def format(term, encoder, options) when is_function(encoder, 3) do
+    def = %{level: 0, col: 0, indent: 2, max: 100}
+    [encoder.(term, encoder, :maps.merge(def, options)), ?\n]
+  end
+
+  @spec format_value(dynamic(), formatter(), map()) :: iodata()
+  def format_value(atom, user_enc, state) when is_atom(atom) do
+    # erl: json:encode_atom(Atom, fun(Value, Enc) -> UserEnc(Value, Enc, State) end)
+    # Deviation: json.erl passes its own 2-arity wrapper to UserEnc as the
+    # Encoder, where formatter() requires a 3-arity fun; a formatter that calls
+    # its Encoder raises badarity on the BEAM. The wrapper hands UserEnc on, as
+    # json.erl does at format_key_value_list's enc_key_fun. Sent upstream as
+    # erlang/otp PR #12282.
+    OtpJSON.encode_atom(atom, fn value, _enc -> user_enc.(value, user_enc, state) end)
+  end
+
+  def format_value(bin, _enc, _state) when is_binary(bin) do
+    OtpJSON.encode_binary(bin)
+  end
+
+  def format_value(int, _enc, _state) when is_integer(int) do
+    OtpJSON.encode_integer(int)
+  end
+
+  def format_value(float, _enc, _state) when is_float(float) do
+    OtpJSON.encode_float(float)
+  end
+
+  def format_value(list, user_enc, state) when is_list(list) do
+    format_list(list, user_enc, state)
+  end
+
+  def format_value(map, user_enc, state) when is_map(map) do
+    # Ensure order of maps are the same in each export
+    ordered_kv = :maps.to_list(:maps.iterator(map, :ordered))
+    format_key_value_list(ordered_kv, user_enc, state)
+  end
+
+  def format_value(other, _enc, _state) do
+    :erlang.error({:unsupported_type, other})
+  end
+
+  defp format_list([head | rest], user_enc, %{level: level, col: col0, max: max} = state0) do
+    state1 = %{state0 | level: level + 1}
+    {len, indent_element} = indent(state1)
+
+    # erl: if is_list(Head); is_map(Head); is_binary(Head); Col0 > Max -> ...
+    cond do
+      # Indent list in lists / Indent maps / Indent Strings / Throw in the towel
+      is_list(head) or is_map(head) or is_binary(head) or col0 > max ->
+        state = %{state1 | col: len}
+        first = user_enc.(head, user_enc, state)
+        {_, ind_last} = indent(state0)
+
+        [
+          ?[,
+          indent_element,
+          first,
+          format_tail(rest, user_enc, state, indent_element, indent_element),
+          ind_last,
+          ?]
+        ]
+
+      true ->
+        first = user_enc.(head, user_enc, state1)
+        col = col0 + 1 + :erlang.iolist_size(first)
+
+        [
+          ?[,
+          first,
+          format_tail(rest, user_enc, %{state1 | col: col}, [], indent_element),
+          ?]
+        ]
+    end
+  end
+
+  defp format_list([], _, _) do
+    <<"[]">>
+  end
+
+  defp format_tail([head | tail], enc, %{max: max, col: col0} = state, [], indent_row)
+       when col0 < max do
+    enc_head = enc.(head, enc, state)
+    string = [?, | enc_head]
+    col = col0 + 1 + :erlang.iolist_size(enc_head)
+    [string | format_tail(tail, enc, %{state | col: col}, [], indent_row)]
+  end
+
+  defp format_tail([head | tail], enc, state, [], indent_row) do
+    enc_head = enc.(head, enc, state)
+    string = [[?, | indent_row] | enc_head]
+    col = :erlang.iolist_size(string) - 2
+    [string | format_tail(tail, enc, %{state | col: col}, [], indent_row)]
+  end
+
+  defp format_tail([head | tail], enc, state, indent_all, indent_row) do
+    # These are handling their own indentation, so optimize away size calculation
+    enc_head = enc.(head, enc, state)
+    string = [[?, | indent_all] | enc_head]
+    [string | format_tail(tail, enc, state, indent_all, indent_row)]
+  end
+
+  defp format_tail([], _, _, _, _) do
+    []
+  end
+
+  @spec format_key_value_list([{term(), term()}], formatter(), map()) :: iodata()
+  def format_key_value_list(kv_list, user_enc, %{level: level} = state) do
+    {_, indent} = indent(state)
+    next_state = %{state | level: level + 1}
+    {ki_size, key_indent} = indent(next_state)
+    enc_key_fun = fn key_val, _fun -> user_enc.(key_val, user_enc, next_state) end
+
+    entry_fun = fn {key, value} ->
+      enc_key = key(key, enc_key_fun)
+      val_state = %{next_state | col: ki_size + 2 + :erlang.iolist_size(enc_key)}
+      # erl: [$, , KeyIndent, EncKey, ": " | UserEnc(Value, UserEnc, ValState)]
+      [?,, key_indent, enc_key, ~c": " | user_enc.(value, user_enc, val_state)]
+    end
+
+    format_object(:lists.map(entry_fun, kv_list), indent)
+  end
+
+  @spec format_key_value_list_checked([{term(), term()}], formatter(), map()) :: iodata()
+  def format_key_value_list_checked(kv_list, user_enc, state) when is_function(user_enc, 3) do
+    {_, indent} = indent(state)
+    format_object(do_format_checked(kv_list, user_enc, state), indent)
+  end
+
+  defp do_format_checked([], _, _) do
+    []
+  end
+
+  defp do_format_checked(kv_list, user_enc, %{level: level} = state) do
+    next_state = %{state | level: level + 1}
+    {ki_size, key_indent} = indent(next_state)
+    enc_key_fun = fn key_val, _fun -> user_enc.(key_val, user_enc, next_state) end
+
+    enc_list_fun = fn {key, value}, {acc, visited0} ->
+      enc_key = :erlang.iolist_to_binary(key(key, enc_key_fun))
+
+      case :erlang.is_map_key(enc_key, visited0) do
+        true ->
+          :erlang.error({:duplicate_key, key})
+
+        false ->
+          # erl: Visited1 = Visited0#{EncKey => true},
+          visited1 = :maps.put(enc_key, true, visited0)
+          val_state = %{next_state | col: ki_size + 2 + :erlang.iolist_size(enc_key)}
+
+          enc_entry = [
+            ?,,
+            key_indent,
+            enc_key,
+            ~c": "
+            | user_enc.(value, user_enc, val_state)
+          ]
+
+          {[enc_entry | acc], visited1}
+      end
+    end
+
+    {enc_kv_list, _} = :lists.foldl(enc_list_fun, {[], %{}}, kv_list)
+    :lists.reverse(enc_kv_list)
+  end
+
+  defp format_object([], _), do: <<"{}">>
+
+  defp format_object([[_comma, key_indent | entry]], indent) do
+    [_key, _colon | value] = entry
+    {_, rest} = :string.take(value, [?\s, ?\n])
+    [cp | _] = :string.next_codepoint(rest)
+
+    # erl: if CP =:= ${ -> ...; CP =:= $[ -> ...; true -> ...
+    cond do
+      cp === ?{ ->
+        [?{, key_indent, entry, indent, ?}]
+
+      cp === ?[ ->
+        [?{, key_indent, entry, indent, ?}]
+
+      true ->
+        [~c"{ ", entry, ~c" }"]
+    end
+  end
+
+  defp format_object([[_comma, key_indent | entry] | rest], indent) do
+    [?{, key_indent, entry, rest, indent, ?}]
+  end
+
+  defp indent(%{level: level, indent: indent}) do
+    steps = level * indent
+    {steps, steps(steps)}
+  end
+
+  defp steps(0), do: "\n"
+  defp steps(2), do: "\n  "
+  defp steps(4), do: "\n    "
+  defp steps(6), do: "\n      "
+  defp steps(8), do: "\n        "
+  defp steps(10), do: "\n          "
+  defp steps(12), do: "\n            "
+  defp steps(14), do: "\n              "
+  defp steps(16), do: "\n                "
+  defp steps(18), do: "\n                  "
+  defp steps(20), do: "\n                    "
+  defp steps(n), do: [~c"\n", :lists.duplicate(n, ~c" ")]
+
+  #
+  # Decoding implementation
+  #
+
+  # erl: -define(ARRAY, array).
+  defmacrop array(), do: :array
+  # erl: -define(OBJECT, object).
+  defmacrop object(), do: :object
+
+  @type from_binary_fun() :: (binary() -> dynamic())
+  @type array_start_fun() :: (dynamic() -> dynamic())
+  @type array_push_fun() :: (dynamic(), dynamic() -> dynamic())
+  @type array_finish_fun() :: (dynamic(), dynamic() -> {dynamic(), dynamic()})
+  @type object_start_fun() :: (dynamic() -> dynamic())
+  @type object_push_fun() :: (dynamic(), dynamic(), dynamic() -> dynamic())
+  @type object_finish_fun() :: (dynamic(), dynamic() -> {dynamic(), dynamic()})
+
+  @type decoders() :: %{
+          optional(:array_start) => array_start_fun(),
+          optional(:array_push) => array_push_fun(),
+          optional(:array_finish) => array_finish_fun(),
+          optional(:object_start) => object_start_fun(),
+          optional(:object_push) => object_push_fun(),
+          optional(:object_finish) => object_finish_fun(),
+          optional(:float) => from_binary_fun(),
+          optional(:integer) => from_binary_fun(),
+          optional(:string) => from_binary_fun(),
+          optional(:null) => term()
+        }
+
+  # erl: -record(decode, {...}).  The Erlang record name `decode` would clash
+  # with decode/1,3 as a macro name, so the macros are `rec_decode` over the
+  # same `{:decode, ...}` tuple.
+  Record.defrecordp(:rec_decode, :decode,
+    array_start: :undefined,
+    array_push: :undefined,
+    array_finish: :undefined,
+    object_start: :undefined,
+    object_push: :undefined,
+    object_finish: :undefined,
+    float: &:erlang.binary_to_float/1,
+    integer: &:erlang.binary_to_integer/1,
+    string: :undefined,
+    null: :null
+  )
+
+  @typep acc() :: dynamic()
+  @typep stack() :: [:array | :object | binary() | acc()]
+  @typep decode() :: tuple()
+
+  @opaque continuation_state() :: tuple()
+
+  @type decode_value() ::
+          integer()
+          | float()
+          | boolean()
+          | :null
+          | binary()
+          | list(decode_value())
+          | %{optional(binary()) => decode_value()}
+
+  @spec decode(binary()) :: decode_value()
+  def decode(binary) when is_binary(binary) do
+    case value(binary, binary, 0, :ok, [], rec_decode()) do
+      {result, _acc, <<>>} ->
+        result
+
+      {_, _, rest} ->
+        invalid_byte(rest, 0)
+
+      {:continue, {_bin, _acc, [], _decode, {:number, number}}} ->
+        number
+
+      {:continue, {_, _, _, _, {:float_error, token, skip}}} ->
+        unexpected_sequence(token, skip)
+
+      {:continue, _} ->
+        :erlang.error(:unexpected_end)
+    end
+  end
+
+  @spec decode(binary(), dynamic(), decoders()) :: {dynamic(), dynamic(), binary()}
+  def decode(binary, acc0, decoders) when is_binary(binary) do
+    decode = :maps.fold(&parse_decoder/3, rec_decode(), decoders)
+
+    case value(binary, binary, 0, acc0, [], decode) do
+      {:continue, {_bin, acc, [], _decode, {:number, val}}} ->
+        {val, acc, <<>>}
+
+      {:continue, {_, _, _, _, {:float_error, token, skip}}} ->
+        unexpected_sequence(token, skip)
+
+      {:continue, _} ->
+        :erlang.error(:unexpected_end)
+
+      result ->
+        result
+    end
+  end
+
+  @spec decode_start(binary(), dynamic(), decoders()) ::
+          {dynamic(), dynamic(), binary()} | {:continue, continuation_state()}
+  def decode_start(binary, acc, decoders) when is_binary(binary) do
+    decode = :maps.fold(&parse_decoder/3, rec_decode(), decoders)
+    value(binary, binary, 0, acc, [], decode)
+  end
+
+  @spec decode_continue(binary() | :end_of_input, continuation_state()) ::
+          {dynamic(), dynamic(), binary()} | {:continue, continuation_state()}
+  def decode_continue(:end_of_input, state) do
+    case state do
+      {_, acc, [], _decode, {:number, val}} ->
+        {val, acc, <<>>}
+
+      {_, _, _, _, {:float_error, token, skip}} ->
+        unexpected_sequence(token, skip)
+
+      _ ->
+        :erlang.error(:unexpected_end)
+    end
+  end
+
+  def decode_continue(cont, {rest, acc, stack, rec_decode() = decode, func_data})
+      when is_binary(cont) do
+    binary = <<rest::binary, cont::binary>>
+
+    case func_data do
+      :value ->
+        value(binary, binary, 0, acc, stack, decode)
+
+      {:number, _} ->
+        value(binary, binary, 0, acc, stack, decode)
+
+      {:float_error, _token, _skip} ->
+        value(binary, binary, 0, acc, stack, decode)
+
+      {:array_push, val} ->
+        array_push(binary, binary, 0, acc, stack, decode, val)
+
+      {:object_value, key} ->
+        object_value(binary, binary, 0, acc, stack, decode, key)
+
+      {:object_push, value, key} ->
+        object_push(binary, binary, 0, acc, stack, decode, value, key)
+
+      :object_key ->
+        object_key(binary, binary, 0, acc, stack, decode)
+    end
+  end
+
+  defp parse_decoder(:array_start, fun, decode) when is_function(fun, 1) do
+    rec_decode(decode, array_start: fun)
+  end
+
+  defp parse_decoder(:array_push, fun, decode) when is_function(fun, 2) do
+    rec_decode(decode, array_push: fun)
+  end
+
+  defp parse_decoder(:array_finish, fun, decode) when is_function(fun, 2) do
+    rec_decode(decode, array_finish: fun)
+  end
+
+  defp parse_decoder(:object_start, fun, decode) when is_function(fun, 1) do
+    rec_decode(decode, object_start: fun)
+  end
+
+  defp parse_decoder(:object_push, fun, decode) when is_function(fun, 3) do
+    rec_decode(decode, object_push: fun)
+  end
+
+  defp parse_decoder(:object_finish, fun, decode) when is_function(fun, 2) do
+    rec_decode(decode, object_finish: fun)
+  end
+
+  defp parse_decoder(:float, fun, decode) when is_function(fun, 1) do
+    rec_decode(decode, float: fun)
+  end
+
+  defp parse_decoder(:integer, fun, decode) when is_function(fun, 1) do
+    rec_decode(decode, integer: fun)
+  end
+
+  defp parse_decoder(:string, fun, decode) when is_function(fun, 1) do
+    rec_decode(decode, string: fun)
+  end
+
+  defp parse_decoder(:null, null, decode) do
+    rec_decode(decode, null: null)
+  end
+
+  defp value(<<byte, rest::bits>>, original, skip, acc, stack, decode) when is_ws(byte) do
+    value(rest, original, skip + 1, acc, stack, decode)
+  end
+
+  defp value(<<?0, rest::bits>>, original, skip, acc, stack, decode) do
+    number_zero(rest, original, skip, acc, stack, decode, 1)
+  end
+
+  defp value(<<byte, rest::bits>>, original, skip, acc, stack, decode) when is_1_to_9(byte) do
+    number(rest, original, skip, acc, stack, decode, 1)
+  end
+
+  defp value(<<?-, rest::bits>>, original, skip, acc, stack, decode) do
+    number_minus(rest, original, skip, acc, stack, decode)
+  end
+
+  # erl: true(Rest, Original, Skip, Acc, Stack, Decode);   (`true(...)` is not a call in Elixir)
+  defp value(<<?t, rest::bits>>, original, skip, acc, stack, decode) do
+    unquote(:true)(rest, original, skip, acc, stack, decode)
+  end
+
+  # erl: false(Rest, Original, Skip, Acc, Stack, Decode);
+  defp value(<<?f, rest::bits>>, original, skip, acc, stack, decode) do
+    unquote(:false)(rest, original, skip, acc, stack, decode)
+  end
+
+  defp value(<<?n, rest::bits>>, original, skip, acc, stack, decode) do
+    null(rest, original, skip, acc, stack, decode)
+  end
+
+  defp value(<<?", rest::bits>>, original, skip, acc, stack, decode) do
+    string(rest, original, skip + 1, acc, stack, decode)
+  end
+
+  defp value(<<?[, rest::bits>>, original, skip, acc, stack, decode) do
+    array_start(rest, original, skip, acc, stack, decode, 1)
+  end
+
+  defp value(<<?{, rest::bits>>, original, skip, acc, stack, decode) do
+    object_start(rest, original, skip, acc, stack, decode, 1)
+  end
+
+  defp value(<<byte, _::bits>>, original, skip, _acc, _stack, _decode) when is_ascii_plain(byte) do
+    # this clause is effecively the same as the last one, but necessary to
+    # force compiler to emit a jump table dispatch, rather than binary search
+    invalid_byte(original, skip)
+  end
+
+  defp value(_, original, skip, acc, stack, decode) do
+    unexpected(original, skip, acc, stack, decode, 0, 0, :value)
+  end
+
+  # erl: true(<<"rue", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+  defp unquote(:true)(<<"rue", rest::bits>>, original, skip, acc, stack, decode) do
+    continue(rest, original, skip + 4, acc, stack, decode, true)
+  end
+
+  defp unquote(:true)(_rest, original, skip, acc, stack, decode) do
+    unexpected(original, skip, acc, stack, decode, 1, 3, :value)
+  end
+
+  # erl: false(<<"alse", Rest/bits>>, Original, Skip, Acc, Stack, Decode) ->
+  defp unquote(:false)(<<"alse", rest::bits>>, original, skip, acc, stack, decode) do
+    continue(rest, original, skip + 5, acc, stack, decode, false)
+  end
+
+  defp unquote(:false)(_rest, original, skip, acc, stack, decode) do
+    unexpected(original, skip, acc, stack, decode, 1, 4, :value)
+  end
+
+  defp null(<<"ull", rest::bits>>, original, skip, acc, stack, decode) do
+    continue(rest, original, skip + 4, acc, stack, decode, rec_decode(decode, :null))
+  end
+
+  defp null(_rest, original, skip, acc, stack, decode) do
+    unexpected(original, skip, acc, stack, decode, 1, 3, :value)
+  end
+
+  defp number_minus(<<?0, rest::bits>>, original, skip, acc, stack, decode) do
+    number_zero(rest, original, skip, acc, stack, decode, 2)
+  end
+
+  defp number_minus(<<num, rest::bits>>, original, skip, acc, stack, decode) when is_1_to_9(num) do
+    number(rest, original, skip, acc, stack, decode, 2)
+  end
+
+  defp number_minus(_rest, original, skip, acc, stack, decode) do
+    unexpected(original, skip, acc, stack, decode, 1, 0, :value)
+  end
+
+  defp number_zero(<<?., rest::bits>>, original, skip, acc, stack, decode, len) do
+    number_frac(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  # erl: number_zero(<<E, Rest/bits>>, ...) when E =:= $E; E =:= $e ->
+  defp number_zero(<<e, rest::bits>>, original, skip, acc, stack, decode, len)
+       when e === ?E or e === ?e do
+    number_exp_copy(rest, original, skip, acc, stack, decode, len + 1, <<"0">>)
+  end
+
+  defp number_zero(<<>>, original, skip, acc, stack, decode, len) do
+    value = rec_decode(decode, :integer).(<<"0">>)
+    unexpected(original, skip, acc, stack, decode, len, 0, {:number, value})
+  end
+
+  defp number_zero(rest, original, skip, acc, stack, decode, len) do
+    value = rec_decode(decode, :integer).(<<"0">>)
+    continue(rest, original, skip + len, acc, stack, decode, value)
+  end
+
+  defp number(<<num, rest::bits>>, original, skip, acc, stack, decode, len) when is_0_to_9(num) do
+    number(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp number(<<?., rest::bits>>, original, skip, acc, stack, decode, len) do
+    number_frac(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  # erl: number(<<E, Rest/bits>>, ...) when E =:= $E; E =:= $e ->
+  defp number(<<e, rest::bits>>, original, skip, acc, stack, decode, len)
+       when e === ?E or e === ?e do
+    prefix = :erlang.binary_part(original, skip, len)
+    number_exp_copy(rest, original, skip, acc, stack, decode, len + 1, prefix)
+  end
+
+  defp number(<<>>, original, skip, acc, stack, decode, len) do
+    int = rec_decode(decode, :integer).(:erlang.binary_part(original, skip, len))
+    unexpected(original, skip, acc, stack, decode, len, 0, {:number, int})
+  end
+
+  defp number(rest, original, skip, acc, stack, decode, len) do
+    int = rec_decode(decode, :integer).(:erlang.binary_part(original, skip, len))
+    continue(rest, original, skip + len, acc, stack, decode, int)
+  end
+
+  defp number_frac(<<byte, rest::bits>>, original, skip, acc, stack, decode, len)
+       when is_0_to_9(byte) do
+    number_frac_cont(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp number_frac(_, original, skip, acc, stack, decode, len) do
+    unexpected(original, skip, acc, stack, decode, len, 0, :value)
+  end
+
+  defp number_frac_cont(<<byte, rest::bits>>, original, skip, acc, stack, decode, len)
+       when is_0_to_9(byte) do
+    number_frac_cont(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  # erl: number_frac_cont(<<E, Rest/bits>>, ...) when E =:= $e; E =:= $E ->
+  defp number_frac_cont(<<e, rest::bits>>, original, skip, acc, stack, decode, len)
+       when e === ?e or e === ?E do
+    number_exp(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp number_frac_cont(rest, original, skip, acc, stack, decode, len) do
+    token = :erlang.binary_part(original, skip, len)
+    float_decode(rest, original, skip, acc, stack, decode, len, token)
+  end
+
+  # erl: try (Decode#decode.float)(Token) of Float -> ... catch _:_ -> ... end
+  defp float_decode(<<>>, original, skip, acc, stack, decode, len, token) do
+    try do
+      rec_decode(decode, :float).(token)
+    else
+      float -> unexpected(original, skip, acc, stack, decode, len, 0, {:number, float})
+    catch
+      _, _ ->
+        unexpected(original, skip, acc, stack, decode, len, 0, {:float_error, token, skip})
+    end
+  end
+
+  defp float_decode(<<rest::bits>>, original, skip, acc, stack, decode, len, token) do
+    try do
+      rec_decode(decode, :float).(token)
+    else
+      float ->
+        continue(rest, original, skip + len, acc, stack, decode, float)
+    catch
+      _, _ -> unexpected_sequence(token, skip)
+    end
+  end
+
+  defp number_exp(<<byte, rest::bits>>, original, skip, acc, stack, decode, len)
+       when is_0_to_9(byte) do
+    number_exp_cont(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  # erl: number_exp(<<Sign, Rest/bits>>, ...) when Sign =:= $+; Sign =:= $- ->
+  defp number_exp(<<sign, rest::bits>>, original, skip, acc, stack, decode, len)
+       when sign === ?+ or sign === ?- do
+    number_exp_sign(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp number_exp(_, original, skip, acc, stack, decode, len) do
+    unexpected(original, skip, acc, stack, decode, len, 0, :value)
+  end
+
+  defp number_exp_sign(<<byte, rest::bits>>, original, skip, acc, stack, decode, len)
+       when is_0_to_9(byte) do
+    number_exp_cont(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp number_exp_sign(_, original, skip, acc, stack, decode, len) do
+    unexpected(original, skip, acc, stack, decode, len, 0, :value)
+  end
+
+  defp number_exp_cont(<<byte, rest::bits>>, original, skip, acc, stack, decode, len)
+       when is_0_to_9(byte) do
+    number_exp_cont(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp number_exp_cont(rest, original, skip, acc, stack, decode, len) do
+    token = :erlang.binary_part(original, skip, len)
+    float_decode(rest, original, skip, acc, stack, decode, len, token)
+  end
+
+  defp number_exp_copy(<<byte, rest::bits>>, original, skip, acc, stack, decode, len, prefix)
+       when is_0_to_9(byte) do
+    number_exp_cont(rest, original, skip, acc, stack, decode, len, prefix, 1)
+  end
+
+  # erl: number_exp_copy(<<Sign, Rest/bits>>, ...) when Sign =:= $+; Sign =:= $- ->
+  defp number_exp_copy(<<sign, rest::bits>>, original, skip, acc, stack, decode, len, prefix)
+       when sign === ?+ or sign === ?- do
+    number_exp_sign(rest, original, skip, acc, stack, decode, len, prefix, 1)
+  end
+
+  defp number_exp_copy(_, original, skip, acc, stack, decode, len, _prefix) do
+    unexpected(original, skip, acc, stack, decode, len, 0, :value)
+  end
+
+  defp number_exp_sign(<<byte, rest::bits>>, original, skip, acc, stack, decode, len, prefix, exp_len)
+       when is_0_to_9(byte) do
+    number_exp_cont(rest, original, skip, acc, stack, decode, len, prefix, exp_len + 1)
+  end
+
+  defp number_exp_sign(_, original, skip, acc, stack, decode, len, _prefix, exp_len) do
+    unexpected(original, skip, acc, stack, decode, len + exp_len, 0, :value)
+  end
+
+  defp number_exp_cont(<<byte, rest::bits>>, original, skip, acc, stack, decode, len, prefix, exp_len)
+       when is_0_to_9(byte) do
+    number_exp_cont(rest, original, skip, acc, stack, decode, len, prefix, exp_len + 1)
+  end
+
+  defp number_exp_cont(rest, original, skip, acc, stack, decode, len, prefix, exp_len) do
+    suffix = :erlang.binary_part(original, skip + len, exp_len)
+    token = <<prefix::binary, ".0e", suffix::binary>>
+    float_decode(rest, original, skip, acc, stack, decode, len + exp_len, token)
+  end
+
+  defp string(binary, original, skip, acc, stack, decode) do
+    string_ascii(binary, original, skip, acc, stack, decode, 0)
+  end
+
+  defp string_ascii(binary, original, skip, acc, stack, decode, len) do
+    case binary do
+      <<b1, b2, b3, b4, b5, b6, b7, b8, rest::binary>>
+      when are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8) ->
+        string_ascii(rest, original, skip, acc, stack, decode, len + 8)
+
+      other ->
+        string(other, original, skip, acc, stack, decode, len)
+    end
+  end
+
+  @spec string(binary(), binary(), integer(), acc(), stack(), decode(), integer()) :: dynamic()
+  defp string(<<byte, rest::bits>>, orig, skip, acc, stack, decode, len) when is_ascii_plain(byte) do
+    string(rest, orig, skip, acc, stack, decode, len + 1)
+  end
+
+  defp string(<<?\\, rest::bits>>, orig, skip, acc, stack, decode, len) do
+    part = :erlang.binary_part(orig, skip, len)
+    sacc = <<>>
+    unescape(rest, orig, skip, acc, stack, decode, skip - 1, len, <<sacc::binary, part::binary>>)
+  end
+
+  defp string(<<?", rest::bits>>, orig, skip0, acc, stack, decode, len) do
+    value = :erlang.binary_part(orig, skip0, len)
+    skip = skip0 + len + 1
+
+    case rec_decode(decode, :string) do
+      :undefined -> continue(rest, orig, skip, acc, stack, decode, value)
+      fun -> continue(rest, orig, skip, acc, stack, decode, fun.(value))
+    end
+  end
+
+  defp string(<<byte, _::bits>>, orig, skip, _acc, _stack, _decode, len) when is_ascii_escape(byte) do
+    invalid_byte(orig, skip + len)
+  end
+
+  defp string(<<byte, rest::bytes>>, orig, skip, acc, stack, decode, len) do
+    case :erlang.element(byte - 127, utf8s0()) do
+      utf8_reject() ->
+        invalid_byte(orig, skip + len)
+
+      # all accept cases are ASCII, already covered above
+      state ->
+        string_utf8(rest, orig, skip, acc, stack, decode, len, state)
+    end
+  end
+
+  defp string(_, orig, skip, acc, stack, decode, len) do
+    unexpected(orig, skip - 1, acc, stack, decode, len + 1, 0, :value)
+  end
+
+  defp string_utf8(<<byte, rest::binary>>, orig, skip, acc, stack, decode, len, state0) do
+    type = :erlang.element(byte + 1, utf8t())
+
+    case :erlang.element(state0 + type, utf8s()) do
+      utf8_accept() -> string_ascii(rest, orig, skip, acc, stack, decode, len + 2)
+      utf8_reject() -> invalid_byte(orig, skip + len + 1)
+      state -> string_utf8(rest, orig, skip, acc, stack, decode, len + 1, state)
+    end
+  end
+
+  defp string_utf8(_, orig, skip, acc, stack, decode, len, _state0) do
+    unexpected(orig, skip - 1, acc, stack, decode, len + 2, 0, :value)
+  end
+
+  defp string_ascii(binary, original, skip, acc, stack, decode, start, len, sacc) do
+    case binary do
+      <<b1, b2, b3, b4, b5, b6, b7, b8, rest::binary>>
+      when are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8) ->
+        string_ascii(rest, original, skip, acc, stack, decode, start, len + 8, sacc)
+
+      other ->
+        string(other, original, skip, acc, stack, decode, start, len, sacc)
+    end
+  end
+
+  @spec string(binary(), binary(), integer(), acc(), stack(), decode(), integer(), integer(), binary()) ::
+          dynamic()
+  defp string(<<byte, rest::bits>>, orig, skip, acc, stack, decode, start, len, sacc)
+       when is_ascii_plain(byte) do
+    string(rest, orig, skip, acc, stack, decode, start, len + 1, sacc)
+  end
+
+  defp string(<<?\\, rest::bits>>, orig, skip, acc, stack, decode, start, len, sacc) do
+    part = :erlang.binary_part(orig, skip, len)
+    unescape(rest, orig, skip, acc, stack, decode, start, len, <<sacc::binary, part::binary>>)
+  end
+
+  defp string(<<?", rest::bits>>, orig, skip0, acc, stack, decode, _start, len, sacc) do
+    part = :erlang.binary_part(orig, skip0, len)
+    value = <<sacc::binary, part::binary>>
+    skip = skip0 + len + 1
+
+    case rec_decode(decode, :string) do
+      :undefined -> continue(rest, orig, skip, acc, stack, decode, value)
+      fun -> continue(rest, orig, skip, acc, stack, decode, fun.(value))
+    end
+  end
+
+  defp string(<<byte, _::bits>>, orig, skip, _acc, _stack, _decode, _start, len, _sacc)
+       when is_ascii_escape(byte) do
+    invalid_byte(orig, skip + len)
+  end
+
+  defp string(<<byte, rest::bytes>>, orig, skip, acc, stack, decode, start, len, sacc) do
+    case :erlang.element(byte - 127, utf8s0()) do
+      utf8_reject() ->
+        invalid_byte(orig, skip + len)
+
+      # all accept cases are ASCII, already covered above
+      state ->
+        string_utf8(rest, orig, skip, acc, stack, decode, start, len, sacc, state)
+    end
+  end
+
+  defp string(_, orig, skip, acc, stack, decode, start, len, _sacc) do
+    extra = skip - start
+    unexpected(orig, start, acc, stack, decode, len + extra, 0, :value)
+  end
+
+  defp string_utf8(<<byte, rest::binary>>, orig, skip, acc, stack, decode, start, len, sacc, state0) do
+    type = :erlang.element(byte + 1, utf8t())
+
+    case :erlang.element(state0 + type, utf8s()) do
+      utf8_accept() -> string_ascii(rest, orig, skip, acc, stack, decode, start, len + 2, sacc)
+      utf8_reject() -> invalid_byte(orig, skip + len + 1)
+      state -> string_utf8(rest, orig, skip, acc, stack, decode, start, len + 1, sacc, state)
+    end
+  end
+
+  defp string_utf8(_, orig, skip, acc, stack, decode, start, len, _sacc, _state0) do
+    extra = skip - start
+    unexpected(orig, start, acc, stack, decode, len + 1 + extra, 0, :value)
+  end
+
+  defp unescape(<<byte, rest::bits>>, original, skip, acc, stack, decode, start, len, sacc) do
+    val =
+      case byte do
+        ?b -> ?\b
+        ?f -> ?\f
+        ?n -> ?\n
+        ?r -> ?\r
+        ?t -> ?\t
+        ?" -> ?"
+        ?\\ -> ?\\
+        ?/ -> ?/
+        ?u -> :unicode
+        _ -> :error
+      end
+
+    case val do
+      :unicode ->
+        unescapeu(rest, original, skip, acc, stack, decode, start, len, sacc)
+
+      :error ->
+        invalid_byte(original, skip + len + 1)
+
+      int ->
+        string_ascii(rest, original, skip + len + 2, acc, stack, decode, start, 0, <<sacc::binary, int>>)
+    end
+  end
+
+  defp unescape(_, original, skip, acc, stack, decode, start, len, _sacc) do
+    extra = skip - start
+    unexpected(original, start, acc, stack, decode, len + 1 + extra, 0, :value)
+  end
+
+  # erl: try hex_to_int(E1, E2, E3, E4) of CP when ... -> ...; CP -> try ... of ... catch ... end catch ... end
+  defp unescapeu(<<e1, e2, e3, e4, rest::bits>>, original, skip, acc, stack, decode, start, len, sacc) do
+    try do
+      hex_to_int(e1, e2, e3, e4)
+    else
+      cp when cp >= 0xD800 and cp <= 0xDBFF ->
+        unescape_surrogate(rest, original, skip, acc, stack, decode, start, len, sacc, cp)
+
+      cp ->
+        try do
+          <<sacc::binary, cp::utf8>>
+        else
+          sacc1 ->
+            string_ascii(rest, original, skip + len + 6, acc, stack, decode, start, 0, sacc1)
+        catch
+          _, _ -> unexpected_sequence(:erlang.binary_part(original, skip + len, 6), skip + len)
+        end
+    catch
+      _, _ ->
+        unexpected_sequence(:erlang.binary_part(original, skip + len, 6), skip + len)
+    end
+  end
+
+  defp unescapeu(_rest, original, skip, acc, stack, decode, start, len, _sacc) do
+    extra = skip - start
+    unexpected(original, start, acc, stack, decode, len + 2 + extra, 4, :value)
+  end
+
+  defp unescape_surrogate(
+         <<"\\u", e1, e2, e3, e4, rest::bits>>,
+         original,
+         skip,
+         acc,
+         stack,
+         decode,
+         start,
+         len,
+         sacc,
+         hi
+       ) do
+    try do
+      hex_to_int(e1, e2, e3, e4)
+    else
+      lo when lo >= 0xDC00 and lo <= 0xDFFF ->
+        cp = 0x10000 + bsl(band(hi, 0x3FF), 10) + band(lo, 0x3FF)
+
+        try do
+          <<sacc::binary, cp::utf8>>
+        else
+          sacc1 ->
+            string_ascii(rest, original, skip + len + 12, acc, stack, decode, start, 0, sacc1)
+        catch
+          _, _ -> unexpected_sequence(:erlang.binary_part(original, skip + len, 12), skip + len)
+        end
+
+      _ ->
+        unexpected_sequence(:erlang.binary_part(original, skip + len, 12), skip + len)
+    catch
+      _, _ -> unexpected_sequence(:erlang.binary_part(original, skip + len, 12), skip + len)
+    end
+  end
+
+  defp unescape_surrogate(_rest, original, skip, acc, stack, decode, start, len, _sacc, _hi) do
+    extra = skip - start
+    unexpected(original, start, acc, stack, decode, len + 6 + extra, 5, :value)
+  end
+
+  # erl: -define(hex_digit(C), element(C - $0 + 1, {...})).
+  # this is a macro instead of an inlined function - compiler refused to inline
+  defmacrop hex_digit(c) do
+    quote do
+      :erlang.element(unquote(c) - ?0 + 1, {
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, :n, :n, :n, :n, :n,
+        :n, :n, 10, 11, 12, 13, 14, 15, :n, :n, :n, :n, :n, :n, :n,
+        :n, :n, :n, :n, :n, :n, :n, :n, :n, :n, :n, :n, :n, :n, :n,
+        :n, :n, :n, :n, 10, 11, 12, 13, 14, 15
+      })
+    end
+  end
+
+  @spec hex_to_int(byte(), byte(), byte(), byte()) :: integer()
+  defp hex_to_int(h1, h2, h3, h4) do
+    hex_digit(h4) + 16 * (hex_digit(h3) + 16 * (hex_digit(h2) + 16 * hex_digit(h1)))
+  end
+
+  defp array_start(<<byte, rest::bits>>, original, skip, acc, stack, decode, len) when is_ws(byte) do
+    array_start(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp array_start(<<"]", rest::bits>>, original, skip, acc, stack, decode, len) do
+    {value, new_acc} =
+      case {rec_decode(decode, :array_start), rec_decode(decode, :array_finish)} do
+        {:undefined, :undefined} -> {[], acc}
+        {start, :undefined} -> {:lists.reverse(start.(acc)), acc}
+        {:undefined, finish} -> finish.([], acc)
+        {start, finish} -> finish.(start.(acc), acc)
+      end
+
+    continue(rest, original, skip + len + 1, new_acc, stack, decode, value)
+  end
+
+  defp array_start(<<>>, original, skip, acc, stack, decode, len) do
+    # Handles empty array [] in continuation mode
+    unexpected(original, skip, acc, stack, decode, len, 0, :value)
+  end
+
+  defp array_start(rest, original, skip, old_acc, stack, decode, len) do
+    case rec_decode(decode, :array_start) do
+      :undefined ->
+        value(rest, original, skip + len, [], [array(), old_acc | stack], decode)
+
+      fun ->
+        value(rest, original, skip + len, fun.(old_acc), [array(), old_acc | stack], decode)
+    end
+  end
+
+  defp array_push(<<byte, rest::bits>>, original, skip, acc, stack, decode, value) when is_ws(byte) do
+    array_push(rest, original, skip + 1, acc, stack, decode, value)
+  end
+
+  defp array_push(<<"]", rest::bits>>, original, skip, acc0, stack0, decode, value) do
+    acc =
+      case rec_decode(decode, :array_push) do
+        :undefined -> [value | acc0]
+        push -> push.(value, acc0)
+      end
+
+    [_, old_acc | stack] = stack0
+
+    {array_value, new_acc} =
+      case rec_decode(decode, :array_finish) do
+        :undefined -> {:lists.reverse(acc), old_acc}
+        finish -> finish.(acc, old_acc)
+      end
+
+    continue(rest, original, skip + 1, new_acc, stack, decode, array_value)
+  end
+
+  defp array_push(<<?,, rest::bits>>, original, skip0, acc, stack, decode, value) do
+    skip = skip0 + 1
+
+    case rec_decode(decode, :array_push) do
+      :undefined -> value(rest, original, skip, [value | acc], stack, decode)
+      fun -> value(rest, original, skip, fun.(value, acc), stack, decode)
+    end
+  end
+
+  # erl: unexpected(..., {?FUNCTION_NAME, Value})
+  defp array_push(_, original, skip, acc, stack, decode, value) do
+    unexpected(original, skip, acc, stack, decode, 0, 0, {:array_push, value})
+  end
+
+  defp object_start(<<byte, rest::bits>>, original, skip, acc, stack, decode, len) when is_ws(byte) do
+    object_start(rest, original, skip, acc, stack, decode, len + 1)
+  end
+
+  defp object_start(<<"}", rest::bits>>, original, skip, acc, stack, decode, len) do
+    {value, new_acc} =
+      case {rec_decode(decode, :object_start), rec_decode(decode, :object_finish)} do
+        {:undefined, :undefined} -> {%{}, acc}
+        {start, :undefined} -> {:maps.from_list(start.(acc)), acc}
+        {:undefined, finish} -> finish.([], acc)
+        {start, finish} -> finish.(start.(acc), acc)
+      end
+
+    continue(rest, original, skip + len + 1, new_acc, stack, decode, value)
+  end
+
+  defp object_start(<<?", rest::bits>>, original, skip0, old_acc, stack0, decode, len) do
+    stack = [object(), old_acc | stack0]
+    skip = skip0 + len + 1
+
+    case rec_decode(decode, :object_start) do
+      :undefined ->
+        string(rest, original, skip, [], stack, decode)
+
+      fun ->
+        acc = fun.(old_acc)
+        string(rest, original, skip, acc, stack, decode)
+    end
+  end
+
+  defp object_start(_, original, skip, acc, stack, decode, len) do
+    unexpected(original, skip, acc, stack, decode, len, 0, :value)
+  end
+
+  defp object_value(<<byte, rest::bits>>, original, skip, acc, stack, decode, key) when is_ws(byte) do
+    object_value(rest, original, skip + 1, acc, stack, decode, key)
+  end
+
+  defp object_value(<<?:, rest::bits>>, original, skip, acc, stack, decode, key) do
+    value(rest, original, skip + 1, acc, [key | stack], decode)
+  end
+
+  # erl: unexpected(..., {?FUNCTION_NAME, Key})
+  defp object_value(_, original, skip, acc, stack, decode, key) do
+    unexpected(original, skip, acc, stack, decode, 0, 0, {:object_value, key})
+  end
+
+  defp object_push(<<byte, rest::bits>>, original, skip, acc, stack, decode, value, key)
+       when is_ws(byte) do
+    object_push(rest, original, skip + 1, acc, stack, decode, value, key)
+  end
+
+  defp object_push(<<"}", rest::bits>>, original, skip, acc0, stack0, decode, value, key) do
+    acc =
+      case rec_decode(decode, :object_push) do
+        :undefined -> [{key, value} | acc0]
+        fun -> fun.(key, value, acc0)
+      end
+
+    [_, old_acc | stack] = stack0
+
+    {object_value, new_acc} =
+      case rec_decode(decode, :object_finish) do
+        :undefined -> {:maps.from_list(acc), old_acc}
+        finish -> finish.(acc, old_acc)
+      end
+
+    continue(rest, original, skip + 1, new_acc, stack, decode, object_value)
+  end
+
+  defp object_push(<<?,, rest::bits>>, original, skip, acc0, stack, decode, value, key) do
+    case rec_decode(decode, :object_push) do
+      :undefined -> object_key(rest, original, skip + 1, [{key, value} | acc0], stack, decode)
+      fun -> object_key(rest, original, skip + 1, fun.(key, value, acc0), stack, decode)
+    end
+  end
+
+  # erl: unexpected(..., {?FUNCTION_NAME, Value, Key})
+  defp object_push(_, original, skip, acc, stack, decode, value, key) do
+    unexpected(original, skip, acc, stack, decode, 0, 0, {:object_push, value, key})
+  end
+
+  defp object_key(<<byte, rest::bits>>, original, skip, acc, stack, decode) when is_ws(byte) do
+    object_key(rest, original, skip + 1, acc, stack, decode)
+  end
+
+  defp object_key(<<?", rest::bits>>, original, skip, acc, stack, decode) do
+    string(rest, original, skip + 1, acc, stack, decode)
+  end
+
+  # erl: unexpected(..., ?FUNCTION_NAME)
+  defp object_key(_, original, skip, acc, stack, decode) do
+    unexpected(original, skip, acc, stack, decode, 0, 0, :object_key)
+  end
+
+  defp continue(<<rest::bits>>, original, skip, acc, stack0, decode, value) do
+    case stack0 do
+      [] -> terminate(rest, original, skip, acc, value)
+      [array() | _] -> array_push(rest, original, skip, acc, stack0, decode, value)
+      [object() | _] -> object_value(rest, original, skip, acc, stack0, decode, value)
+      [key | stack] -> object_push(rest, original, skip, acc, stack, decode, value, key)
+    end
+  end
+
+  defp terminate(<<byte, rest::bits>>, original, skip, acc, value) when is_ws(byte) do
+    terminate(rest, original, skip, acc, value)
+  end
+
+  defp terminate(<<>>, _, _skip, acc, value) do
+    {value, acc, <<>>}
+  end
+
+  defp terminate(<<_::bits>>, original, skip, acc, value) do
+    <<_::binary-size(skip), rest::binary>> = original
+    {value, acc, rest}
+  end
+
+  @spec unexpected_utf8(binary(), non_neg_integer()) :: no_return()
+  defp unexpected_utf8(original, skip) when byte_size(original) === skip do
+    :erlang.error(:unexpected_end)
+  end
+
+  defp unexpected_utf8(original, skip) do
+    invalid_byte(original, skip)
+  end
+
+  defp unexpected(original, skip, acc, stack, decode, pos, len, func_data) do
+    required_size = skip + pos + len
+    orig_size = byte_size(original)
+
+    case orig_size <= required_size do
+      true ->
+        <<_::binary-size(skip), rest::binary>> = original
+        {:continue, {rest, acc, stack, decode, func_data}}
+
+      false ->
+        invalid_byte(original, skip + pos)
+    end
+  end
+
+  @spec unexpected_sequence(binary(), non_neg_integer()) :: no_return()
+  defp unexpected_sequence(value, skip) do
+    :erlang.error({:unexpected_sequence, value}, :none, error_info(skip))
+  end
+end
+
+# The corpus. Each case runs one OtpJSON call and records its outcome: the
+# value, or the class and reason it raised. Small groups print every outcome;
+# large groups print a count and a digest of their outcomes' inspected text.
+# Run with the argument `full` to print every outcome of every group.
+#
+# Terms whose printed form changes from run to run (pids, refs, funs) are left
+# out: their outcomes cannot be compared as text. The iteration order of a map
+# is not defined and differs between the BEAM and fz, so an outcome that
+# depends on it is printed in an order-free form (see Corpus.show and
+# Corpus.order_free). Outcomes that use a map's documented order, the ordered
+# iterator of format/1,2,3, keep their exact bytes.
+defmodule Corpus do
+  def outcome(f) do
+    try do
+      {:ok, f.()}
+    catch
+      kind, reason -> {:raised, kind, reason}
+    end
+  end
+
+  # Plain iteration order of a map is not defined, and the BEAM's differs from
+  # fz's. A term that holds a map of two or more keys therefore prints with
+  # every map's pairs sorted by the printed text of their keys; any other term
+  # prints exactly as inspect prints it.
+  def show(term) do
+    if multi_key_map?(term) do
+      canonical(term)
+    else
+      inspect(term, limit: :infinity, printable_limit: :infinity)
+    end
+  end
+
+  def multi_key_map?(term) when is_map(term) do
+    pairs = fields(term)
+
+    (not struct?(term) and length(pairs) >= 2) or
+      Enum.any?(pairs, fn {k, v} -> multi_key_map?(k) or multi_key_map?(v) end)
+  end
+
+  def multi_key_map?(term) when is_list(term), do: any_multi_key_map?(term)
+  def multi_key_map?(term) when is_tuple(term), do: any_multi_key_map?(Tuple.to_list(term))
+  def multi_key_map?(_), do: false
+
+  defp any_multi_key_map?([head | tail]), do: multi_key_map?(head) or any_multi_key_map?(tail)
+  defp any_multi_key_map?([]), do: false
+  defp any_multi_key_map?(improper_tail), do: multi_key_map?(improper_tail)
+
+  defp struct?(map), do: :erlang.is_map_key(:__struct__, map)
+
+  defp fields(map), do: Enum.reject(Map.to_list(map), fn {k, _} -> k == :__struct__ end)
+
+  defp canonical(map) when is_map(map) do
+    pairs = Enum.sort_by(Enum.map(fields(map), fn {k, v} -> {show(k), k, v} end), fn {text, _, _} -> text end)
+    keyword = Enum.all?(pairs, fn {_, k, _} -> keyword_key?(k) end)
+    name = if struct?(map), do: inspect(Map.get(map, :__struct__)), else: ""
+    body = Enum.map_join(pairs, ", ", fn {text, k, v} -> map_key(text, k, keyword) <> show(v) end)
+    "%" <> name <> "{" <> body <> "}"
+  end
+
+  defp canonical(list) when is_list(list) do
+    if keyword_list?(list) do
+      "[" <> Enum.map_join(list, ", ", fn {k, v} -> keyword_prefix(k) <> show(v) end) <> "]"
+    else
+      "[" <> items(list) <> "]"
+    end
+  end
+
+  defp canonical(tuple) when is_tuple(tuple) do
+    "{" <> Enum.map_join(Tuple.to_list(tuple), ", ", &show/1) <> "}"
+  end
+
+  defp items([last]), do: show(last)
+  defp items([head | tail]) when is_list(tail), do: show(head) <> ", " <> items(tail)
+  defp items([head | tail]), do: show(head) <> " | " <> show(tail)
+
+  defp keyword_key?(key) when is_atom(key), do: not String.starts_with?(Atom.to_string(key), "Elixir.")
+  defp keyword_key?(_), do: false
+
+  defp keyword_list?([{key, _} | rest]) when is_atom(key), do: keyword_key?(key) and keyword_list?(rest)
+  defp keyword_list?([]), do: true
+  defp keyword_list?(_), do: false
+
+  # The key and its separator exactly as inspect writes them, taken from
+  # inspect of a one-pair map or list.
+  defp map_key(_text, key, true) do
+    printed = inspect(%{key => 0})
+    binary_part(printed, 2, byte_size(printed) - 4)
+  end
+
+  defp map_key(text, _key, false), do: text <> " => "
+
+  defp keyword_prefix(key) do
+    printed = inspect([{key, 0}])
+    binary_part(printed, 1, byte_size(printed) - 3)
+  end
+
+  # JSON text that an encoder produced from `term`. When the term holds a map
+  # of two or more keys, the order of its members is not defined, so the
+  # result is the text with the members of every object in byte order.
+  def order_free(term, encode) do
+    if multi_key_map?(term) do
+      {:members_sorted, sort_members(:erlang.iolist_to_binary(encode.()))}
+    else
+      encode.()
+    end
+  end
+
+  defp sort_members(json) do
+    case json_value(json, json) do
+      {text, <<>>} -> text
+      _ -> :erlang.error({:malformed_json, json})
+    end
+  end
+
+  defp json_value(<<?{, ?}, rest::binary>>, _json), do: {"{}", rest}
+  defp json_value(<<?{, rest::binary>>, json), do: json_members(rest, json, [])
+  defp json_value(<<?[, ?], rest::binary>>, _json), do: {"[]", rest}
+  defp json_value(<<?[, rest::binary>>, json), do: json_elements(rest, json, [])
+  defp json_value(<<?", rest::binary>>, json), do: json_string(rest, json, "\"")
+  defp json_value(<<c, _::binary>> = scalar, json) when c != ?, and c != ?] and c != ?}, do: json_scalar(scalar, json, "")
+  defp json_value(_, json), do: :erlang.error({:malformed_json, json})
+
+  defp json_members(bin, json, acc) do
+    {key, <<?:, rest::binary>>} = json_value(bin, json)
+    {value, rest} = json_value(rest, json)
+    members = [key <> ":" <> value | acc]
+
+    case rest do
+      <<?,, more::binary>> -> json_members(more, json, members)
+      <<?}, more::binary>> -> {"{" <> Enum.join(Enum.sort(members), ",") <> "}", more}
+    end
+  end
+
+  defp json_elements(bin, json, acc) do
+    {value, rest} = json_value(bin, json)
+
+    case rest do
+      <<?,, more::binary>> -> json_elements(more, json, [value | acc])
+      <<?], more::binary>> -> {"[" <> Enum.join(:lists.reverse([value | acc]), ",") <> "]", more}
+    end
+  end
+
+  defp json_string(<<?", rest::binary>>, _json, acc), do: {acc <> "\"", rest}
+  defp json_string(<<?\\, c, rest::binary>>, json, acc), do: json_string(rest, json, <<acc::binary, ?\\, c>>)
+  defp json_string(<<c, rest::binary>>, json, acc), do: json_string(rest, json, <<acc::binary, c>>)
+  defp json_string(<<>>, json, _acc), do: :erlang.error({:malformed_json, json})
+
+  defp json_scalar(<<c, _::binary>> = rest, _json, acc) when c == ?, or c == ?] or c == ?}, do: {acc, rest}
+  defp json_scalar(<<c, rest::binary>>, json, acc), do: json_scalar(rest, json, <<acc::binary, c>>)
+  defp json_scalar(<<>>, _json, acc), do: {acc, <<>>}
+
+  def report(name, cases, full) do
+    outcomes = Enum.map(cases, fn {label, f} -> {label, outcome(f)} end)
+
+    if full or length(outcomes) <= 160 do
+      IO.puts("== #{name}")
+      Enum.each(outcomes, fn {label, o} -> IO.puts(show(label) <> " -> " <> show(o)) end)
+    else
+      digest = Enum.reduce(outcomes, 0, fn {label, o}, h -> fold(show(label) <> show(o), h) end)
+      IO.puts("== #{name}: #{length(outcomes)} cases, digest #{digest}")
+    end
+  end
+
+  def fold(<<>>, h), do: h
+  def fold(<<b, rest::binary>>, h), do: fold(rest, rem(h * 31 + b, 4_294_967_291))
+end
+
+# A deterministic generator: a linear congruential state threaded by hand.
+defmodule Gen do
+  def next(s), do: rem(s * 1_103_515_245 + 12_345, 2_147_483_648)
+  def uniform(s, n), do: {rem(div(s, 65_536), n) + 1, next(s)}
+  def pick(s, list), do: (fn {i, s2} -> {Enum.at(list, i - 1), s2} end).(uniform(s, length(list)))
+
+  @nums ["0", "-0", "1", "-1", "10", "123456789", "-98765", "0.5", "-0.0", "1.5e10", "2E-3", "3e+7", "0e0", "1.0E5", "0.000001", "1e400", "-1e400", "1.7976931348623157e308", "5e-324", "1E2", "0E+1"]
+  @strs ["\"\"", "\"a\"", "\"hello world 12345678 abcdefgh\"", "\"\\n\\t\\\"\\\\\\/\\b\\f\\r\"", "\"\\u00e9\\u20ac\"", "\"\\ud83d\\ude00\"", "\"é€😀日本語\"", "\"\\u0000\"", "\"plain 8bytes+ and more text here\"", "\"x\\u0041y\""]
+  @ws ["", "", " ", "\n", "\t ", "\r\n"]
+
+  def leaf(s) do
+    {k, s} = uniform(s, 3)
+
+    case k do
+      1 -> pick(s, @nums)
+      2 -> pick(s, @strs)
+      3 -> pick(s, ["true", "false", "null"])
+    end
+  end
+
+  def doc(s, depth) when depth <= 0, do: leaf(s)
+
+  def doc(s, depth) do
+    {k, s} = uniform(s, 6)
+
+    case k do
+      3 -> many(s, depth, "[", "]", &item/2)
+      4 -> many(s, depth, "{", "}", &member/2)
+      5 -> wrap(s, "[", "]")
+      6 -> wrap(s, "{", "}")
+      _ -> leaf(s)
+    end
+  end
+
+  def item(s, depth) do
+    {a, s} = pick(s, @ws)
+    {v, s} = doc(s, depth - 1)
+    {b, s} = pick(s, @ws)
+    {a <> v <> b, s}
+  end
+
+  def member(s, depth) do
+    {k, s} = pick(s, @strs)
+    {a, s} = pick(s, @ws)
+    {v, s} = item(s, depth)
+    {k <> a <> ":" <> v, s}
+  end
+
+  def wrap(s, open, close) do
+    {w, s} = pick(s, @ws)
+    {open <> w <> close, s}
+  end
+
+  def many(s, depth, open, close, one) do
+    {n, s} = uniform(s, 4)
+    {parts, s} = repeat(s, n, fn s -> one.(s, depth) end)
+    {open <> Enum.join(parts, ",") <> close, s}
+  end
+
+  def repeat(s, 0, _f), do: {[], s}
+
+  def repeat(s, n, f) do
+    {x, s} = f.(s)
+    {xs, s} = repeat(s, n - 1, f)
+    {[x | xs], s}
+  end
+
+  @floats [0.0, 1.5, -2.25, 1.0e10, 1.0e-10, 123.456, 1.0e22, 5.0e-324, 1.7976931348623157e308]
+  @atoms [true, false, :null, :foo, :bar_baz, :"é"]
+  @bins ["", "abc", "hello world 12345678 abcdefgh", "q\"uote\\back\nnl\ttab", "é€😀日本語", <<0, 1, 31, 127>>]
+  @keys ["a", "b", "key", :x, :yy, 1, 22, 1.5, "é", "ab\"c", :"é"]
+
+  def term(s, depth) do
+    {k, s} = uniform(s, if(depth <= 0, do: 6, else: 9))
+
+    case k do
+      1 -> (fn {i, s} -> {i - 500, s} end).(uniform(s, 1000))
+      2 -> pick(s, @floats)
+      3 -> pick(s, @atoms)
+      4 -> pick(s, @bins)
+      5 -> pick(s, ["", "k", "key with space"])
+      6 -> uniform(s, 9)
+      7 -> (fn {n, s} -> repeat(s, n, fn s -> term(s, depth - 1) end) end).(uniform(s, 4))
+      8 -> (fn {n, s} -> pairs(s, n, depth) end).(uniform(s, 5))
+      9 -> {[], s}
+    end
+  end
+
+  def pairs(s, n, depth) do
+    {kvs, s} = repeat(s, n, fn s -> (fn {k, s} -> (fn {v, s} -> {{k, v}, s} end).(term(s, depth - 1)) end).(pick(s, @keys)) end)
+    {Map.new(kvs), s}
+  end
+end
+
+defmodule Main do
+  @edge [
+    "", " ", "1", "-", "-1", "0", "01", "0.", "0.1", "0e", "0e+", "0E5", "1e", "1e+", "1.e1", "1.5", "1.5e", "1.5e+", "1.5e5", "1.5e+5x", "123abc",
+    "-0", "-01", "--1", "+1", ".5", "1.5.5", "1e5e5",
+    "t", "tr", "tru", "true", "truee", "trux", "f", "fals", "false", "n", "nul", "null", "nulll", "nan",
+    "\"", "\"a", "\"abc", "\"abc\"", "\"abc\"x", "\"\\", "\"\\u", "\"\\u1", "\"\\u12", "\"\\u123", "\"\\u1234\"", "\"\\u12G4\"", "\"\\uzzzz\"",
+    "\"\\ud800\"", "\"\\ud800\\u", "\"\\ud800\\udc00\"", "\"\\ud800\\u0041\"", "\"\\udc00\"", "\"\\ud800x\"", "\"\\ud83d\\ude00\"", "\"\\ud83d\\ude0", "\"\\uDBFF\\uDFFF\"", "\"\\uD800\\uDBFF\"", "\"\\u0000\\u001f\"",
+    "\"\\x\"", "\"\\q\"", "\"\\/\"", "\"a\\nb\"", "\"\n\"", "\"\t\"", "\"\x01\"", "\"\x7f\"",
+    "\"é\"", <<"\"", 0xC3>>, <<"\"", 0xC3, 0x28, "\"">>, <<"\"", 0xE2, 0x82>>, <<"\"", 0xE2, 0x82, 0xAC, "\"">>, <<"\"", 0xF0, 0x9F, 0x98>>, <<"\"", 0xF0, 0x9F, 0x98, 0x80, "\"">>,
+    <<"\"", 0xC0, 0x80, "\"">>, <<"\"", 0xED, 0xA0, 0x80, "\"">>, <<"\"", 0xF4, 0x90, 0x80, 0x80, "\"">>, <<"\"", 0x80, "\"">>, <<"\"", 0xFF, "\"">>, <<"\"", 0xF8, 0x88, 0x80, 0x80, 0x80, "\"">>,
+    <<"\"abcdefgh", 0xC3, 0xA9, "ijklmnopq\"">>, <<"\"abcdefgh\\n", 0xC3, 0xA9, "ijklmnopq", 0xC3>>, <<"\"abcdefgh\\n", 0xC3>>,
+    "[", "[]", "[ ]", "[1", "[1,", "[1,]", "[1 2]", "[,1]", "[1,2]", "[1]x", "[[]]", "[[[", "[1,[2,[3,[]]]]", "[1 ", "[1 ,", "[ 1 , 2 ]",
+    "{", "{}", "{ }", "{\"a\"", "{\"a\":", "{\"a\":1", "{\"a\":1,", "{\"a\":1,}", "{\"a\" 1}", "{a:1}", "{\"a\":1}", "{\"a\":1,\"a\":2}", "{\"a\":{\"b\":[1,{\"c\":null}]}}", "{1:2}", "{\"a\":1 \"b\":2}", "{\"a\" :", "{\"a\": 1 , ", "{ \"k\" : [ ] }",
+    "\u00a0", "\ufeff1", "1 2", "1 ", " 1", "\n1\n", "1\x00", "\x00", "}", "]", ",", ":", "x", "[x]", "{\"a\":x}", "[1,x]", "[tru", "[nul]", "{\"a\":tr", "[\"abc", "[\"abc\\", "[\"abc\\u00", "[\"\\ud800", "{\"a\\u12\"",
+    "1.7976931348623157e309", "1e999", "[1e999]", "-1e999", "1.5e999", "0.1e-999"
+  ]
+
+  @enc_bins ["", "a", "abcdefgh", "abcdefghi", "abcdefg\"h", "q\"uote\\back\nnl\ttab\x00\x1f", "é", "é€😀", "日本語 text 1234567 日本語", <<0xC3>>, <<0xC3, 0x28>>, <<"abcdefgh", 0xE2, 0x82>>, <<0xFF>>, <<"abc", 0xF0, 0x9F, 0x98>>, <<0xED, 0xA0, 0x80>>, <<0xC0, 0x80>>, <<"abcdefgh12345678", 0x80>>, <<"é", 0xFF, "x">>, "\u007f", "\u0080", "\u07ff", "\u0800", "\uffff", "\u{10000}", "\u{10ffff}", "\u00ff", "\u0100", "\u0fff", "\u1000", <<"a", 0xE2>>, <<0xF4, 0x90, 0x80, 0x80>>, <<0xF8, 0x88, 0x80, 0x80, 0x80>>]
+
+  @enc_terms [[], %{}, [[]], [%{}], %{"a" => []}, %{"a" => %{}}, [1, [2, [3]]], %{1 => 2, 2.5 => 3, "b" => 5, a: 4}, [{:a, 1}, {:b, [1, 2]}], [{:a, 1}, {:a, 2}], [{"a", 1}, {:a, 2}], [{1, 1}, {"1", 2}], [1, :sym, "s", nil, 1.0, {1, 2}], {:tuple}, :foo, :null, true, 1.0e100, ~c"abc", [?a | ?b], [1 | 2], [{:a, 1} | :x], %{{1, 2} => 3}, %{[1] => 3}, [{[1], 2}], [1, 2, 3 | []], Enum.to_list(1..200), for(i <- 1..150, do: "elem#{i}"), [%{"a" => [1, 2, 3, %{"b" => String.duplicate("x", 120)}]}, [String.duplicate("y", 200), 2], 3, 4]]
+
+  def decoders do
+    %{
+      array_start: fn a -> [{:as, a}] end,
+      array_push: fn v, acc -> [v | acc] end,
+      array_finish: fn acc, old -> {{:arr, :lists.reverse(acc)}, old} end,
+      object_start: fn a -> [{:os, a}] end,
+      object_push: fn k, v, acc -> [{k, v} | acc] end,
+      object_finish: fn acc, old -> {{:obj, :lists.reverse(acc)}, old} end,
+      float: fn b -> {:f, b} end,
+      integer: fn b -> {:i, b} end,
+      string: fn b -> {:s, b} end,
+      null: :NULL
+    }
+  end
+
+  def prefixes(i), do: for(n <- 0..byte_size(i), do: binary_part(i, 0, n))
+
+  def chunked(doc, cuts) do
+    pieces = for {a, b} <- Enum.zip([0 | cuts], cuts ++ [byte_size(doc)]), do: binary_part(doc, a, b - a)
+    [first | more] = pieces
+
+    case OtpJSON.decode_start(first, :a, %{}) do
+      {:continue, st} -> feed(more, st)
+      other -> {other, more}
+    end
+  end
+
+  def feed([], st), do: OtpJSON.decode_continue(:end_of_input, st)
+
+  def feed([p | rest], st) do
+    case OtpJSON.decode_continue(p, st) do
+      {:continue, st2} -> feed(rest, st2)
+      other -> {other, rest}
+    end
+  end
+
+  # Each list holds the calls whose @spec admits a kind of term, so that no
+  # call here is one fz refuses at compile time for lying outside its spec.
+  # The calls that leave a spec's domain are checked against :json by
+  # tools/otp_json/difftest.exs, and fz's refusal of them is pinned by
+  # fixtures 01861-01866.
+  def encode_cases(t) do
+    value_cases(t) ++ list_map_atom_cases(t) ++ integer_cases(t) ++ float_cases(t) ++ binary_cases(t) ++ key_value_cases(t)
+  end
+
+  # A case whose encoder iterates a map in plain order (:maps.iterator/1,
+  # :maps.next/1 or :maps.to_list/1); the format family iterates in the
+  # documented :ordered order and is not wrapped.
+  def unordered(label, term, f), do: {label, fn -> Corpus.order_free(term, f) end}
+
+  def value_cases(t) do
+    [
+      unordered({:encode, t}, t, fn -> OtpJSON.encode(t) end),
+      {{:format1, t}, fn -> OtpJSON.format(t) end},
+      {{:format2, t}, fn -> OtpJSON.format(t, %{indent: 4}) end},
+      {{:format2b, t}, fn -> OtpJSON.format(t, %{max: 10, indent: 3}) end},
+      {{:format3, t}, fn -> OtpJSON.format(t, &OtpJSON.format_value/3, %{indent: 1}) end},
+      unordered({:encode_value, t}, t, fn -> OtpJSON.encode_value(t, &OtpJSON.encode_value/2) end)
+    ]
+  end
+
+  def list_map_atom_cases(t) do
+    [
+      unordered({:encode_list, t}, t, fn -> OtpJSON.encode_list(t, &OtpJSON.encode_value/2) end),
+      unordered({:encode_map, t}, t, fn -> OtpJSON.encode_map(t, &OtpJSON.encode_value/2) end),
+      unordered({:encode_map_checked, t}, t, fn -> OtpJSON.encode_map_checked(t, &OtpJSON.encode_value/2) end),
+      {{:encode_atom, t}, fn -> OtpJSON.encode_atom(t, &OtpJSON.encode_value/2) end}
+    ]
+  end
+
+  def integer_cases(t), do: [{{:encode_integer, t}, fn -> OtpJSON.encode_integer(t) end}]
+
+  def float_cases(t), do: [{{:encode_float, t}, fn -> OtpJSON.encode_float(t) end}]
+
+  def binary_cases(t) do
+    [
+      {{:encode_binary, t}, fn -> OtpJSON.encode_binary(t) end},
+      {{:encode_binary_all, t}, fn -> OtpJSON.encode_binary_escape_all(t) end}
+    ]
+  end
+
+  def key_value_cases(t) do
+    lvl = %{level: 0, col: 0, indent: 2, max: 100}
+
+    [
+      unordered({:kv, t}, t, fn -> OtpJSON.encode_key_value_list(t, &OtpJSON.encode_value/2) end),
+      unordered({:kv_checked, t}, t, fn -> OtpJSON.encode_key_value_list_checked(t, &OtpJSON.encode_value/2) end),
+      {{:fmt_kv, t}, fn -> OtpJSON.format_key_value_list(t, &OtpJSON.format_value/3, lvl) end},
+      {{:fmt_kv_checked, t}, fn -> OtpJSON.format_key_value_list_checked(t, &OtpJSON.format_value/3, lvl) end}
+    ]
+  end
+
+  def round_trip(doc) do
+    term = OtpJSON.decode(doc)
+    Corpus.order_free(term, fn -> OtpJSON.encode(term) end)
+  end
+
+  def custom(t) do
+    OtpJSON.encode(t, fn
+      {:ts, n}, _enc -> ["\"t", Integer.to_string(n), "\""]
+      [{_, _} | _] = kv, enc -> OtpJSON.encode_key_value_list(kv, enc)
+      other, enc -> OtpJSON.encode_value(other, enc)
+    end)
+  end
+
+  def main do
+    full = System.argv() == ["full"]
+    r = fn name, cases -> Corpus.report(name, cases, full) end
+
+    r.("decode/1 edge inputs", for(i <- @edge, do: {i, fn -> OtpJSON.decode(i) end}))
+    r.("decode/3 edge inputs, default decoders", for(i <- @edge, do: {i, fn -> OtpJSON.decode(i, :acc0, %{}) end}))
+    r.("decode/3 edge inputs, every decoder", for(i <- @edge, do: {i, fn -> OtpJSON.decode(i, 0, decoders()) end}))
+    r.("decode/3 edge inputs, raising float decoder", for(i <- @edge, do: {i, fn -> OtpJSON.decode(i, 0, %{float: fn _ -> raise "x" end}) end}))
+    r.("decode/1 every prefix of the edge inputs", for(i <- @edge, p <- prefixes(i), do: {p, fn -> OtpJSON.decode(p) end}))
+    r.("decode/3 every prefix of the edge inputs", for(i <- @edge, p <- prefixes(i), do: {p, fn -> OtpJSON.decode(p, :a, %{}) end}))
+
+    deep = [
+      String.duplicate("[", 1000) <> String.duplicate("]", 1000),
+      String.duplicate("[", 1000),
+      String.duplicate("{\"a\":", 300) <> "1" <> String.duplicate("}", 300),
+      String.duplicate("a", 1000),
+      "\"" <> String.duplicate("a", 1000) <> "\"",
+      "\"" <> String.duplicate("é", 500) <> "\"",
+      "\"" <> String.duplicate("a", 7) <> "\\n" <> String.duplicate("b", 9) <> "\"",
+      "\"" <> String.duplicate("a", 8) <> "\\u00e9" <> String.duplicate("b", 8) <> "\\ud83d\\ude00\""
+    ]
+
+    r.("decode/1 deep and long inputs", for(i <- deep, do: {byte_size(i), fn -> OtpJSON.decode(i) end}))
+
+    r.("decode with bad decoders",
+      for(dec <- [%{array_start: fn -> 1 end}, %{bogus: 1}, %{float: :notfun}], do: {Enum.sort(Map.keys(dec)), fn -> OtpJSON.decode("[1]", 0, dec) end})
+    )
+
+    {docs, _} = Gen.repeat(1, 300, fn s -> Gen.doc(s, 4) end)
+    r.("decode/1 generated documents", for(d <- docs, do: {d, fn -> OtpJSON.decode(d) end}))
+    r.("decode/3 generated documents with trailing data", for(d <- docs, do: {d, fn -> OtpJSON.decode(d <> "  trailing", :acc, %{}) end}))
+
+    {muts, _} = Gen.repeat(7, 600, fn s -> mutate(s) end)
+    r.("decode/1 mutated documents", for(m <- muts, do: {m, fn -> OtpJSON.decode(m) end}))
+
+    small = Enum.filter(@edge, &(byte_size(&1) < 200)) ++ Enum.take(docs, 60)
+    r.("decode_continue every single split", for(d <- small, c <- 0..byte_size(d), do: {{d, c}, fn -> chunked(d, [c]) end}))
+    r.("decode_start state of every prefix", for(d <- small, c <- 0..byte_size(d), do: {{d, c}, fn -> OtpJSON.decode_start(binary_part(d, 0, c), :a, %{}) end}))
+    r.("decode_continue byte at a time", for(d <- small, byte_size(d) > 4, do: {d, fn -> chunked(d, Enum.to_list(1..(byte_size(d) - 1))) end}))
+
+    r.("decode_continue on bad states",
+      for(st <- [:bogus, {1, 2}, nil], do: {st, fn -> OtpJSON.decode_continue("1", st) end}) ++
+        for(st <- [:bogus, {1, 2}, nil], do: {{:eoi, st}, fn -> OtpJSON.decode_continue(:end_of_input, st) end})
+    )
+
+    r.("encode and format of binaries", Enum.flat_map(@enc_bins, fn t -> value_cases(t) ++ binary_cases(t) end))
+    r.("encode and format of fixed terms", Enum.flat_map(@enc_terms, fn t -> value_cases(t) ++ list_map_atom_cases(t) ++ float_cases(t) ++ key_value_cases(t) end))
+    {terms, _} = Gen.repeat(3, 300, fn s -> Gen.term(s, 3) end)
+    r.("encode and format of generated terms", Enum.flat_map(terms, &encode_cases/1))
+
+    chars = [0xFF, 0x100, 0x7FF, 0x800, 0xFFF, 0x1000, 0xFFFF, 0x10000, 0x10FFFF, 0x41, 0xE9, 0x20AC, 0x1F600]
+
+    r.("encode_binary_escape_all per code point",
+      for(ch <- chars, do: {ch, fn -> OtpJSON.encode_binary_escape_all(<<ch::utf8>>) end}) ++
+        for(ch <- chars, do: {{:mid, ch}, fn -> OtpJSON.encode_binary_escape_all("abcdefgh" <> <<ch::utf8>> <> "ij") end})
+    )
+
+    r.("encode with a custom encoder",
+      for(t <- [{:ts, 5}, [{:a, {:ts, 1}}, {:b, 2}], [[{:a, 1}], [{:b, 2}]], %{"x" => {:ts, 9}}], do: unordered(t, t, fn -> custom(t) end))
+    )
+
+    r.("decode then encode and format", for(d <- docs, do: {d, fn -> round_trip(d) end}) ++ for(d <- docs, do: {{:fmt, d}, fn -> d |> OtpJSON.decode() |> OtpJSON.format() end}))
+  end
+
+  def mutate(s) do
+    {d, s} = Gen.doc(s, 3)
+
+    if byte_size(d) == 0 do
+      {d, s}
+    else
+      {pos, s} = Gen.uniform(s, byte_size(d))
+      {b, s} = Gen.uniform(s, 256)
+      <<h::binary-size(pos - 1), _, t::binary>> = d
+      {<<h::binary, b - 1, t::binary>>, s}
+    end
+  end
+end
+
+Main.main()

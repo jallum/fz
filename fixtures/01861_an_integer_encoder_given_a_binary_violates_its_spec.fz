@@ -1,0 +1,21 @@
+#---
+# purpose: "A binary given to OtpJSON.encode_integer/1, whose spec says integer(), is refused at compile time"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+# OTP's json.erl treats the spec as advisory: on the BEAM the call compiles and
+# raises badarg at run time. fz refuses the call at compile time. The module
+# holds the port's encode_integer/1 with its spec and clause head;
+# fixtures/01860 holds the whole port.
+defmodule OtpJSON do
+  @spec encode_integer(integer()) :: iodata()
+  def encode_integer(integer), do: Integer.to_string(integer)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(OtpJSON.encode_integer("abc"))
+  end
+end
+
+Main.main()
