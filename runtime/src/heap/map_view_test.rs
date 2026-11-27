@@ -459,11 +459,15 @@ fn an_entries_map_spells_a_struct_when_its_keys_are_exactly_the_structs() {
     assert_eq!(f.heap.entries_spelling_a_struct(plain), None);
 }
 
-/// The bytes a flat map occupies, its header included.
+/// A flat map's stored form: its header, kind bytes, keys and values, up to
+/// its last value word. The allocation is rounded up to 16 bytes, and the
+/// alignment pad past the last value is never written, so it is not part of
+/// the form.
 fn stored_bytes(map: AnyValueRef) -> Vec<u8> {
     let addr = map.map_addr().expect("a map") as *const u8;
-    let size = crate::any_value::map_size_for_count(unsafe { map_count(addr) });
-    unsafe { std::slice::from_raw_parts(addr, size) }.to_vec()
+    let count = unsafe { map_count(addr) };
+    let len = crate::any_value::map_values_offset(count) + count * 8;
+    unsafe { std::slice::from_raw_parts(addr, len) }.to_vec()
 }
 
 /// Intent: a flat map has one stored form. A map reached by adding a key,
