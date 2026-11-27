@@ -2,6 +2,44 @@ defmodule :maps do
   @moduledoc "The Erlang `:maps` functions, as OTP's maps.erl defines them."
 
   @doc """
+  Returns the value stored for `key`. Raises `KeyError` when the key is
+  absent and `BadMapError` when `map` is not a map.
+
+  ## Examples
+
+      :maps.get(:a, %{a: 1})
+      #=> 1
+
+  """
+  @spec get(any, any) :: any
+  def get(key, map) do
+    case map do
+      %{^key => value} -> value
+      %{} -> raise(%KeyError{key: key, term: map})
+      other -> raise(%BadMapError{term: other})
+    end
+  end
+
+  @doc """
+  Returns the value stored for `key`, or `default` when the key is absent.
+  Raises `BadMapError` when `map` is not a map.
+
+  ## Examples
+
+      :maps.get(:b, %{a: 1}, 0)
+      #=> 0
+
+  """
+  @spec get(any, any, any) :: any
+  def get(key, map, default) do
+    case map do
+      %{^key => value} -> value
+      %{} -> default
+      other -> raise(%BadMapError{term: other})
+    end
+  end
+
+  @doc """
   Returns the map's entries as `{key, value}` pairs, in the map's iteration order.
 
   ## Examples

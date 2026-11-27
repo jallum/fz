@@ -1,0 +1,15 @@
+1
+nil
+nil
+0
+1
+[1, 2]
+1
+{KeyError, %{a: 1}, "key :c not found in:\n\n    %{a: 1}\n"}
+{:error, {:badkey, :c}}
+{BadMapError, 5, "expected a map, got:\n\n    5\n"}
+{:error, {:badmap, 5}}
+{BadMapError, 5, "expected a map, got:\n\n    5\n"}
+{:error, {:badmap, 5}}
+{KeyError, %{a: 1}, "key :c not found in:\n\n    %{a: 1}\n"}
+{:error, {:badkey, :c}}
