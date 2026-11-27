@@ -1019,3 +1019,37 @@ fn an_arm_whose_pinned_key_can_hold_a_value_survives() {
         &[Some(binary)]
     ));
 }
+
+/// A pattern names the keys it needs and no others, so a map that also holds
+/// keys of kinds the pattern never mentions still reaches its arm.
+#[test]
+fn a_pattern_on_an_atom_key_matches_a_map_that_also_holds_a_binary_key() {
+    let mut types = Types::new();
+    let int = types.int();
+    let entries = [
+        MapTypeEntry {
+            key: MapTypeKey::Literal(MapKey::Atom("a".to_string())),
+            optional: false,
+            value: int,
+        },
+        MapTypeEntry {
+            key: MapTypeKey::Domain(MapDomain::Binary),
+            optional: true,
+            value: int,
+        },
+    ];
+    let input = types.map_literal_of_entries(&entries);
+
+    assert!(arm_survives(&mut types, input, Pattern::Atom("a".to_string()), &[]));
+}
+
+/// A map type that writes only binary keys cannot hold the atom a pattern
+/// asks for: the arm is dead.
+#[test]
+fn a_pattern_on_an_atom_key_cannot_match_a_type_that_writes_only_binary_keys() {
+    let mut types = Types::new();
+    let int = types.int();
+    let input = binary_domain_map(&mut types, int);
+
+    assert!(!arm_survives(&mut types, input, Pattern::Atom("a".to_string()), &[]));
+}

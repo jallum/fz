@@ -10,6 +10,7 @@ use super::types::Types;
 
 const PATTERNS: u32 = 1869;
 const READS: u32 = 1870;
+const KEY_KINDS: u32 = 1156;
 
 /// Asserts the settled return type of `name/arity` is `expected(types)`.
 fn assert_returns(
@@ -115,5 +116,30 @@ fn reading_one_typed_map_answers_the_same_value_whatever_the_reader() {
             types.union(found, error)
         },
         "Map.fetch answers {:ok, value} or :error",
+    );
+}
+
+/// A map type that writes the binary kind holds binary keys only, so a read
+/// at an atom answers `nil` and a read at a binary answers the value or `nil`.
+#[test]
+fn a_map_typed_by_binary_keys_reads_nil_at_an_atom_and_the_value_or_nil_at_a_binary() {
+    let mut settled = Drive::fixture(KEY_KINDS).settle();
+
+    assert_returns(
+        &mut settled,
+        "at_atom",
+        1,
+        |types| types.nil(),
+        "no atom key can be present",
+    );
+    assert_returns(
+        &mut settled,
+        "at_binary",
+        2,
+        |types| {
+            let (int, nil) = (types.int(), types.nil());
+            types.union(int, nil)
+        },
+        "a binary key reads the binary domain or misses",
     );
 }

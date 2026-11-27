@@ -766,8 +766,22 @@ ref, c_pointer, fun, tuple, map, list, resource). A key a field names holds that
 field's type and is required unless the field is `optional`. Any other key
 holds the domain of its kind, when present; a domain is never required, so the
 empty map belongs to every domain. A domain of `any` constrains nothing, so the
-open map (`Types::map_top`) is the signature whose every domain is `any`, and
-a map type is open unless its domains say otherwise.
+open map (`Types::map_top`) is the signature whose every domain is `any`. No
+flag marks a map type open or closed: the domains say it.
+
+A map type that writes at least one kind of key (`%{binary => integer}`,
+`%{atom => t}`, a literal such as `%{"a" => 1}`) holds only keys of the kinds it
+writes. `Types::map_of_entries`, which builds written types and literals alike,
+sets every domain it does not write to `none`, so a key of another kind is never
+present: on a `%{binary => integer}`, `m[:zzz]` is `nil`, a binary key reads
+`integer | nil`, and a map literal that carries an atom key violates a spec of
+that type. A map that writes only named fields (`%{a: integer}`, `%{a: 1}`) or
+nothing (`%{}`) writes no kind, so every domain stays `any` and it holds other
+keys too; so does a struct record, `map_top` and a pattern, so `%{a: x}` still
+matches a map that holds more. The printer names the kinds a type that writes
+a kind holds and leaves out the rest. Elixir's checker closes literals, leaves
+patterns open and does not read specs; fz closes what writes a key kind and
+leaves the rest open.
 
 `@type` writes these as Elixir's type language does: a literal key is a
 field, `optional(k) => v` and `required(k) => v` choose whether it may be

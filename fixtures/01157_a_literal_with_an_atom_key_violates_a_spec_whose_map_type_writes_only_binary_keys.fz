@@ -1,0 +1,15 @@
+#---
+# purpose: "A map with an atom key violates a spec whose map type writes only binary keys, since such a type holds no key of another kind"
+# expect: diagnostic
+# diagnostic.code: spec/violation
+#---
+defmodule Main do
+  @spec total(%{binary() => integer()}) :: integer()
+  def total(map), do: map_size(map)
+
+  def main() do
+    IO.inspect(total(%{"a" => 1, b: 2}))
+  end
+end
+
+Main.main()

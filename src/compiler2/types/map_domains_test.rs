@@ -276,17 +276,17 @@ fn an_atom_a_map_leaves_unconstrained_reads_any() {
     let mut t = Types::new();
     let int = t.int();
     let any = t.any();
-    let closed_looking = named(&mut t, "a", int);
+    let named_atom_only = named(&mut t, "a", int);
 
-    let read = t.value_at(&closed_looking, &exact("zzz"));
+    let read = t.value_at(&named_atom_only, &exact("zzz"));
 
     assert_value(
         &mut t,
         read,
         any,
-        "a written map type is open: other keys hold anything",
+        "a type that writes no key kind is open: other keys hold anything",
     );
-    assert!(t.can_miss(&closed_looking, &exact("zzz")));
+    assert!(t.can_miss(&named_atom_only, &exact("zzz")));
 }
 
 // Census row (c): a key known only by its type, a binary.
@@ -308,16 +308,116 @@ fn a_binary_key_reads_the_binary_domain_without_nil_and_can_miss() {
 
 // Census row (d): a non-literal key of a known type.
 
+/// A type that writes a key kind holds only keys of the kinds it writes, so a
+/// key of any other kind is never present: the value it holds is `none`, and
+/// a read of it answers `nil` alone.
 #[test]
-fn a_key_of_a_kind_the_map_leaves_free_reads_any() {
+fn a_key_of_a_kind_the_type_does_not_write_holds_nothing() {
     let mut t = Types::new();
-    let (int, atom) = (t.int(), t.atom());
+    let (int, atom, none) = (t.int(), t.atom(), t.none());
     let by_binary = domain(&mut t, MapDomain::Binary, int);
-    let any = t.any();
 
-    let read = t.value_at(&by_binary, &KeyAt::OfType(atom));
+    let by_type = t.value_at(&by_binary, &KeyAt::OfType(atom));
+    let by_name = t.value_at(&by_binary, &exact("zzz"));
 
-    assert_value(&mut t, read, any, "the map says nothing about atom keys");
+    assert_value(
+        &mut t,
+        by_type,
+        none,
+        "an atom-typed key on a map that writes only binary keys",
+    );
+    assert_value(&mut t, by_name, none, "the atom `:zzz` on that map");
+    assert!(t.can_miss(&by_binary, &exact("zzz")), "so the reader answers `nil`");
+}
+
+/// A type that writes several key kinds holds each of them and no other.
+#[test]
+fn a_type_that_writes_two_key_kinds_holds_those_two() {
+    let mut t = Types::new();
+    let (int, float, none) = (t.int(), t.float(), t.none());
+    let binary_or_atom = t.map_of_entries(&[
+        MapTypeEntry {
+            key: MapTypeKey::Domain(MapDomain::Binary),
+            optional: true,
+            value: int,
+        },
+        MapTypeEntry {
+            key: MapTypeKey::Domain(MapDomain::Atom),
+            optional: true,
+            value: float,
+        },
+    ]);
+    let binary = t.str_t();
+    let by_binary = t.value_at(&binary_or_atom, &KeyAt::OfType(binary));
+    let by_atom = t.value_at(&binary_or_atom, &exact("zzz"));
+    let by_int = t.value_at(&binary_or_atom, &KeyAt::OfType(int));
+
+    assert_value(&mut t, by_binary, int, "a binary key reads the binary domain");
+    assert_value(&mut t, by_atom, float, "an atom key reads the atom domain");
+    assert_value(
+        &mut t,
+        by_int,
+        none,
+        "an integer key is of a kind the type does not write",
+    );
+}
+
+/// A literal that writes a key kind is a map of that kind alone, as a written
+/// type is: it holds no key of another kind.
+#[test]
+fn a_literal_with_a_key_known_by_type_holds_no_key_of_another_kind() {
+    let mut t = Types::new();
+    let (int, none) = (t.int(), t.none());
+    let literal = t.map_literal_of_entries(&[MapTypeEntry {
+        key: MapTypeKey::Domain(MapDomain::Binary),
+        optional: true,
+        value: int,
+    }]);
+
+    let read = t.value_at(&literal, &exact("zzz"));
+
+    assert_value(&mut t, read, none, "a literal's unwritten kinds are absent");
+}
+
+/// A type that writes a key kind prints the kinds it writes and no others.
+#[test]
+fn a_type_that_writes_a_key_kind_prints_only_the_kinds_it_writes() {
+    let mut t = Types::new();
+    let int = t.int();
+    let by_binary = domain(&mut t, MapDomain::Binary, int);
+
+    assert_eq!(t.display(&by_binary), "%{binary => int}");
+}
+
+/// An open type prints only what it constrains, so the kinds it leaves free are
+/// not named.
+#[test]
+fn a_type_that_writes_no_key_kind_prints_only_its_fields() {
+    let mut t = Types::new();
+    let int = t.int();
+    let named_a = named(&mut t, "a", int);
+
+    assert_eq!(t.display(&named_a), "%{:a: int}");
+}
+
+/// A type written with only atom keys writes no key kind, so it stays open: a
+/// wider map still belongs to it.
+#[test]
+fn a_type_that_writes_only_named_atom_keys_stays_open() {
+    let mut t = Types::new();
+    let int = t.int();
+    let named_a = named(&mut t, "a", int);
+    let wider = t.map(&[
+        (MapKey::Atom("a".to_string()), int),
+        (MapKey::Atom("b".to_string()), int),
+    ]);
+    let by_binary_too = {
+        let by_binary = domain(&mut t, MapDomain::Binary, int);
+        t.intersect(wider, by_binary)
+    };
+
+    assert!(t.is_subtype(&wider, &named_a));
+    assert!(t.is_subtype(&by_binary_too, &named_a));
 }
 
 #[test]
@@ -452,25 +552,36 @@ fn updating_at_a_key_known_by_type_widens_that_kinds_domain() {
     assert!(t.is_equivalent(&updated, &numbers));
 }
 
+/// A map type that names the atom `:x` and writes the binary kind, updated
+/// at an atom key: `:x` may now hold the new value too, and the binary kind
+/// is untouched.
 #[test]
-fn updating_at_an_atom_key_known_by_type_widens_named_atom_fields_and_leaves_other_kinds() {
+fn updating_at_an_atom_key_known_by_type_widens_the_named_atom_fields_and_the_kinds_the_type_writes() {
     let mut t = Types::new();
     let (atom, int, float) = (t.atom(), t.int(), t.float());
-    let named = field(&mut t, "x", int, false);
-    let by_binary = domain(&mut t, MapDomain::Binary, int);
-    let map = t.intersect(named, by_binary);
+    let map = t.map_of_entries(&[
+        MapTypeEntry {
+            key: MapTypeKey::Literal(MapKey::Atom("x".to_string())),
+            optional: false,
+            value: int,
+        },
+        MapTypeEntry {
+            key: MapTypeKey::Domain(MapDomain::Binary),
+            optional: true,
+            value: int,
+        },
+    ]);
 
     let updated = t
         .widen_map_at_key_type(&map, &atom, &float)
         .expect("atom is a kind of key");
 
     let number = t.union(int, float);
-    let widened_named = field(&mut t, "x", number, false);
-    let expected = t.intersect(widened_named, by_binary);
     let read = t.value_at(&updated, &exact("x")).expect("x is held");
     assert!(t.is_equivalent(&read, &number));
-    assert!(t.is_subtype(&updated, &expected));
-    assert!(t.is_subtype(&updated, &by_binary));
+    let binary = t.str_t();
+    let binary_values = t.value_at(&updated, &KeyAt::OfType(binary));
+    assert_value(&mut t, binary_values, int, "the binary kind is left as it was");
 }
 
 #[test]
