@@ -4,8 +4,7 @@ use super::forward::Tracer;
 use crate::any_value::{
     ListCons, StructName, ValueKind, closure_capture_raw_kind, closure_capture_raw_slot, closure_captured_count,
     map_key_kind, map_keys_ptr, map_node_child_count, map_node_children_ptr, map_node_entry_count, map_tag_ptr,
-    map_value_kind, map_values_ptr, share_struct, struct_field_kind_slot, struct_field_raw_slot, struct_is_named,
-    struct_schema_id,
+    map_value_kind, map_values_ptr, struct_field_kind_slot, struct_field_raw_slot, struct_is_named, struct_schema_id,
 };
 use crate::bits::BinView;
 use std::ptr::read;
@@ -34,16 +33,12 @@ impl Tracer<'_> {
     #[inline]
     fn trace_list(&mut self, obj: *mut ListCons) {
         let cons = unsafe { &mut *obj };
-        cons.keep_across_collection();
         unsafe { self.forward_slot(&raw mut cons.head, cons.head_kind()) };
         self.forward_tail(cons);
     }
 
     #[inline]
     fn trace_struct(&mut self, obj: *mut u8) {
-        // A struct a collection keeps is shared from then on, as a kept list
-        // cell is: it is older than everything allocated after the collection.
-        unsafe { share_struct(obj) };
         let schema_id = unsafe { struct_schema_id(obj as *const u8) };
         let schemas = self.schemas;
         debug_assert_eq!(

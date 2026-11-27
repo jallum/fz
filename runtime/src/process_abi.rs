@@ -22,6 +22,11 @@ pub const PROCESS_HEAP_OFFSET: i32 = offset_of!(Process, heap) as i32;
 pub const PROCESS_BINARIES_SHARED_OFFSET: i32 =
     (offset_of!(Process, heap) + offset_of!(crate::heap::Heap, binaries_shared)) as i32;
 
+/// `Heap::old_targets_copied`, which compiled code adds to when a write in place
+/// finds its target old and goes to a copy.
+pub const PROCESS_OLD_TARGETS_COPIED_OFFSET: i32 =
+    (offset_of!(Process, heap) + offset_of!(crate::heap::Heap, old_targets_copied)) as i32;
+
 /// The handler stack's `top` and `end`, which a compiled `try` reads and
 /// writes to push and pop its handler record without a runtime call.
 pub const PROCESS_HANDLER_TOP_OFFSET: i32 = (offset_of!(Process, handlers) + HANDLER_STACK_TOP_OFFSET) as i32;

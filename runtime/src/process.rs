@@ -186,9 +186,6 @@ pub struct Process {
     /// Cumulative resource destructors the scheduler dispatched for this
     /// process, after collections and at exit.
     pub dtors_dispatched: u64,
-    /// Cumulative body frames copied to the heap tip because a store found
-    /// the frame in a block a collection had kept (`fz_frame_for_write`).
-    pub frame_copies: u64,
     /// Compact reason bits pending for the next scheduler boundary. A yielding
     /// back edge sets the reduction bit, and the boundary consumes it via
     /// `finish_yield_report` and `end_quantum`. Collection timing is
@@ -905,7 +902,6 @@ impl Process {
             reduction_yields: 0,
             parks: 0,
             dtors_dispatched: 0,
-            frame_copies: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,

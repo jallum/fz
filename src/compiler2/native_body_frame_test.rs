@@ -124,7 +124,10 @@ fn compiler2_a_thousand_sequential_calls_run_in_one_frame_and_compile_to_a_small
         run.members, 984,
         "every other continuation of the body runs in that frame"
     );
-    assert_eq!(run.exit.frame_copies, 0, "nothing collects, so the frame is never old");
+    assert_eq!(
+        run.exit.old_targets_copied, 0,
+        "nothing collects, so the frame is never old"
+    );
     assert!(
         run.code_bytes < 4_000_000,
         "the program's native code is proportional to its calls: {} bytes",

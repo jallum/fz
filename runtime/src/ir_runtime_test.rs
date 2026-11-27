@@ -1257,16 +1257,75 @@ fn a_struct_becomes_shared_wherever_a_second_holder_can_appear() {
         .heap
         .alloc_list_cons_any(AnyValue::from_ref(head).expect("head"), AnyValue::EmptyList);
     assert!(is_shared(head), "a struct stored as a list head");
+}
 
+/// A collection copies the shared mark with a struct and adds none.
+#[test]
+fn a_collection_leaves_a_structs_shared_mark_as_it_found_it() {
+    let (mut process, point) = point_process();
+    let own = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    let published = tuple_ref(&mut process, point, &[AnyValue::int(3), AnyValue::int(4)]);
+    unsafe { crate::any_value::share_struct(published.struct_addr().unwrap()) };
+    let mut roots = [own, published];
+
+    process.collect_stats(&mut roots);
+
+    assert!(!is_shared(roots[0]), "an unshared survivor is unshared after");
+    assert!(is_shared(roots[1]), "a shared survivor stays shared");
+}
+
+/// The age table keeps an update out of an old struct: the copy holds the new
+/// field, so the next minor collection finds what it names. Written in place,
+/// the old struct would name a young list that no minor collection looks for.
+#[test]
+fn an_update_of_an_old_unshared_struct_copies_and_the_next_minor_collection_keeps_the_new_field() {
+    let (mut process, point) = point_process();
+    let process_ptr: *mut Process = &mut *process;
     let kept = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
     let mut roots = [kept];
     process.collect_stats(&mut roots);
-    assert!(
-        is_shared(roots[0]),
-        "a struct a collection keeps is old, and old data is never written"
+    let old = roots[0];
+    assert!(!crate::heap::arena::range().is_young(old.struct_addr().unwrap()));
+
+    let updated = fz_struct_reuse_or_copy(process_ptr, old.raw_word(), 2, 1);
+
+    assert_ne!(updated, old.raw_word(), "an update of an old struct copies");
+    assert_eq!(process.heap.old_targets_copied(), 1);
+    assert_eq!(process.node.retention_stats().struct_.hits, 0);
+    let list = process.heap.alloc_list_cons_any(AnyValue::int(9), AnyValue::EmptyList);
+    let layout = SlotLayout::of(2);
+    let [word, kind] = stored(AnyValue::from_ref(list).expect("list"));
+    fz_struct_store_ref(
+        process_ptr,
+        updated,
+        SlotLayout::slot_offset(0) as u32,
+        layout.kind_offset(0) as u32,
+        word,
+        kind,
     );
-    let after = fz_struct_reuse_or_copy(process_ptr, roots[0].raw_word(), 2, 1);
-    assert_ne!(after, roots[0].raw_word(), "so an update of it copies");
+    let mut roots = [AnyValueRef::from_raw_word(updated).expect("copy ref")];
+    process.collect_stats(&mut roots);
+    let field = process.heap.read_struct_field_ref(roots[0], 0).expect("field");
+    assert_eq!(
+        list_head_ref(field).and_then(|head| head.load_int()),
+        Ok(9),
+        "the stored list survived the minor collection"
+    );
+}
+
+#[test]
+fn an_update_of_a_young_unshared_struct_after_a_collection_rewrites_it_in_place() {
+    let (mut process, point) = point_process();
+    let process_ptr: *mut Process = &mut *process;
+    let kept = tuple_ref(&mut process, point, &[AnyValue::int(1), AnyValue::int(2)]);
+    process.collect_stats(&mut [kept]);
+    let young = tuple_ref(&mut process, point, &[AnyValue::int(5), AnyValue::int(6)]);
+
+    let updated = fz_struct_reuse_or_copy(process_ptr, young.raw_word(), 2, 1);
+
+    assert_eq!(updated, young.raw_word(), "a young unshared struct is a reuse hit");
+    assert_eq!(process.heap.old_targets_copied(), 0);
+    assert_eq!(process.node.retention_stats().struct_.hits, 1);
 }
 
 fn tuple_ref(process: &mut Process, schema_id: u32, fields: &[AnyValue]) -> AnyValueRef {
@@ -1939,18 +1998,30 @@ fn first_capture(frame: u64) -> i64 {
     unsafe { crate::any_value::closure_capture_value(address, 1) }.raw() as i64
 }
 
-/// A write goes into a frame young enough for the next minor collection to look
-/// inside, and the frame is answered as it is: the tip block's frame, and a
-/// frame too large for the tip, which sits alone in a parked young block.
+/// Compiled code writes a frame where it is when the age test, read through
+/// the heap's age bias, says the frame is young. A tip frame reads young, and
+/// so does a frame too large for the tip, which sits alone in a parked young
+/// block, so neither is copied.
 #[test]
-fn a_body_frame_in_a_young_block_is_written_where_it_is() {
+fn a_body_frame_in_a_young_block_reads_young_to_the_age_test_compiled_code_makes() {
     with_process(|process| {
         let in_tip = body_frame_holding(process, 4, 7);
+        let tip_room = process.heap.bytes_remaining_in_block();
         let parked_alone = body_frame_holding(process, 8_000, 8);
+        assert_eq!(
+            process.heap.bytes_remaining_in_block(),
+            tip_room,
+            "the large frame is parked alone and leaves the tip untouched"
+        );
 
-        assert_eq!(fz_frame_for_write(process, in_tip), in_tip);
-        assert_eq!(fz_frame_for_write(process, parked_alone), parked_alone);
-        assert_eq!(process.frame_copies, 0);
+        for frame in [in_tip, parked_alone] {
+            let address = closure_addr_from_ref_word(frame, "young frame");
+            assert!(
+                process.heap.is_young(address),
+                "a frame the collector has not kept reads young"
+            );
+        }
+        assert_eq!(process.heap.old_targets_copied(), 0);
     });
 }
 
@@ -1979,7 +2050,7 @@ fn a_body_frame_a_collection_kept_is_copied_to_the_tip_before_a_write() {
             "the copy is at the tip"
         );
         assert_eq!(first_capture(written), 7, "the copy holds what the frame held");
-        assert_eq!(process.frame_copies, 1);
+        assert_eq!(process.heap.old_targets_copied(), 1);
     });
 }
 

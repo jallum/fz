@@ -20,13 +20,14 @@ use fz_runtime::any_value::{
     CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT,
     STRUCT_HEADER_SHARED_MASK, SlotLayout, StructName, TaggedRefArch, ValueKind, struct_header_word,
 };
+use fz_runtime::heap::{AGE_GRANULE_SHIFT, INLINE_ALLOC_LAYOUT};
 use fz_runtime::ir_runtime::{
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
     fz_closure_set_capture_ref, fz_halt_implicit_atom, fz_halt_implicit_f64, fz_halt_implicit_i64,
     fz_halt_implicit_ref, fz_halt_implicit_stored, fz_number_ref_float_bits, fz_share_list_spine, fz_stored_ref,
     fz_struct_copy, fz_struct_store_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_float, fz_unbox_int,
 };
-use fz_runtime::process_abi::PROCESS_BINARIES_SHARED_OFFSET;
+use fz_runtime::process_abi::{PROCESS_BINARIES_SHARED_OFFSET, PROCESS_HEAP_OFFSET, PROCESS_OLD_TARGETS_COPIED_OFFSET};
 use fz_runtime::reuse_site::ReuseKind;
 
 /// A struct or tuple that is allocated and whose fields are being stored.
@@ -148,24 +149,38 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         runtime_call1!(self, fz_struct_copy, [process, base_ref, count])
     }
 
-    /// `base_ref` when its header's shared bit is clear, counted as a
-    /// hit at a reuse site; otherwise `fz_struct_copy`'s copy, which the
-    /// runtime counts as a miss.
+    /// `base_ref` when its header's shared bit is clear and the struct is
+    /// young, counted as a hit at a reuse site; otherwise `fz_struct_copy`'s
+    /// copy, which the runtime counts as a miss. An old struct is copied and
+    /// counted as an old target.
     fn rewrite_unshared_struct(&mut self, base_ref: ir::Value, fields: usize) -> ir::Value {
+        let age_blk = self.b.create_block();
         let reuse_blk = self.b.create_block();
+        let old_blk = self.b.create_block();
         let copy_blk = self.b.create_block();
         let done_blk = self.b.create_block();
         let target = self.b.append_block_param(done_blk, types::I64);
         let object = address_field(self.b, base_ref);
         let header = self.b.ins().load(types::I64, MemFlagsData::trusted(), object, 0);
         let shared = self.b.ins().band_imm_u(header, STRUCT_HEADER_SHARED_MASK as i64);
-        self.b.ins().brif(shared, copy_blk, &[], reuse_blk, &[]);
+        self.b.ins().brif(shared, copy_blk, &[], age_blk, &[]);
+
+        self.b.switch_to_block(age_blk);
+        self.b.seal_block(age_blk);
+        let young = self.emit_is_young(object);
+        self.b.ins().brif(young, reuse_blk, &[], old_blk, &[]);
 
         self.b.switch_to_block(reuse_blk);
         self.b.seal_block(reuse_blk);
         let counters = self.reuse_site(ReuseKind::Struct);
         self.count_reuse(counters.hits);
         self.b.ins().jump(done_blk, &[BlockArg::Value(base_ref)]);
+
+        self.b.switch_to_block(old_blk);
+        self.b.seal_block(old_blk);
+        self.b.set_cold_block(old_blk);
+        self.count_old_target_copied();
+        self.b.ins().jump(copy_blk, &[]);
 
         self.b.switch_to_block(copy_blk);
         self.b.seal_block(copy_blk);
@@ -175,6 +190,31 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         self.b.switch_to_block(done_blk);
         self.b.seal_block(done_blk);
         target
+    }
+
+    /// Whether the object at `address` lies in a young block, as an `I64` that
+    /// is nonzero when it does: the age table's byte, found with one load of
+    /// the heap's biased table address, one shift and one byte load, tested at
+    /// bit 0. `address` is a heap object's, never a literal's. The one
+    /// emitter of the age test; the runtime asks `Reservation::is_young`.
+    pub(super) fn emit_is_young(&mut self, address: ir::Value) -> ir::Value {
+        let process = self.process_arg();
+        let bias = self.b.ins().load(
+            types::I64,
+            MemFlagsData::trusted(),
+            process,
+            PROCESS_HEAP_OFFSET + INLINE_ALLOC_LAYOUT.age_bias as i32,
+        );
+        let granule = self.b.ins().ushr_imm_u(address, i64::from(AGE_GRANULE_SHIFT));
+        let slot = self.b.ins().iadd(bias, granule);
+        let byte = self.b.ins().uload8(types::I64, MemFlagsData::trusted(), slot, 0);
+        self.b.ins().band_imm_u(byte, 1)
+    }
+
+    /// Count a write in place that found its target old and went to a copy.
+    /// Emitted only in the cold block that takes the copy.
+    pub(super) fn count_old_target_copied(&mut self) {
+        self.bump_process_counter(PROCESS_OLD_TARGETS_COPIED_OFFSET);
     }
 
     /// Register a reuse site of `kind` in the function being lowered.

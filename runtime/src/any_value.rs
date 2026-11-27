@@ -1397,7 +1397,10 @@ impl ListCons {
         self.link().aliased()
     }
 
-    fn mark_aliased(&mut self) {
+    /// Record that a second holder may exist, so the cell is never rewritten.
+    /// A send, a gift, a capture or a share marks a cell; a collection never
+    /// does.
+    pub(crate) fn mark_aliased(&mut self) {
         let mut link = self.link();
         link.mark_aliased();
         self.link = link.raw();
@@ -1422,35 +1425,26 @@ impl ListCons {
         marked
     }
 
-    /// A cell a collection keeps is shared from then on. A kept cell is older
-    /// than everything allocated after the collection, and a shared cell is
-    /// never rewritten, so no kept cell comes to point at a younger value.
-    pub(crate) fn keep_across_collection(&mut self) {
-        self.mark_aliased();
-    }
-
     /// Relocate the same logical tail in a collector-owned graph.
     pub(crate) fn relocate_tail_for_gc(&mut self, tail_addr: u64) {
         self.link = self.link().with_tail_addr(tail_addr).raw();
     }
 
-    /// Close this cell's open tail with `link`. The shared mark a collection
-    /// set stays: closing a tail is not a rewrite and never makes a cell
-    /// reusable.
+    /// Close this cell's open tail with `link`. The cell's shared mark
+    /// stays: closing a tail is not a rewrite and never makes a cell reusable.
     pub fn close_tail(&mut self, link: ListLink) {
         assert_eq!(self.tail(), ListTail::Hole, "only an open tail is closed");
         self.link = link.raw() | (self.link & LIST_LINK_ALIAS_MASK);
     }
 
-    /// Replace this cell's head and link when no second holder shares it. The
-    /// new link carries no alias bit and none of the old link's flags.
-    pub fn rewrite_if_unaliased(&mut self, head_raw: u64, link: ListLink) -> bool {
-        if self.aliased() {
-            return false;
-        }
+    /// Replace this cell's head and link. The caller has established that no
+    /// second holder shares the cell and that it is young: an old cell would
+    /// come to point at a younger value that no minor collection looks for.
+    /// The new link carries no alias bit and none of the old link's flags.
+    pub fn rewrite(&mut self, head_raw: u64, link: ListLink) {
+        debug_assert!(!self.aliased(), "a shared cell is never rewritten");
         self.head = head_raw;
         self.link = link.raw();
-        true
     }
 
     #[inline(always)]
@@ -1620,7 +1614,7 @@ pub unsafe fn struct_is_shared(addr: *const u8) -> bool {
 }
 
 /// Mark the struct at `addr` shared, writing only when it is not already: a
-/// shared struct may be read-only program data or old. Answers whether this
+/// shared struct may be read-only program data. Answers whether this
 /// call marked it.
 ///
 /// # Safety

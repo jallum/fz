@@ -617,8 +617,9 @@ boundary. Debug builds also record old blocks and
 cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
 untagged pointer must lie in a young or old block (`HeapView` also asks that it
 lie in the source heap's blocks), a tagged one in none, and none may lie in
-to-space. `fz_frame_for_write` reads the same table through `Reservation::is_young`,
-after its own literal check, because a frame can be a literal outside the range.
+to-space. Compiled code reads the same table through the heap's biased table
+address after its own literal check, because a frame can be a literal outside the
+range; `fz_frame_for_write` only copies.
 
 One `Tracer` (from-space, heap, schemas, the heap's worklist of copied objects) is
 the collection's context, and `Tracer::forward(word, kind)` is its one
@@ -1109,13 +1110,41 @@ again.
 The list link's **alias bit** protects a closed shared spine: a marked cell has
 a marked tail. `ListCons::share_spine` stops at the first marked cell, so repeated
 publication visits only newly protected cells plus one check per Share edge.
-The bit setter and link are private; shared cells cannot relink, and GC relocates
-the same logical tail without changing this invariant. A collection marks every
-cell it keeps (`ListCons::keep_across_collection`, from `Tracer::trace_list`), and
-a gift copy marks every cell it writes (`link_list_tail`), so a cell in an old
-block (one a collection kept) or in a message is never rewritten in place
-and never comes to point at a value allocated after it. A minor collection relies
-on this: it does not trace through old blocks.
+Shared cells cannot relink, and GC relocates the same logical tail without
+changing this invariant. A gift copy marks every cell it writes (`link_list_tail`),
+so a cell in a message is never rewritten in place. A collection marks nothing:
+it copies the alias bit with the cell.
+
+### Writes into kept objects
+
+A minor collection does not trace through old blocks, so no old object may come
+to point at a young one unrecorded. The shared mark means one thing, that a second
+holder may exist; it is set by a send, a gift, a capture and a `Share` operand, and
+never by a collection. A write in place into a list cell, a struct or a body frame
+requires the target to be unshared and young; an old target is copied, and the
+write goes to the copy. The age table (`heap/arena.rs`) is the authority for
+"young": one byte per 32-byte granule, bit 0 set under a young block. Both
+read the same byte from the biased table address the heap holds
+(`Heap::age_bias`, one load): the runtime through `Heap::is_young`
+(`Reservation::young_at`), compiled code through `INLINE_ALLOC_LAYOUT.age_bias`
+and `CodegenFn::emit_is_young`. Either way the test is a shift, a byte load and
+a bit test.
+At a rewrite the shared test comes first (it also covers literal structs, which are
+shared from birth), then the age test; a body frame tests its literal bit first,
+since a literal frame lies outside the table. The in-place arm gains only the age
+test. Each copy forced by an old target counts in `Heap::old_targets_copied`, on the
+cold path only (see [runtime-telemetry](runtime-telemetry.md)).
+
+The writers are `emit_list_reuse` and `Heap::reuse_or_alloc_list_cons_raw_kind` for
+list cells, `CodegenFn::rewrite_unshared_struct` and `fz_struct_reuse_or_copy` for
+structs, and `frame_young_or_copy` with `fz_frame_for_write` for frames.
+`fz_tuple_put` always copies. A binary holds bytes and no pointers, so a write into
+one cannot make an old object point at a young one.
+
+The one exception is a destination fill, which cannot be copied because its
+predecessor cell would still name the old object. The collector records open
+destinations instead (`Heap::open_holes`; see Open Fields), and a fill is not a
+rewrite.
 
 `ListRetention { source, permission }` belongs to the exact list construction.
 Identical raw head, kind, and tail retain the source even when shared or when
@@ -1169,15 +1198,13 @@ can gain a second holder:
   or value (`publish_contained_parts`; natively `CodegenFn::stored_form`,
   shaped by the stored value's type as a call argument's share is, and the
   list cell a cons places);
-- a collection that keeps it (`Tracer::trace_struct`), since a kept struct is
-  old;
 - a gift copy (`deep_copy_strict_struct`).
 
 A struct literal native code places in read-only program data
 (`define_static_struct_literal`) carries the mark from birth, so it is only
 ever read. Marking the struct alone is enough: everything it holds was marked
-when it was stored. An unshared struct is therefore young, which
-`fz_struct_reuse_or_copy` asserts. A struct update that stores into its
+when it was stored. A collection never sets the mark, so an unshared struct may
+be old; an update copies it (see "Writes into kept objects"). A struct update that stores into its
 base is a hit at its reuse site and one that copies is a miss, reported by
 `fz.runtime.reuse_site` (see [runtime-telemetry](runtime-telemetry.md#fzruntimereuse_site)).
 Native code bumps the hit inline, at the site's own counter.
@@ -1266,7 +1293,7 @@ reachable objects of the young blocks into fresh blocks, which become old, and
 leaves old objects where they are; a major collection copies every reachable
 object (`Heap::next_generation` chooses). Nothing old points at anything young
 except an *open field*: data is immutable, and a list cell in an old block is
-shared, so none is rewritten in place, but a cell whose field was left open
+copied rather than rewritten (see "Writes into kept objects"), but a cell whose field was left open
 (see Open Fields) is closed in place wherever it lives. An
 `AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not
 `AnyValueRef` can point into it, so a bare ref is a *temporary*: it must not

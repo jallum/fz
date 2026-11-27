@@ -116,7 +116,7 @@ fn a_list_hole_closes_with_a_list_and_keeps_the_head_kind_and_the_shared_mark() 
     let (cell, dest) = heap.alloc_open_list_cell(AnyValue::int(7));
     assert!(heap.destination_is_open(dest));
     let cons = unsafe { &mut *(cell.list_addr().unwrap() as *mut ListCons) };
-    cons.keep_across_collection();
+    cons.mark_aliased();
     let rest = list_ref(heap.alloc_list_cons_slot(AnyValue::int(8), crate::any_value::EMPTY_LIST));
     heap.fill_destination(dest, rest);
     assert!(!heap.destination_is_open(dest));

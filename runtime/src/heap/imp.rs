@@ -1,6 +1,6 @@
 //! impl Heap — the giant impl block + Drop.
 
-use super::arena::{Age, range};
+use super::arena::{Age, Reservation, range};
 use super::block_pool::{
     Block, SIZE_TABLE, next_block_capacity, pick_block_capacity, pick_tip_capacity, pool_alloc, round_up_16,
 };
@@ -140,6 +140,8 @@ impl Heap {
             block_start,
             bump_top: block_start,
             block_end,
+            age_bias: range().age_bias(),
+            old_targets_copied: 0,
             block_size,
             live_baseline: 0,
             old_after_last_major: 0,
@@ -1491,14 +1493,34 @@ impl Heap {
         marked
     }
 
+    /// Whether `object`, a heap object of this process, lies in a young block.
+    /// A write in place goes only to a young object.
+    #[inline(always)]
+    pub(crate) fn is_young(&self, object: *const u8) -> bool {
+        debug_assert!(range().contains(object), "{object:p} is outside the heap range");
+        Reservation::young_at(self.age_bias, object)
+    }
+
+    /// How many writes into an old object this heap answered with a copy.
+    pub fn old_targets_copied(&self) -> u64 {
+        self.old_targets_copied
+    }
+
+    /// Record that a write in place found its target old and went to a copy.
+    pub(crate) fn count_old_target_copied(&mut self) {
+        self.old_targets_copied += 1;
+    }
+
     /// How many binaries this heap has marked shared.
     pub fn binaries_shared(&self) -> u64 {
         self.binaries_shared
     }
 
     /// Retain identical immutable contents without allocation. Changed contents
-    /// require construction-owned rewrite permission and an unaliased source;
-    /// otherwise allocate a fresh cell.
+    /// require construction-owned rewrite permission and a source that is
+    /// unshared and young; otherwise allocate a fresh cell. A source a
+    /// collection kept is old, and a minor collection does not look inside it,
+    /// so a rewrite that made it point at a younger value would go unseen.
     ///
     /// Return contract: in-place reuse returns the original `list` ref;
     /// fallback allocation returns a distinct freshly-allocated cons ref.
@@ -1521,9 +1543,12 @@ impl Heap {
         self.publish_contained_parts(head_raw, head_kind);
         let link = self.link_to_tail(head_kind, tail);
         let cons = unsafe { &mut *(addr as *mut ListCons) };
-        if may_rewrite && cons.rewrite_if_unaliased(head_raw, link) {
-            self.assert_written_object_is_young(addr);
-            return Ok(list);
+        if may_rewrite && !cons.aliased() {
+            if self.is_young(addr) {
+                cons.rewrite(head_raw, link);
+                return Ok(list);
+            }
+            self.count_old_target_copied();
         }
         let fresh = self.place_list_cons(RuntimeAllocSite::ListConsStorage, head_raw, link);
         let addr = list_addr_from_tagged(fresh).expect("fresh list cons");
@@ -1589,7 +1614,7 @@ impl Heap {
     #[inline]
     pub(crate) fn assert_written_object_is_young(&self, object: *mut u8) {
         debug_assert!(
-            range().is_young(object),
+            self.is_young(object),
             "a write into an object a collection has already kept"
         );
     }

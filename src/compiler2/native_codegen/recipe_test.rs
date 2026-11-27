@@ -12,7 +12,7 @@ use fz_runtime::any_value::{
     closure_addr_from_tagged, struct_size_for_payload,
 };
 use fz_runtime::bits::Bin;
-use fz_runtime::heap::{Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
+use fz_runtime::heap::{GcStats, Heap, HeapAllocKind, INLINE_ALLOC_LAYOUT, Schema, SchemaRegistry};
 use fz_runtime::ir_runtime::*;
 use fz_runtime::pinned_abi;
 use fz_runtime::process::Process;
@@ -2133,6 +2133,48 @@ fn a_source_that_is_its_own_new_head_is_replaced_not_rewritten() {
     );
     assert!(left.fresh, "the source became shared, so a new cell holds it");
     assert_eq!(left.retention, (1, 0));
+}
+
+/// A source cell a collection kept is old, and a minor collection does not look
+/// inside an old cell, so a new head written into it could go unseen. The row
+/// replaces it with a new cell, as its runtime function does, and counts the
+/// replacement as an old target; a young unshared source is rewritten.
+#[test]
+fn an_old_unshared_source_is_replaced_and_counted_as_an_old_target() {
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    let compiled = compile_reuse(ReuseLane::Parts, ValueKind::INT, true);
+    let kept_source = |process: &mut Process| {
+        let (tail, _) = int_list(&mut process.heap, 2);
+        let mut roots = [process.heap.alloc_list_cons_int(1, tail).expect("a source cell")];
+        drop(process.heap.collect(&mut roots, &mut GcStats::default()));
+        roots[0]
+    };
+    let new_head = 9u64;
+    let int_kind = u64::from(ValueKind::INT.tag());
+
+    let mut inline = Box::new(Process::new(schemas.clone()));
+    let source = kept_source(&mut inline);
+    let tail = fz_list_tail_ref(source.raw_word());
+    let answered = unsafe { pinned_abi::call3(compiled.code, &mut *inline, source.raw_word(), new_head, tail) as u64 };
+    assert_ne!(answered, source.raw_word(), "the old cell is replaced");
+    assert_eq!(inline.heap.old_targets_copied(), 1);
+    assert_eq!(site_reuses(&compiled), (0, 1), "a miss, no hit");
+
+    let mut reference = Box::new(Process::new(schemas.clone()));
+    let source = kept_source(&mut reference);
+    let tail = fz_list_tail_ref(source.raw_word());
+    let process: *mut Process = &mut *reference;
+    let answered = fz_list_reuse_or_cons_parts(process, source.raw_word(), new_head, int_kind, tail, LIST_KIND_WORD, 1);
+    assert_ne!(answered, source.raw_word(), "the runtime function replaces it too");
+    assert_eq!(reference.heap.old_targets_copied(), 1);
+
+    let mut young = Box::new(Process::new(schemas));
+    let (tail, _) = int_list(&mut young.heap, 2);
+    let source = young.heap.alloc_list_cons_int(1, tail).expect("a source cell");
+    let tail = fz_list_tail_ref(source.raw_word());
+    let answered = unsafe { pinned_abi::call3(compiled.code, &mut *young, source.raw_word(), new_head, tail) as u64 };
+    assert_eq!(answered, source.raw_word(), "a young unshared cell is rewritten");
+    assert_eq!(young.heap.old_targets_copied(), 0);
 }
 
 // Binary comparison rows answer a condition, and call the runtime function only

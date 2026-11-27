@@ -340,9 +340,8 @@ one struct at each step instead of copying it:</p>
 code after the update never uses the base again. At run time the struct's
 header carries a shared mark, set the moment a second holder could appear:
 when the struct is passed to a call whose caller still reads it, stored into
-a tuple, struct, list or map, captured by a closure, sent as a message, or
-kept by a collection. A marked struct is copied, so anyone still holding it
-reads its old fields.</p>
+a tuple, struct, list or map, captured by a closure, or sent as a message. A marked struct is copied, so anyone still holding it
+reads its old fields; so is one a collection has moved to an old block.</p>
 
 <p><strong>Return-demand destinations:</strong></p>
 
@@ -823,10 +822,10 @@ not keep a dead list alive.</p>
 
 <p>A collection keeps the frame in an old block, and a write into an old object
 that names a young one would hide the young object from the next minor
-collection. So before every write the step checks that the frame is in the
-newest block; if it is not and the frame is old, the frame is copied to the tip
-and the write goes to the copy. Each process counts these copies in its
-<code>frame_copies</code> telemetry.</p>
+collection. So before every write the step checks that the frame is in a young
+block; if it is old, the frame is copied to the tip and the write goes to the
+copy. Each process counts these copies, and the same copies of old list cells
+and structs, in its <code>old_targets_copied</code> telemetry.</p>
 
 <!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
 <h2 id="roots">6. GC roots and the off-heap sweep</h2>
@@ -1324,9 +1323,9 @@ pointer write needs an extra store — significant overhead.</p>
 <div class="box green">
 fz data is immutable, with one exception the runtime controls: a list cell or
 struct nobody else holds may be reused in place when a list is rebuilt or a
-struct updated. A collection marks every list cell and struct it keeps as
-shared, and a gift's are marked shared when they are copied into it, so a
-shared one is never reused. An old
+struct updated. A rewrite goes only to an object that is unshared and in a
+young block: a gift's are marked shared when they are copied into it, and an old
+one is copied instead of rewritten. An old
 object therefore never gains a reference to a younger one.
 <strong>No write barriers needed.</strong>
 </div>

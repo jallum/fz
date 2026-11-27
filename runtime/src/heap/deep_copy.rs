@@ -377,7 +377,7 @@ fn copy_list_cell(sp: *mut u8, src_heap: &HeapView, dst_heap: &mut Heap) -> (*mu
 fn write_list_cell(dst_heap: &Heap, dp: *mut u8, head: AnyValue, link: ListLink) {
     let mut cons = ListCons::with_link(head.raw(), link);
     if dst_heap.gift_window_is_open() {
-        cons.keep_across_collection();
+        cons.mark_aliased();
     }
     unsafe {
         write(dp as *mut ListCons, cons);

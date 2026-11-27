@@ -3993,13 +3993,19 @@ fn a_struct_update_rewrites_only_a_base_nothing_else_holds() {
     // Thirteen struct updates on every path. Natively only the threaded
     // loop's second and third steps store into their base: its first base is
     // read-only program data, and every other base is published -- passed to
-    // a call its caller still reads, stored in a tuple, captured, received as
-    // a message, or kept by a collection.
+    // a call its caller still reads, stored in a tuple, captured or received
+    // as a message -- or old, because a collection kept it. The old base is
+    // the one update counted as an old target.
     for path in [FixtureMatrixPath::Run, FixtureMatrixPath::Build] {
         assert_eq!(
             struct_retention_for_fixture(&fixture, path),
             (13, 2),
             "{path:?}: only the threaded loop's own copies are rewritten",
+        );
+        assert_eq!(
+            old_targets_copied_for_fixture(&fixture, path, "old targets"),
+            1,
+            "{path:?}: the struct a collection kept is copied, not written",
         );
     }
 
@@ -4010,6 +4016,11 @@ fn a_struct_update_rewrites_only_a_base_nothing_else_holds() {
         struct_retention_for_fixture(&fixture, FixtureMatrixPath::Interp),
         (13, 9),
         "interp: the literals and the uncollected `kept` are rewritten as well",
+    );
+    assert_eq!(
+        old_targets_copied_for_fixture(&fixture, FixtureMatrixPath::Interp, "interp old targets"),
+        0,
+        "interp: nothing is old"
     );
 }
 
@@ -4452,7 +4463,7 @@ fn a_long_body_copies_its_frame_forward_when_a_collection_kept_it() {
         (FixtureMatrixPath::Interp, "interp", 0),
     ] {
         assert_eq!(
-            frame_copies_for_fixture(&fixture, path, label),
+            old_targets_copied_for_fixture(&fixture, path, label),
             copies,
             "{label}: body frames copied to the tip"
         );
@@ -4482,11 +4493,11 @@ fn a_list_the_body_no_longer_uses_is_not_kept_by_its_frame() {
 
 /// The body frames the fixture's exiting processes report having copied to the
 /// heap tip.
-fn frame_copies_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> usize {
+fn old_targets_copied_for_fixture(fixture: &FixtureCase, path: FixtureMatrixPath, label: &str) -> usize {
     telemetry_log_for_fixture(fixture, path, label)
         .lines()
         .filter(|line| line.contains("\"name\":[\"fz\",\"runtime\",\"process_exited\"]"))
-        .map(|line| required_json_u64_field(line, "frame_copies", "process_exited event"))
+        .map(|line| required_json_u64_field(line, "old_targets_copied", "process_exited event"))
         .sum()
 }
 

@@ -5,21 +5,18 @@
 //!
 //! A frame a collection kept lives in an old block, and a write into it that
 //! names a younger object would be invisible to the next minor collection. So
-//! every write first asks whether the frame is in the tip block, the one block
-//! no collection has kept: if not, the runtime answers the frame itself when it
-//! is young (a frame too large for the tip is parked alone in a young block) and
-//! a copy at the tip when it is old, and the write goes to the answer. A write
-//! answers the frame to use from then on.
+//! every write first asks whether the frame is a heap object in a young block,
+//! by the age table; a literal frame is read-only program data and is not asked.
+//! A frame that is literal or old is copied by the runtime to the tip, and the
+//! write goes to the copy. A write answers the frame to use from then on.
 
 use super::closure::{CaptureStores, StoredRefKind};
 use super::*;
 use crate::fz_ir::FrameLane;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, condcodes::IntCC, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlagsData, types};
 use cranelift_module::Module;
-use fz_runtime::any_value::{CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, NIL_ATOM_ID, ValueKind};
-use fz_runtime::heap::INLINE_ALLOC_LAYOUT;
+use fz_runtime::any_value::{AnyValueRefPacking, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET, NIL_ATOM_ID, ValueKind};
 use fz_runtime::ir_runtime::fz_frame_for_write;
-use fz_runtime::process_abi::PROCESS_HEAP_OFFSET;
 
 fn lane_to_repr(lane: FrameLane) -> ArgRepr {
     match lane {
@@ -55,7 +52,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         slot: u32,
         capture: ClosureCapture,
     ) -> ir::Value {
-        let frame = self.frame_in_tip_or_copy(frame);
+        let frame = self.frame_young_or_copy(frame);
         let address = address_field(self.b, frame);
         let stores = CaptureStores::new(address, width as usize);
         let idx = slot as usize;
@@ -77,7 +74,7 @@ impl<M: Module> CodegenFn<'_, '_, M> {
     /// here on. A slot holding a scalar-kinded value is left whole: a live ref
     /// to a scalar names its own slot and is read through it.
     pub(super) fn frame_clear(&mut self, frame: ir::Value, width: u32, slot: u32) -> ir::Value {
-        let frame = self.frame_in_tip_or_copy(frame);
+        let frame = self.frame_young_or_copy(frame);
         let address = address_field(self.b, frame);
         let stores = CaptureStores::new(address, width as usize);
         let kind_offset = CLOSURE_CAPTURES_OFFSET + (width as usize * 8 + slot as usize) as i32;
@@ -99,24 +96,26 @@ impl<M: Module> CodegenFn<'_, '_, M> {
         frame
     }
 
-    /// `frame` when its object lies in the tip block, `[block_start,
-    /// bump_top)`; else the runtime answers the frame to write, which is the
-    /// frame itself when it is young and a copy at the tip when it is old.
-    fn frame_in_tip_or_copy(&mut self, frame: ir::Value) -> ir::Value {
-        let flags = MemFlagsData::trusted();
-        let layout = INLINE_ALLOC_LAYOUT;
-        let field = |offset: usize| PROCESS_HEAP_OFFSET + offset as i32;
+    /// `frame` when it is a heap object a collection has not kept, else the
+    /// copy `fz_frame_for_write` answers. A literal frame is read-only program
+    /// data, outside the age table, so it is asked about first.
+    fn frame_young_or_copy(&mut self, frame: ir::Value) -> ir::Value {
         let process = self.process_arg();
-        let start = self.b.ins().load(types::I64, flags, process, field(layout.block_start));
-        let top = self.b.ins().load(types::I64, flags, process, field(layout.bump_top));
-        let address = address_field(self.b, frame);
-        let offset = self.b.ins().isub(address, start);
-        let filled = self.b.ins().isub(top, start);
-        let young = self.b.ins().icmp(IntCC::UnsignedLessThan, offset, filled);
+        let age = self.b.create_block();
         let keep = self.b.create_block();
         let copy = self.b.create_block();
         let done = self.b.create_block();
         let result = self.b.append_block_param(done, types::I64);
+        let literal = self
+            .b
+            .ins()
+            .band_imm_u(frame, AnyValueRefPacking::current().literal_bit() as i64);
+        self.b.ins().brif(literal, copy, &[], age, &[]);
+
+        self.b.switch_to_block(age);
+        self.b.seal_block(age);
+        let address = address_field(self.b, frame);
+        let young = self.emit_is_young(address);
         self.b.ins().brif(young, keep, &[], copy, &[]);
 
         self.b.switch_to_block(copy);

@@ -30,9 +30,8 @@
 //! its tip parks it and climbs the table, like an allocation); those blocks are
 //! old, and the from-space is released. A minor collection's from-space is the
 //! young blocks, so old blocks stay where they are and are not traced through:
-//! nothing old points at anything young, because data is immutable and the
-//! collector marks every list cell it keeps as shared, so none is rewritten in
-//! place. A major collection's from-space is every block, and runs once the old
+//! nothing old points at anything young, because data is immutable and a write in
+//! place goes only to an object the age table reads young: an old one is copied. A major collection's from-space is every block, and runs once the old
 //! blocks have outgrown what the last major collection left. A grafted gift
 //! block is young, parked with the blocks allocation parked: a minor
 //! collection reclaims it if the message is dead and copies it once if live.
@@ -126,24 +125,41 @@ pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
 
 /// Byte offsets, from the start of a `Heap`, of the fields compiled code
 /// updates to place an object at the tip without calling the runtime: the
-/// bump pointer and its block's start and end.
+/// bump pointer and its block's start and end, and the biased age table that
+/// answers whether an object may be written in place.
 #[derive(Clone, Copy, Debug)]
 pub struct InlineAllocLayout {
     pub block_start: usize,
     pub bump_top: usize,
     pub block_end: usize,
+    pub age_bias: usize,
 }
+
+/// How far an address is shifted right to name its granule in the age table:
+/// compiled code reads the table byte at `age_bias + (address >> AGE_GRANULE_SHIFT)`.
+pub const AGE_GRANULE_SHIFT: u32 = arena::GRANULE_SHIFT;
 
 pub const INLINE_ALLOC_LAYOUT: InlineAllocLayout = InlineAllocLayout {
     block_start: std::mem::offset_of!(Heap, block_start),
     bump_top: std::mem::offset_of!(Heap, bump_top),
     block_end: std::mem::offset_of!(Heap, block_end),
+    age_bias: std::mem::offset_of!(Heap, age_bias),
 };
 
 pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,
     block_end: *mut u8,
+    /// The address the age table is read at: the byte at
+    /// `age_bias + (address >> 5)` has bit 0 set when the address lies in a
+    /// young block. It is the process's `Reservation::age_bias`, copied here
+    /// so compiled code reaches it with one load from the heap.
+    age_bias: usize,
+    /// How many writes into an object a collection had kept were made to a
+    /// copy instead: a list cell, struct or body frame found old when a write
+    /// in place was asked for. A kept object may hold no pointer to a younger
+    /// one, so the copy is the write.
+    pub(crate) old_targets_copied: u64,
     /// The tip's capacity in bytes: a `SIZE_TABLE` entry, or an exact size
     /// above the table for a block made to hold a larger object.
     block_size: usize,

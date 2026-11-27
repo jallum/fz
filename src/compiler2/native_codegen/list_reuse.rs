@@ -105,9 +105,20 @@ pub(super) fn emit_list_reuse<M: cranelift_module::Module>(
     let fresh = body.b.create_block();
     if may_rewrite {
         let rewrite = body.b.create_block();
+        let age = body.b.create_block();
+        let old = body.b.create_block();
         let current = load_link(body.b, source_address);
         let aliased = link_is_shared(body.b, current);
-        body.b.ins().brif(aliased, fresh, &[], rewrite, &[]);
+        body.b.ins().brif(aliased, fresh, &[], age, &[]);
+        body.b.switch_to_block(age);
+        body.b.seal_block(age);
+        let young = body.emit_is_young(source_address);
+        body.b.ins().brif(young, rewrite, &[], old, &[]);
+        body.b.switch_to_block(old);
+        body.b.seal_block(old);
+        body.b.set_cold_block(old);
+        body.count_old_target_copied();
+        body.b.ins().jump(fresh, &[]);
         body.b.switch_to_block(rewrite);
         body.b.seal_block(rewrite);
         store_cell(body.b, source_address, replacement.raw, link);
