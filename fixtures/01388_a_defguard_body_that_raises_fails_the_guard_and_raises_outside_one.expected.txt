@@ -1,0 +1,7 @@
+raise fails the guard: [:a, :b, :b, :b, :b]
+raise under or fails the whole guard: [:a, :b, :b, :b]
+outside a guard: ArgumentError
+errors were found at the given arguments:
+
+  * 1st argument: not a nonempty list
+

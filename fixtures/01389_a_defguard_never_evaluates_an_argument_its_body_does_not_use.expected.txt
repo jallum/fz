@@ -1,0 +1,8 @@
+unused argument: true
+evaluated 1
+evaluated 2
+each used argument once: true
+evaluated 5
+only the second argument: true
+evaluated 1
+false: false

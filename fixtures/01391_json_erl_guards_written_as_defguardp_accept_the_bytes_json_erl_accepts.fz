@@ -1,0 +1,200 @@
+#---
+# purpose: "The six guards of OTP's json.erl, written as defguardp in a module and used as json.erl uses them in binary-pattern clauses, accept and refuse the same bytes as in Elixir"
+# oracle: self
+# oracle.stamp: edee5f6b7a5777a5
+#---
+defmodule OtpJSONGuards do
+  defguardp is_1_to_9(x)
+            when x === ?1 or
+                   x === ?2 or
+                   x === ?3 or
+                   x === ?4 or
+                   x === ?5 or
+                   x === ?6 or
+                   x === ?7 or
+                   x === ?8 or
+                   x === ?9
+
+  defguardp is_0_to_9(x) when x >= ?0 and x <= ?9
+
+  defguardp is_ws(x) when x === ?\s or x === ?\t or x === ?\r or x === ?\n
+
+  defguardp is_ascii_escape(byte)
+            when byte === 0 or
+                   byte === 1 or
+                   byte === 2 or
+                   byte === 3 or
+                   byte === 4 or
+                   byte === 5 or
+                   byte === 6 or
+                   byte === 7 or
+                   byte === 8 or
+                   byte === 9 or
+                   byte === 10 or
+                   byte === 11 or
+                   byte === 12 or
+                   byte === 13 or
+                   byte === 14 or
+                   byte === 15 or
+                   byte === 16 or
+                   byte === 17 or
+                   byte === 18 or
+                   byte === 19 or
+                   byte === 20 or
+                   byte === 21 or
+                   byte === 22 or
+                   byte === 23 or
+                   byte === 24 or
+                   byte === 25 or
+                   byte === 26 or
+                   byte === 27 or
+                   byte === 28 or
+                   byte === 29 or
+                   byte === 30 or
+                   byte === 31 or
+                   byte === 34 or
+                   byte === 92
+
+  defguardp is_ascii_plain(byte)
+            when byte === 32 or
+                   byte === 33 or
+                   byte === 35 or
+                   byte === 36 or
+                   byte === 37 or
+                   byte === 38 or
+                   byte === 39 or
+                   byte === 40 or
+                   byte === 41 or
+                   byte === 42 or
+                   byte === 43 or
+                   byte === 44 or
+                   byte === 45 or
+                   byte === 46 or
+                   byte === 47 or
+                   byte === 48 or
+                   byte === 49 or
+                   byte === 50 or
+                   byte === 51 or
+                   byte === 52 or
+                   byte === 53 or
+                   byte === 54 or
+                   byte === 55 or
+                   byte === 56 or
+                   byte === 57 or
+                   byte === 58 or
+                   byte === 59 or
+                   byte === 60 or
+                   byte === 61 or
+                   byte === 62 or
+                   byte === 63 or
+                   byte === 64 or
+                   byte === 65 or
+                   byte === 66 or
+                   byte === 67 or
+                   byte === 68 or
+                   byte === 69 or
+                   byte === 70 or
+                   byte === 71 or
+                   byte === 72 or
+                   byte === 73 or
+                   byte === 74 or
+                   byte === 75 or
+                   byte === 76 or
+                   byte === 77 or
+                   byte === 78 or
+                   byte === 79 or
+                   byte === 80 or
+                   byte === 81 or
+                   byte === 82 or
+                   byte === 83 or
+                   byte === 84 or
+                   byte === 85 or
+                   byte === 86 or
+                   byte === 87 or
+                   byte === 88 or
+                   byte === 89 or
+                   byte === 90 or
+                   byte === 91 or
+                   byte === 93 or
+                   byte === 94 or
+                   byte === 95 or
+                   byte === 96 or
+                   byte === 97 or
+                   byte === 98 or
+                   byte === 99 or
+                   byte === 100 or
+                   byte === 101 or
+                   byte === 102 or
+                   byte === 103 or
+                   byte === 104 or
+                   byte === 105 or
+                   byte === 106 or
+                   byte === 107 or
+                   byte === 108 or
+                   byte === 109 or
+                   byte === 110 or
+                   byte === 111 or
+                   byte === 112 or
+                   byte === 113 or
+                   byte === 114 or
+                   byte === 115 or
+                   byte === 116 or
+                   byte === 117 or
+                   byte === 118 or
+                   byte === 119 or
+                   byte === 120 or
+                   byte === 121 or
+                   byte === 122 or
+                   byte === 123 or
+                   byte === 124 or
+                   byte === 125 or
+                   byte === 126 or
+                   byte === 127
+
+  defguardp are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8)
+            when is_ascii_plain(b1) and
+                   is_ascii_plain(b2) and
+                   is_ascii_plain(b3) and
+                   is_ascii_plain(b4) and
+                   is_ascii_plain(b5) and
+                   is_ascii_plain(b6) and
+                   is_ascii_plain(b7) and
+                   is_ascii_plain(b8)
+
+  def chain(<<b, _::bits>>) when is_ws(b), do: :ws
+  def chain(_), do: :other
+
+  def ws(<<byte, rest::bits>>) when is_ws(byte), do: {:ws, rest}
+  def ws(<<_, _::bits>>), do: :no
+  def ws(<<>>), do: :empty
+
+  def class(<<byte, _::bits>>) when is_1_to_9(byte), do: :one_to_nine
+  def class(<<byte, _::bits>>) when is_0_to_9(byte), do: :zero
+  def class(<<byte, _::bits>>) when is_ws(byte), do: :ws
+  def class(<<byte, _::bits>>) when is_ascii_escape(byte), do: :escape
+  def class(<<byte, _::bits>>) when is_ascii_plain(byte), do: :plain
+  def class(<<_, _::bits>>), do: :other
+  def class(<<>>), do: :empty
+
+  def eight(<<b1, b2, b3, b4, b5, b6, b7, b8, rest::bits>>) when are_all_ascii_plain(b1, b2, b3, b4, b5, b6, b7, b8),
+    do: {:eight, rest}
+
+  def eight(_), do: :fewer
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect({OtpJSONGuards.chain(" x"), OtpJSONGuards.chain("x")}, label: "chain")
+    Enum.each([" a", "\ta", "\ra", "\na", "a ", "", <<0>>], fn s -> IO.inspect(OtpJSONGuards.ws(s), label: "ws") end)
+
+    bytes = [?0, ?5, ?9, ?\s, ?\t, 0, 31, ?", ?\\, ?a, ?~, 127, 128, 255]
+    Enum.each(bytes, fn b -> IO.inspect(OtpJSONGuards.class(<<b>>), label: "class of #{b}") end)
+    IO.inspect(OtpJSONGuards.class(""), label: "empty")
+
+    IO.inspect(OtpJSONGuards.eight("abcdefghij"), label: "eight plain")
+    IO.inspect(OtpJSONGuards.eight("abcdefg\n"), label: "an escape among eight")
+    IO.inspect(OtpJSONGuards.eight("abc"), label: "fewer than eight")
+  end
+end
+
+Main.main()

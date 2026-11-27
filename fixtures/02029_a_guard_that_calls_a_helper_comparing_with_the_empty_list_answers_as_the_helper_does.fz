@@ -6,14 +6,14 @@
 # assert.metric.semantic.executables: 6
 # assert.metric.semantic.callsites: 6
 # assert.metric.call_edges.count: 6
-# oracle: 02029_a_guard_that_calls_a_helper_comparing_with_the_empty_list_answers_as_the_helper_does.oracle.exs
-# oracle.stamp: 0ee5055944a19c82
+# oracle: self
+# oracle.stamp: 6b61a3f919469da6
 #---
 #
 # The helper is read as the facts its clause states, and `[]` is one of them
 # whether it is written in the helper or passed to it.
 defmodule Main do
-  def empty?(c), do: c === []
+  defguardp empty?(c) when c === []
 
   def f(c) when empty?(c), do: :empty
   def f(c), do: {:set, c}

@@ -1,0 +1,44 @@
+#---
+# purpose: "defguard and defguardp define guards usable in a function head, a case clause and a receive clause, evaluate as an ordinary call outside a guard, and may be built from one another, as in Elixir"
+# oracle: self
+# oracle.stamp: 761bde8b381c527f
+#---
+defmodule Guards do
+  defguard is_small(n) when is_integer(n) and n < 10
+  defguardp is_even(n) when is_integer(n) and rem(n, 2) == 0
+  defguardp is_small_even(n) when is_small(n) and is_even(n)
+
+  def head(n) when is_small_even(n), do: :small_even
+  def head(n) when is_small(n), do: :small
+  def head(_), do: :other
+
+  def in_case(n) do
+    case n do
+      n when is_even(n) -> :even
+      _ -> :odd
+    end
+  end
+
+  def in_receive(n) do
+    send(self(), n)
+
+    receive do
+      m when is_small_even(m) -> {:small_even, m}
+      m when is_small(m) -> {:small, m}
+      m -> {:other, m}
+    end
+  end
+
+  def outside(n), do: {is_small(n), is_even(n), is_small_even(n)}
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.map([4, 7, 12, :x], &Guards.head/1), label: "head")
+    IO.inspect(Enum.map([4, 7, 12, :x], &Guards.in_case/1), label: "case")
+    IO.inspect(Enum.map([4, 7, 12, :x], &Guards.in_receive/1), label: "receive")
+    Enum.each([4, 7, 12, :x], fn n -> IO.inspect(Guards.outside(n), label: "outside " <> inspect(n)) end)
+  end
+end
+
+Main.main()

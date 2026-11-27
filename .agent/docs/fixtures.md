@@ -352,7 +352,7 @@ location), and raises a plain value with `:erlang.error/1`.
 
 **A twin** (`oracle: <file>.exs`) is kept only for a fixture whose source is
 not valid Elixir or whose output Elixir does not share: typed parameters,
-`extern`, the `%` operator, a guard that calls a `defp`, a top-level call to a later `def`,
+`extern`, the `%` operator, a guard that calls a `def` or a `defp` helper that is not a `defguard` shape (several clauses, typed parameters, a pattern), a top-level call to a later `def`,
 fz-only library functions (`range/3`, `compare/2`, `Utf8`, ...),
 `__MODULE__` outside a module, an `Enumerable` that implements fz's
 `reduce_while`, a macro that unquotes a map, or `dbg`'s own rendering. The twin is the Elixir program whose output the fixture

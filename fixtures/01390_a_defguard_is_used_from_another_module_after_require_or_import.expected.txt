@@ -1,0 +1,5 @@
+require, in a guard: [:tiny, :large, :large]
+require, outside a guard: [true, false, false]
+require, three arguments: [:ten, :other]
+import, in a guard: [:tiny, :large, :large]
+import, outside a guard: [true, false, false]

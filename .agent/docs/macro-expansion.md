@@ -363,6 +363,58 @@ names `env` holds: `env` decides which calls are asked about and the context
 they stand in. A guard's `Macro.expand(ast, %{__CALLER__ | context: :guard})`
 therefore runs the macros in a guard's context, as `defguard` does.
 
+### defguard and defguardp
+
+`defguard name(a1, ..., an) when body` (`lib/kernel.fz`) is a macro that emits
+two definitions in the caller's module `M`, and `defguardp` emits the private
+forms of both:
+
+```elixir
+defmacro name(a1, ..., an),
+  do: Kernel.Utils.defguard_call(M, :__defguard_name__, [used arguments])
+
+def __defguard_name__(used parameters), do: body
+```
+
+The macro's body returns a call to the function: a remote call `M.helper(...)`
+for `defguard`, a local call `helper(...)` for `defguardp` (`defmacrop` and
+`defp`). The function holds `body` and expands in its own module's scope. A
+guard and a body expand the same call, so the macro never asks which context it
+is in.
+
+The used arguments are the parameters `body` mentions, found by
+`Macro.postwalk/3` over `body` (`Kernel.Utils.defguard_used`), passed and
+declared in parameter order. An argument `body` leaves unused is dropped from
+the call, so the caller's expression for it is never evaluated, as in Elixir. A
+used argument is evaluated once, where it is passed to the function.
+
+No inlining is needed, which is why fz does not expand `body` in a guard
+context as Elixir's `Kernel.Utils.defguard` does. A BEAM guard cannot call a
+user function, so Elixir pastes the body into every guard. An fz guard calls a
+pure function through the guard check (`collect_requirements` and
+`walk_guard_calls`, `jobs/dispatch.rs`), so the call to the helper is the
+guard. A body that raises fails the guard that calls it, and raises its own
+error outside a guard.
+
+`defguard_parts` checks the syntax as Elixir's `define_guard` does: two `when`
+clauses, a call that is not a name with arguments, and an argument that is not
+a variable each raise `ArgumentError` "invalid syntax in defguard ...". A
+`defguard` without `when` raises `ArgumentError` naming the guard, where
+Elixir defines a macro with no body. The checks run when the module is defined.
+
+Deviations from Elixir:
+
+  * A body that is not allowed in a guard is reported when a guard first uses
+    it, with the guard check's own message, and a body used only outside guards
+    is accepted. Elixir reports it where `defguard` is written.
+  * The syntax errors interpolate `Macro.to_string(call)`, which raises
+    `RuntimeError` in fz, so a malformed `defguard` fails with that error and
+    not Elixir's text.
+  * A public `defguard` adds the function `__defguard_name__/n` to
+    `__info__(:functions)`; Elixir lists none. A `defguardp` lists nothing.
+  * The macro carries no `@doc guard: true`: fz's parser refuses
+    `@doc guard: true` inside a `quote` block.
+
 A memoized expansion stores how many expansion numbers its questions drew
 (`MacroExpansion::answered_expansions`), and a memo hit draws as many, so the
 numbering that stamps hygiene counters does not depend on whether a run was

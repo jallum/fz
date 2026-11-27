@@ -163,7 +163,7 @@ runs <em>after</em> the structural tests for that clause have passed:</p>
 <p>Guards are restricted to things the matcher can safely evaluate
 itself: arithmetic, comparisons, boolean
 connectives, simple field access, calls to user-defined guard
-helpers, and the Kernel guard functions (<code>is_integer</code>,
+helpers (<code>defguard</code> and <code>defguardp</code> define one, as in Elixir), and the Kernel guard functions (<code>is_integer</code>,
 <code>is_binary</code>, <code>is_bitstring</code>, <code>is_list</code>, <code>is_map</code>,
 <code>is_atom</code>, <code>is_float</code>, <code>is_number</code>, <code>is_boolean</code>,
 <code>is_nil</code>, <code>is_tuple</code>, <code>is_function</code>
