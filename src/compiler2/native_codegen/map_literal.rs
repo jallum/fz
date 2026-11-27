@@ -98,6 +98,10 @@ pub(super) fn lower_make_map<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     entries: &[(Var, Var)],
     in_key_order: bool,
 ) -> Result<LowerOut, CodegenError> {
+    if !body.cache.live_vars.contains(&dest_var.0) {
+        // Nothing reads the map: a build is no effect, so it is not made.
+        return Ok(LowerOut::Strict(strict_const_value(body.b, AnyValue::nil_atom())));
+    }
     if in_key_order && let Some(fields) = static_entries(body.cache, var_env, entries) {
         let image = static_map_image(&fields)?;
         let name = static_object_name(body, env, "map", dest_var);

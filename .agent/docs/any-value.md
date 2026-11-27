@@ -905,7 +905,16 @@ in the recipe table): the header word, the tag bytes a word at a time (a
 constant unless a value's kind is known only at run time), the key words as
 constants and each value's stored form (`CodegenFn::stored_entry`, which marks
 a heap value shared as `Heap::write_map_entries` does). Any other literal fills
-a destination through the runtime. The interpreter
+a destination through the runtime. A `Map.put` of a literal atom key onto a map
+this function built in key order from literal atom keys (`Provenance` in
+`NativeFnCtx`, which follows a map through block parameters entered once:
+copied-call heads, a single return, a clause entry and an entry one tail hands
+control to) is not a call: `fold_map_put` builds the one map of all the entries,
+the key in name order and replacing its value if present. The maps the chain
+passed through are read by nothing, so `lower_make_map` does not build them
+(`ir_dce::live_vars`: a value forwarded only to block parameters nothing reads
+is dead). A put after a join of several paths, onto a key that is not a literal
+atom, or onto a map of another origin, is the runtime's `fz_map_put`. The interpreter
 builds the same literal on the heap, so the map-allocation counts of the two
 differ, and a rendered map is walked whether or not its address is a literal.
 

@@ -1,0 +1,45 @@
+#---
+# purpose: "A chain of Map.put calls onto a map literal answers what the puts make one after another: a repeated key keeps its last value, a key the literal holds is replaced, an intermediate map that is also used is unchanged, and a put after a branch is a put onto either arm's map"
+# oracle: self
+# oracle.stamp: 8d23fad4a2b525a7
+#---
+defmodule Main do
+  def sorted(map), do: Enum.sort(Map.to_list(map))
+
+  def mixed(x, y) do
+    m = %{c: 1}
+    m = Map.put(m, :a, x)
+    m = Map.put(m, :c, y)
+    m = Map.put(m, :b, x)
+    Map.put(m, :a, y)
+  end
+
+  def piped(x, y), do: %{} |> Map.put(:b, y) |> Map.put(:a, x) |> Map.put(:c, x + y)
+
+  def branch(flag, x) do
+    m = %{b: 1}
+    m = if flag, do: Map.put(m, :a, x), else: Map.put(m, :z, x)
+    Map.put(m, :q, 0)
+  end
+
+  def reuse(x) do
+    m1 = Map.put(%{}, :a, x)
+    m2 = Map.put(m1, :b, x)
+    {m1, m2}
+  end
+
+  def non_atom_key(k, x), do: %{} |> Map.put(:a, x) |> Map.put(k, x)
+
+  def main() do
+    IO.inspect(sorted(mixed(1, 2)))
+    IO.inspect(sorted(piped(1, 2)))
+    IO.inspect(sorted(branch(true, 5)))
+    IO.inspect(sorted(branch(false, 5)))
+    {a, b} = reuse(7)
+    IO.inspect({sorted(a), sorted(b)})
+    IO.inspect({sorted(non_atom_key(:z, 1)), sorted(non_atom_key("s", 1))})
+    IO.inspect(Map.put(%{a: 1}, :a, 1) == %{a: 1})
+  end
+end
+
+Main.main()

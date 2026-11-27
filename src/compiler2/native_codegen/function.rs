@@ -109,6 +109,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         let (if_only, all_used) = classify_var_uses(f);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
+        body.cache.live_vars = crate::ir_dce::live_vars(f).into_iter().map(|v| v.0).collect();
     }
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());

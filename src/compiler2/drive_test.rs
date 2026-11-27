@@ -9394,6 +9394,35 @@ fn compiler2_native_map_put_passes_an_integer_as_its_word_and_kind() {
     );
 }
 
+/// A chain of puts onto a map literal is the one map of all its entries,
+/// placed inline: the code calls neither the runtime's put nor its destination
+/// protocol, and asks the runtime only for room on the cold path.
+#[test]
+fn compiler2_native_chain_of_puts_onto_a_map_literal_is_one_inline_allocation() {
+    let clif = lowered_clif_of(
+        "defmodule P do\n\
+         \x20 def pair(x, y) when is_integer(x) and is_integer(y), do: %{} |> Map.put(:b, y) |> Map.put(:a, x)\n\
+         end\n\
+         def main(), do: P.pair(1, 2)\n",
+        "pair",
+    );
+    for runtime_build in [
+        "fz_map_put",
+        "fz_map_dest_begin",
+        "fz_map_dest_put",
+        "fz_map_dest_publish",
+    ] {
+        assert!(
+            !clif.contains(runtime_build),
+            "the chain makes its map where it stands, not through `{runtime_build}`:\n{clif}"
+        );
+    }
+    assert!(
+        clif.matches(" = call ").count() == 1 && clif.contains("fz_heap_room"),
+        "the one call is the cold path's request for room:\n{clif}"
+    );
+}
+
 /// `a + b` over integers in a function that cannot suspend is the add itself:
 /// `Kernel.+` is a forwarder of an extern, small enough to be copied into its
 /// caller, so the caller's code calls no function of the program, only the

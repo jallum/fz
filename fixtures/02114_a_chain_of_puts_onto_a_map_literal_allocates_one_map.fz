@@ -1,0 +1,28 @@
+#---
+# purpose: "Compiled code makes one map for a chain of six puts onto a map literal; the interpreter, which puts one at a time, makes a map for each"
+# kind: run
+#---
+# Each figure is net of what two stats snapshots allocate themselves, which a
+# call that does nothing measures.
+defmodule P do
+  def six(x, y) do
+    m = %{}
+    m = Map.put(m, :a, x)
+    m = Map.put(m, :b, y)
+    m = Map.put(m, :c, x)
+    m = Map.put(m, :d, y)
+    m = Map.put(m, :e, x)
+    Map.put(m, :f, y)
+  end
+
+  def gross(fun) do
+    a = System.alloc_stats()
+    result = fun.()
+    b = System.alloc_stats()
+    {result, b[:map_allocs] - a[:map_allocs]}
+  end
+end
+
+{_, idle} = P.gross(fn -> :ok end)
+{m, allocs} = P.gross(fn -> P.six(1, 2) end)
+dbg({map_size(m), allocs - idle})

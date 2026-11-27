@@ -143,6 +143,9 @@ pub(crate) struct CodegenCache {
     /// Var IDs referenced anywhere in the function's IR. Unit-return
     /// extern results whose dest ID is absent here can skip the nil iconst.
     pub(super) used_vars: HashSet<u32>,
+    /// The vars something reads (`ir_dce::live_vars`): a value that is only
+    /// ever forwarded to block parameters nothing reads is not one.
+    pub(super) live_vars: HashSet<u32>,
     /// Var IDs used exclusively as Term::If conditions — eligible for
     /// lazy bool_to_fz (stored as ArgRepr::Condition, materialised only
     /// if tagged_get is called).
