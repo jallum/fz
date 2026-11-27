@@ -216,22 +216,35 @@ impl ReachabilityCalculator<'_> {
         let Region::Bitstring(shape) = &predicate.region else {
             return;
         };
-        let Some((last, before)) = shape.fields.split_last() else {
+        let Some(last) = shape.fields.last() else {
             return;
         };
         let rest = &self.plan.bitstring_extraction(*last).spec;
         if rest.kind != BitType::Binary || rest.size.is_some() {
             return;
         }
-        let prefix_whole = before
-            .iter()
-            .all(|field| self.plan.bitstring_extraction(*field).spec.spans_whole_bytes());
+        let prefix_whole = self.fields_before_span_whole_bytes(*last);
         let binary = self.types.str_t();
         let subject = project_subject(self.types, self.plan, &state.roots, self.scope_pins, predicate.subject);
         let proven = prefix_whole && self.types.is_subtype(&subject, &binary);
         let edges = self.tests.entry(node).or_default();
         edges.rest_whole |= proven;
         edges.rest_unproven |= !proven;
+    }
+
+    /// Whether every field of the bitstring that precedes `field` spans whole
+    /// bytes. The fields before it were asked by earlier questions, so they are
+    /// found by following where each one started.
+    fn fields_before_span_whole_bytes(&self, field: SubjectId) -> bool {
+        let mut before = self.plan.bitstring_extraction(field).previous;
+        while let Some(previous) = before {
+            let extraction = self.plan.bitstring_extraction(previous);
+            if !extraction.spec.spans_whole_bytes() {
+                return false;
+            }
+            before = extraction.previous;
+        }
+        true
     }
 
     fn apply_proofs<'s>(

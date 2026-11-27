@@ -405,10 +405,14 @@ struct DispatchCtx<'a> {
 #[derive(Default, Clone)]
 struct DispatchEmitState {
     values: HashMap<SubjectId, CodegenValue>,
+    /// Where each bitstring field ended, by field subject: the position the
+    /// next question of the same bitstring starts from.
+    field_ends: HashMap<SubjectId, ir::Value>,
 }
 
-/// A join keeps the values every arrival holds. A value held on every arrival
-/// was made in a block that dominates each of them, so it dominates the join.
+/// A join keeps the values and field ends every arrival holds. One held on
+/// every arrival was made in a block that dominates each of them, so it
+/// dominates the join.
 impl ArrivalState for DispatchEmitState {
     fn meet(arrivals: Vec<Self>) -> Self {
         let mut arrivals = arrivals.into_iter();
@@ -416,6 +420,8 @@ impl ArrivalState for DispatchEmitState {
         for other in arrivals {
             met.values
                 .retain(|subject, value| other.values.get(subject) == Some(value));
+            met.field_ends
+                .retain(|subject, end| other.field_ends.get(subject) == Some(end));
         }
         met
     }
@@ -1409,10 +1415,18 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
     state: &mut DispatchEmitState,
 ) -> Result<(), CodegenError> {
     let value = resolve_dispatch_subject(body, ctx, subject, state)?;
-    emit_bitstring_like_guard(body, value, false_b)?;
+    // A question that follows another of the same bitstring knows it is one.
+    if shape.start.is_none() {
+        emit_bitstring_like_guard(body, value, false_b)?;
+    }
     let value_ref = emit_receive_value_ref(body, ctx, value)?;
     let bit_len = emit_proven_binary_bit_len(body.b, value_ref);
-    let mut pos = body.b.ins().iconst(types::I64, 0);
+    let mut pos = match shape.start {
+        Some(previous) => *state.field_ends.get(&previous).expect(
+            "a field question is reached only through its predecessor's match, which records the predecessor's end",
+        ),
+        None => body.b.ins().iconst(types::I64, 0),
+    };
 
     for field_subject in &shape.fields {
         let extraction = ctx.dispatch.bitstring_extraction(*field_subject);
@@ -1449,6 +1463,7 @@ fn emit_bitstring_test<M: cranelift_module::Module>(
             };
             state.values.insert(*field_subject, extracted);
         }
+        state.field_ends.insert(*field_subject, end);
         pos = end;
     }
 

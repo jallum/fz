@@ -312,6 +312,12 @@ fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundVal
         .ok_or_else(|| format!("cannot materialize prepared dispatch key {key:?}"))
 }
 
+/// What a branch wrote, so that a miss can take it back.
+enum Written {
+    Value(SubjectId),
+    End(SubjectId),
+}
+
 /// What the walk has learned about the subjects it has already produced.
 ///
 /// Subjects are dense ids over the plan's own matrix, so the state is one slot
@@ -334,7 +340,10 @@ fn materialize_prepared_key(proc: *mut Process, module: &Module, key: &GroundVal
 /// program published as nothing.
 struct DispatchExecState {
     values: Vec<Option<BackendBoundValue>>,
-    journal: Vec<SubjectId>,
+    /// Where each bitstring field ended, by field subject: the position the
+    /// next question of the same bitstring starts from.
+    field_ends: Vec<Option<u64>>,
+    journal: Vec<Written>,
     /// The binaries built for cursors, by source word and bit position. A
     /// binary is a function of both, so no branch's undo invalidates one.
     cursor_wholes: Vec<(u64, i64, AnyValue)>,
@@ -344,6 +353,7 @@ impl DispatchExecState {
     fn new(subjects: usize) -> Self {
         Self {
             values: vec![None; subjects],
+            field_ends: vec![None; subjects],
             journal: Vec::new(),
             cursor_wholes: Vec::new(),
         }
@@ -368,7 +378,16 @@ impl DispatchExecState {
     /// matrix declared it, so it always has one.
     fn set(&mut self, subject: SubjectId, value: BackendBoundValue) {
         self.values[subject.0 as usize] = Some(value);
-        self.journal.push(subject);
+        self.journal.push(Written::Value(subject));
+    }
+
+    fn field_end(&self, subject: SubjectId) -> Option<u64> {
+        self.field_ends.get(subject.0 as usize).copied().flatten()
+    }
+
+    fn set_field_end(&mut self, subject: SubjectId, end: u64) {
+        self.field_ends[subject.0 as usize] = Some(end);
+        self.journal.push(Written::End(subject));
     }
 
     /// Where the branch a test is about to open begins.
@@ -378,8 +397,11 @@ impl DispatchExecState {
 
     /// Forget everything written since a branch began.
     fn undo(&mut self, branch: usize) {
-        for subject in self.journal.drain(branch..) {
-            self.values[subject.0 as usize] = None;
+        for written in self.journal.drain(branch..) {
+            match written {
+                Written::Value(subject) => self.values[subject.0 as usize] = None,
+                Written::End(subject) => self.field_ends[subject.0 as usize] = None,
+            }
         }
     }
 }
@@ -994,7 +1016,12 @@ impl<'a> Dispatch<'a> {
         let proc = self.proc();
         let source_ref = value.ref_word().raw_word();
         let bit_len = unsafe { Bin::of_binary(value_bits) }.bit_len();
-        let mut pos = start;
+        let mut pos = match shape.start {
+            Some(previous) => self.state.field_end(previous).expect(
+                "a field question is reached only through its predecessor's match, which records the predecessor's end",
+            ),
+            None => start,
+        };
         for field_subject in &shape.fields {
             let extraction = plan.bitstring_extraction(*field_subject);
             let field = &extraction.spec;
@@ -1035,6 +1062,7 @@ impl<'a> Dispatch<'a> {
                 };
                 self.state.set(*field_subject, bound);
             }
+            self.state.set_field_end(*field_subject, end);
             pos = end;
         }
         Ok(!shape.require_done || pos == bit_len)

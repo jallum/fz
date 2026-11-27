@@ -255,8 +255,12 @@ impl Helpers {
     }
 
     fn plan_of_row(&self, row: PatternRow<Ty>) -> Plan {
-        let input_count = row.patterns.len();
-        let rows = SourcePatternRows::lexical(input_count, vec![row]);
+        self.plan_of_rows(vec![row])
+    }
+
+    fn plan_of_rows(&self, rows: Vec<PatternRow<Ty>>) -> Plan {
+        let input_count = rows[0].patterns.len();
+        let rows = SourcePatternRows::lexical(input_count, rows);
         pattern_dispatch_from_source_with_resolver(&rows, &mut self.resolver()).expect("the row compiles")
     }
 }
@@ -1188,5 +1192,66 @@ fn a_negated_helper_that_raises_where_it_does_not_answer_stays_the_guard_that_fa
         plan.guards.len(),
         1,
         "not int?(x) cannot be the complement of an int test: for a value that is no integer the helper raises, and a raise fails the guard"
+    );
+}
+
+/// `<<literal, rest :: binary>>`.
+fn literal_then_rest(literal: &[u8]) -> Pattern {
+    let Pattern::Bitstring(mut fields) = literal_bytes_as_bitstring(literal) else {
+        unreachable!()
+    };
+    fields.push(crate::ast::BitField {
+        value: sp(Pattern::Var(Var::user("rest"))),
+        spec: crate::ast::BitFieldSpec {
+            ty: crate::ast::BitType::Binary,
+            ..crate::ast::BitFieldSpec::default()
+        },
+    });
+    Pattern::Bitstring(fields)
+}
+
+/// The compiled graph and statistics of one-input rows, one per pattern, in order.
+fn compiled_patterns(patterns: Vec<Pattern>) -> crate::dispatch_matrix::CompiledDispatchGraph<Ty> {
+    let rows = patterns
+        .into_iter()
+        .enumerate()
+        .map(|(body_id, pattern)| PatternRow {
+            patterns: vec![sp(pattern)],
+            preconditions: Vec::new(),
+            guard: None,
+            body_id: body_id as u32,
+        })
+        .collect();
+    let plan = Helpers::new().plan_of_rows(rows);
+    crate::dispatch_matrix::compile_dispatch_matrix(
+        plan.source_matrix,
+        crate::dispatch_matrix::PlanInputs {
+            count: 1,
+            pinned: &[],
+            guard_leaves: &[],
+            literal_blind: &|_| false,
+        },
+    )
+    .expect("the matrix compiles")
+}
+
+/// `"true"` and `"null"` are one 32-bit field at bit 0 and `"false"` is that
+/// field and a byte more, so all three clauses begin with the question of the
+/// same first field and the matrix shares it among all three: when it does not
+/// hold, no clause can match.
+#[test]
+fn sibling_literals_of_unequal_length_share_their_first_field_question() {
+    let compiled = compiled_patterns(vec![
+        literal_then_rest(b"true"),
+        literal_then_rest(b"null"),
+        literal_then_rest(b"false"),
+    ]);
+    assert_eq!(compiled.stats.shared_prefix_tests, 1, "{:?}", compiled.stats);
+    let Some(DispatchNode::Test { on_miss, .. }) = compiled.graph.node(compiled.graph.root) else {
+        panic!("the root is the shared question");
+    };
+    assert!(
+        matches!(compiled.graph.node(on_miss.target), Some(DispatchNode::Fail)),
+        "a subject that fails the shared field fails every clause"
     );
 }
