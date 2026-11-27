@@ -1737,7 +1737,7 @@ pub fn resource_addr_from_tagged(bits: u64) -> Option<*mut u8> {
 mod map_node;
 pub use self::map_node::*;
 
-const MAP_HEADER_FIELD_SHIFT: u32 = 4;
+pub const MAP_HEADER_FIELD_SHIFT: u32 = 4;
 const MAP_DESTINATION_FIELD_BITS: u32 = 28;
 const MAP_DESTINATION_FILLED_SHIFT: u32 = MAP_HEADER_FIELD_SHIFT + MAP_DESTINATION_FIELD_BITS;
 const MAP_DESTINATION_FIELD_MASK: u64 = (1 << MAP_DESTINATION_FIELD_BITS) - 1;

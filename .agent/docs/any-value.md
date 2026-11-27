@@ -898,7 +898,14 @@ compiled code (`native_codegen/map_literal.rs`): `Prim::MakeMap` with
 object (tuple, binary, map) is one `.fz_static_map_*` object, written with the
 runtime's own layout functions, and a use is its address. It is never
 allocated or written, the collector and deep copy pass it by pointer, and the
-emitter refuses a heap reference or a map past the flat limit. The interpreter
+emitter refuses a heap reference or a map past the flat limit. A flat map in
+key order whose keys are all literal atoms or integers but whose values are
+computed is one inline allocation (`emit_inline_map`, `Heap::alloc_flat_map_unwritten`
+in the recipe table): the header word, the tag bytes a word at a time (a
+constant unless a value's kind is known only at run time), the key words as
+constants and each value's stored form (`CodegenFn::stored_entry`, which marks
+a heap value shared as `Heap::write_map_entries` does). Any other literal fills
+a destination through the runtime. The interpreter
 builds the same literal on the heap, so the map-allocation counts of the two
 differ, and a rendered map is walked whether or not its address is a literal.
 

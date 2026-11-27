@@ -42,6 +42,22 @@ pub(super) fn emit_struct<M: cranelift_module::Module>(
     }
 }
 
+/// Place a flat map of `size` bytes and write its `header` word. The tag
+/// bytes, keys and values are the caller's.
+pub(super) fn emit_flat_map<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, M>,
+    header: u64,
+    size: usize,
+) -> Placed {
+    let address = emit_place(body, HeapAllocKind::Map, size);
+    let header = body.b.ins().iconst(types::I64, header as i64);
+    body.b.ins().store(MemFlagsData::trusted(), header, address, 0);
+    Placed {
+        address,
+        reference: body.heap_ref_word_from_addr(address, ValueKind::MAP),
+    }
+}
+
 /// Place a closure of `captured_count` captures, counted under `kind`
 /// (`Closure`, or `Continuation` for a frame), and write its `header` word and
 /// its `code_addr`.

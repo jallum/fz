@@ -1113,6 +1113,9 @@ enum Object {
     Struct {
         schema: u32,
     },
+    FlatMap {
+        count: usize,
+    },
     Closure {
         denotation: ClosureDenotationId,
         arity: u16,
@@ -1156,6 +1159,18 @@ fn struct_cases(schemas: &Rc<RefCell<SchemaRegistry>>) -> Vec<ObjectCase> {
     cases
 }
 
+/// Flat maps of every size from none to the most a flat map holds, across the
+/// sizes at which the tag bytes take another word and the allocation another
+/// 16 bytes.
+fn flat_map_cases() -> Vec<ObjectCase> {
+    (0..=fz_runtime::any_value::MAP_FLAT_MAX)
+        .map(|count| ObjectCase {
+            name: format!("a flat map of {count} entries"),
+            object: Object::FlatMap { count },
+        })
+        .collect()
+}
+
 /// Closures of no, one and many captures, of every halt kind, with the
 /// denotations a program's closures carry and the internal one.
 fn closure_cases() -> Vec<ObjectCase> {
@@ -1187,6 +1202,10 @@ fn object_proofs(schemas: &Rc<RefCell<SchemaRegistry>>) -> Vec<ObjectProof> {
             cases: struct_cases(schemas),
         },
         ObjectProof {
+            symbol: "Heap::alloc_flat_map_unwritten",
+            cases: flat_map_cases(),
+        },
+        ObjectProof {
             symbol: "Heap::alloc_closure",
             cases: closure_cases(),
         },
@@ -1205,6 +1224,7 @@ struct CompiledObject {
 fn compiled_size(object: Object, schemas: &SchemaRegistry) -> usize {
     match object {
         Object::Struct { schema } => SlotLayout::of(schemas.get(schema).value_field_count()).size(),
+        Object::FlatMap { count } => fz_runtime::any_value::map_size_for_count(count),
         Object::Closure { captures, .. } => fz_runtime::any_value::closure_size_for_count(captures),
     }
 }
@@ -1238,6 +1258,7 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
                 let name = schemas.borrow().get(schema).struct_name();
                 body.alloc_struct(schema, name, fields).reference
             }
+            Object::FlatMap { count } => body.alloc_flat_map(count).reference,
             Object::Closure {
                 denotation,
                 arity,
@@ -1263,6 +1284,7 @@ fn compile_object(case: &ObjectCase, schemas: &Rc<RefCell<SchemaRegistry>>) -> C
     assert_eq!(registered.len(), 1, "one placement is one site");
     let expected_kind = match case.object {
         Object::Struct { .. } => HeapAllocKind::Struct,
+        Object::FlatMap { .. } => HeapAllocKind::Map,
         Object::Closure { .. } => HeapAllocKind::Closure,
     };
     assert_eq!(allocation_site(&registered[0]).kind, expected_kind);
@@ -1350,6 +1372,15 @@ fn place_in_runtime(object: Object, schemas: &SchemaRegistry, process: *mut Proc
                 .expect("a struct ref")
                 .raw_word()
         }
+        Object::FlatMap { count } => {
+            let address = heap.alloc_flat_map_unwritten(
+                fz_runtime::any_value::map_header_word(count),
+                fz_runtime::any_value::map_size_for_count(count),
+            );
+            AnyValueRef::from_heap_object(ValueKind::MAP, address)
+                .expect("a map ref")
+                .raw_word()
+        }
         Object::Closure {
             denotation,
             arity,
@@ -1367,7 +1398,7 @@ fn place_in_runtime(object: Object, schemas: &SchemaRegistry, process: *mut Proc
 
 fn defined_words(object: Object) -> usize {
     match object {
-        Object::Struct { .. } => 1,
+        Object::Struct { .. } | Object::FlatMap { .. } => 1,
         Object::Closure { .. } => 2,
     }
 }

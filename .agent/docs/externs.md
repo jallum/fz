@@ -405,15 +405,16 @@ new cell placed through `emit_place` and written by `list_cell.rs`, and counts a
 bit is read after the head is shared, because a head that is the source cell
 itself marks it. The interpreter calls `fz_list_reuse_or_cons_parts`.
 
-A struct or tuple and a closure are placed the same way, and their rows are
-named by the heap method the interpreter calls, as the runtime has no extern
-for them: `Heap::alloc_struct_unwritten` (the process, the schema id and the
-size) and `Heap::alloc_closure` (the process, the denotation, the arity, the
+A struct or tuple, a flat map and a closure are placed the same way, and their
+rows are named by the heap method the interpreter calls, as the runtime has no
+extern for them: `Heap::alloc_struct_unwritten` (the process, the schema id and
+the size), `Heap::alloc_flat_map_unwritten` (the process, the header word and
+the size) and `Heap::alloc_closure` (the process, the denotation, the arity, the
 capture count, the halt kind and the code address). A call site asks
 `emit_object(body, symbol, args)`, which reads the arguments after the
 process back as constants (a closure's code address stays a value) and
 answers the object's address and ref word. `native_codegen/inline_object.rs`
-writes the struct's header word, or the closure's header word (denotation,
+writes the struct's or map's header word, or the closure's header word (denotation,
 capture count and halt kind packed in, arity) and its code address; the code
 that builds the object stores the fields or captures and their kind bytes. The
 runtime writes nothing: compiled code places a continuation frame the same

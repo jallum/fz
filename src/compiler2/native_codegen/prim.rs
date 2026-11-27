@@ -536,7 +536,7 @@ pub(crate) fn lower_collection_prim<M: cranelift_module::Module, T: Types<Ty = T
             }
         }
         Prim::MakeMap { entries, in_key_order } => {
-            return lower_make_map(body, env, var_env, dest_var, entries, *in_key_order);
+            return lower_make_map(body, t, env, var_env, dest_var, entries, *in_key_order);
         }
         Prim::DestMapBeginUpdate(base) => {
             let process = body.process_arg();

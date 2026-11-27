@@ -18,7 +18,8 @@ use cranelift_module::{DataId, FuncId, Module};
 use fz_runtime::any_value::{
     AnyValueRef, AnyValueRefPacking, BINARY_SHARED_MASK, CLOSURE_CAPTURES_OFFSET, CLOSURE_CODE_OFFSET,
     CLOSURE_FLAGS_CAPTURED_MASK, CLOSURE_LAYOUT_FLAGS_SHIFT, FALSE_ATOM_ID, NIL_ATOM_ID, STRUCT_HEADER_SCHEMA_SHIFT,
-    STRUCT_HEADER_SHARED_MASK, SlotLayout, StructName, TaggedRefArch, ValueKind, struct_header_word,
+    STRUCT_HEADER_SHARED_MASK, SlotLayout, StructName, TaggedRefArch, ValueKind, map_header_word, map_size_for_count,
+    struct_header_word,
 };
 use fz_runtime::ir_runtime::{
     fz_closure_halt_kind_ref, fz_closure_set_capture_atom, fz_closure_set_capture_f64, fz_closure_set_capture_i64,
@@ -34,6 +35,12 @@ pub(crate) struct NewStruct {
     pub(crate) reference: ir::Value,
     address: ir::Value,
     layout: SlotLayout,
+}
+
+/// A flat map that is allocated and whose entries are being stored.
+pub(crate) struct NewMap {
+    pub(crate) reference: ir::Value,
+    pub(crate) address: ir::Value,
 }
 
 /// How many captures the frame being read holds. A frame stores its raw slots
@@ -364,6 +371,39 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
             address: placed.address,
             layout,
         }
+    }
+
+    /// Place a flat map of `count` entries and write its header word.
+    /// `store_map_entry` must follow for every entry, and the tag bytes be
+    /// stored, before any other code runs, since nothing may read the map
+    /// until then.
+    pub(crate) fn alloc_flat_map(&mut self, count: usize) -> NewMap {
+        let header = self.b.ins().iconst(types::I64, map_header_word(count) as i64);
+        let size = self.b.ins().iconst(types::I32, map_size_for_count(count) as i64);
+        let process = self.process_arg();
+        let placed = emit_object(self, "Heap::alloc_flat_map_unwritten", &[process, header, size]);
+        NewMap {
+            reference: placed.reference,
+            address: placed.address,
+        }
+    }
+
+    /// The word and the kind byte a map or struct stores for `value`. A
+    /// value whose stored form the compiler can name is stored as it is;
+    /// any other is shared as the kind it carries says, then read through its
+    /// reference. A heap value the map holds is shared, as the runtime
+    /// shares the values it puts.
+    pub(crate) fn stored_entry(
+        &mut self,
+        value: CodegenValue,
+        addressed: Option<ShareClass>,
+    ) -> (ir::Value, ir::Value) {
+        if let Some(form) = self.stored_form(value, addressed) {
+            return form;
+        }
+        self.share(value);
+        let [word, kind] = super::support::stored_parts(self, value);
+        (word, self.b.ins().ireduce(types::I8, kind))
     }
 
     /// The struct an update of the struct `base_ref` names, which has
