@@ -241,10 +241,14 @@ fn resolve_extern_wire(
         &clause.bounds,
     )
     .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?;
-    let ret = match extern_failure(world, tel, source, surface)? {
-        Some(failure) => checked_return(ret, abi, failure)
-            .map_err(|message| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name)))?,
-        None => ret,
+    let refuse = |message: String| extern_abi_error(tel, surface, format!("`{}`: {message}", surface.name));
+    let (ret, raises) = match extern_failure(world, tel, source, surface)? {
+        None => (ret, None),
+        Some(DeclaredFailure::Fixed(failure)) => (checked_return(ret, abi, failure).map_err(refuse)?, None),
+        Some(DeclaredFailure::Worded(exception)) => {
+            worded_failure(&ret, abi).map_err(refuse)?;
+            (ret, Some(exception))
+        }
     };
     let symbol = extern_symbol_from_name(&surface.name);
     Ok(LoweredExtern {
@@ -253,6 +257,7 @@ fn resolve_extern_wire(
         params,
         variadic: surface.variadic,
         ret,
+        raises,
     })
 }
 
@@ -286,6 +291,16 @@ fn reference_declared_exception(
     Ok(waits)
 }
 
+/// What an extern's `raises:` declares.
+enum DeclaredFailure {
+    /// A `C` extern's failure: the exception carrying the declaration's text,
+    /// built by compiled code when the extern's result says it failed.
+    Fixed(LastResort),
+    /// An `fz` extern's failure: the atom of the exception module the runtime
+    /// builds and raises itself.
+    Worded(String),
+}
+
 /// What the extern's `raises:` declares: a struct of the exception it names,
 /// resolved the way a body resolves the same alias.
 fn extern_failure(
@@ -293,7 +308,7 @@ fn extern_failure(
     tel: &impl crate::telemetry::Telemetry,
     source: &FunctionSource,
     surface: &FunctionSurface,
-) -> Result<Option<LastResort>, FatalError> {
+) -> Result<Option<DeclaredFailure>, FatalError> {
     let Some(raises) = surface.extern_raises.as_ref() else {
         return Ok(None);
     };
@@ -314,11 +329,28 @@ fn extern_failure(
         );
         return Err(FatalError);
     }
-    Ok(Some(LastResort::declared(
-        exception,
-        &raises.message,
-        raises.reason.as_deref(),
-    )))
+    Ok(Some(match &raises.message {
+        Some(message) => DeclaredFailure::Fixed(LastResort::declared(exception, message, raises.reason.as_deref())),
+        None => DeclaredFailure::Worded(exception),
+    }))
+}
+
+/// The return of an `fz` extern that raises from the runtime. It never
+/// returns, so no caller has a result to check: a raising extern that returned
+/// would leave its caller to unwind, and only a `none` extern is known to end
+/// the caller's path.
+fn worded_failure(wire: &ExternReturn, abi: ExternAbi) -> Result<(), String> {
+    if abi != ExternAbi::Fz {
+        return Err(
+            "`raises:` without a `message:` needs the `fz` ABI: only the runtime can word a message".to_string(),
+        );
+    }
+    match wire {
+        ExternReturn::Scalar(ExternTy::Never) => Ok(()),
+        _ => {
+            Err("`raises:` without a `message:` needs the result declared `none`: the extern never returns".to_string())
+        }
+    }
 }
 
 /// The return of an extern that declares `raises:`. A failure travels as the

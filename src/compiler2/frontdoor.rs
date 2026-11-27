@@ -110,7 +110,9 @@ enum ExternOption {
     Raises {
         exception: AnyValueRef,
         reason: Option<AnyValueRef>,
-        message: AnyValueRef,
+        /// The fixed text a `C` extern's failure carries; an `fz` extern
+        /// words its own.
+        message: Option<AnyValueRef>,
     },
     Delivers(AnyValueRef),
     Projects(AnyValueRef),
@@ -672,7 +674,7 @@ impl<'t> FrontDoorParser<'t> {
         }
         let ret = token_payload::encode_tokens(&self.builder, ret)?;
         let option = if self.eat(&Tok::Comma) {
-            Some(self.parse_extern_option()?)
+            Some(self.parse_extern_option(&abi)?)
         } else {
             None
         };
@@ -724,7 +726,9 @@ impl<'t> FrontDoorParser<'t> {
                 if let Some(reason) = reason {
                     entries.push((self.builder.atom("reason"), reason));
                 }
-                entries.push((self.builder.atom("message"), message));
+                if let Some(message) = message {
+                    entries.push((self.builder.atom("message"), message));
+                }
             }
             Some(ExternOption::Delivers(kind)) => entries.push((self.builder.atom("delivers"), kind)),
             Some(ExternOption::Projects(property)) => entries.push((self.builder.atom("projects"), property)),
@@ -743,10 +747,10 @@ impl<'t> FrontDoorParser<'t> {
     /// for a result that can fail, `delivers:` for a call that hands its
     /// argument to the nearest handler, or `projects:` for a call that reads
     /// one property of its argument and nothing else.
-    fn parse_extern_option(&mut self) -> Result<ExternOption, FrontDoorError> {
+    fn parse_extern_option(&mut self, abi: &str) -> Result<ExternOption, FrontDoorError> {
         self.skip_newlines();
         match self.bump() {
-            Tok::KwKey(key) if key == "raises" => self.parse_extern_raises(),
+            Tok::KwKey(key) if key == "raises" => self.parse_extern_raises(abi),
             Tok::KwKey(key) if key == "delivers" => self.parse_extern_delivers(),
             Tok::KwKey(key) if key == "projects" => self.parse_extern_projects(),
             other => Err(self.error(format!(
@@ -785,9 +789,18 @@ impl<'t> FrontDoorParser<'t> {
 
     /// The tail `raises: Exception, reason: :atom, message: "text"` of an
     /// extern whose result can fail: the exception a body raises, the Erlang
-    /// reason a `catch` binds for it when it has one, and what it says.
-    fn parse_extern_raises(&mut self) -> Result<ExternOption, FrontDoorError> {
+    /// reason a `catch` binds for it when it has one, and what it says. An `fz`
+    /// extern raises from the runtime, which words the message from its
+    /// arguments, so it declares the exception alone.
+    fn parse_extern_raises(&mut self, abi: &str) -> Result<ExternOption, FrontDoorError> {
         let exception = self.parse_extern_exception()?;
+        if abi == "fz" {
+            return Ok(ExternOption::Raises {
+                exception,
+                reason: None,
+                message: None,
+            });
+        }
         self.expect_message_follows()?;
         let reason = if matches!(self.peek(), Tok::KwKey(key) if key == "reason") {
             self.advance();
@@ -810,7 +823,7 @@ impl<'t> FrontDoorParser<'t> {
         Ok(ExternOption::Raises {
             exception,
             reason,
-            message,
+            message: Some(message),
         })
     }
 

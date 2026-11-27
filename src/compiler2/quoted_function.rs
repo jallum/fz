@@ -244,7 +244,10 @@ fn decode_extern_fn(
             Some(crate::function_surface::ExternRaises {
                 exception: ModuleName::from_segments(exception.tail.list_atom_names()?),
                 span: exception.span.unwrap_or(span),
-                message: required_map_utf8(details, "message")?,
+                message: details
+                    .map_value("message")?
+                    .map(|text| text.utf8_binary_text())
+                    .transpose()?,
                 reason: match details.map_value("reason")? {
                     Some(reason) => Some(reason.atom_name()?.to_string()),
                     None => None,

@@ -71,9 +71,10 @@ only the interpreter's macro runs install. See "A macro body asks the compiler"
 in [`macro-expansion`](macro-expansion.md).
 
 `fz_shallow_valid_ast(any)` answers whether a value may be spliced into quoted
-code, and `fz_unquote_failure_message(any)` words the error when it may not.
-Both sit behind `Kernel.__unquoted__/1`, which raises the `ArgumentError` in fz
-source. See `QuoteLowerer` in [`macro-expansion`](macro-expansion.md).
+code, and `fz_unquote_raise(any) :: none` raises the `ArgumentError` Elixir
+words when it may not (`runtime/src/failure.rs`, beside `fz_panic`). Lowering
+calls both directly. See `QuoteLowerer` in [`macro-expansion`](macro-expansion.md)
+and "An `fz` extern that raises" below.
 
 Both doors read the same property from the same declaration
 (`prim.rs::lower_extern_generic` and `ir_interp/extern_call.rs`), so adding an
@@ -633,7 +634,8 @@ the pair is physical only: no fz tuple is built, and no declaration spells it.
   the call a body makes for `raise(KeyError, ...)`, so alias and import scope
   apply alike, checks that the struct's `__exception__` default is `true`, and
   builds `LastResort::declared`, which sets `message` to the declared text and
-  keeps the reason.
+  keeps the reason (`DeclaredFailure::Fixed`; an `fz` extern's is `Worded`,
+  below).
   The raised struct is completed as every last resort's is
   (`LastResort::struct_fields`, [exceptions](exceptions.md)): every field the
   exception declares, in its order, each other field holding its default (a
@@ -668,6 +670,28 @@ zero divisor, raises `ArithmeticError` with Elixir's message, and `catch` sees
 names any exception: `raises: MyApp.DivisionByZero` raises that module's
 struct from a declaration of the same symbol, so with `defexception [:message,
 code: 7]` a handler reads `e.code` as `7`.
+
+### An `fz` extern that raises
+
+An `extern "fz"` that always raises one exception declares it without a
+message, because the runtime words the message from its argument:
+
+```fz
+extern "fz" defp fz_unquote_raise(any) :: none, raises: ArgumentError
+```
+
+- `parse_extern_raises` takes `message:` only for a `C` extern; an `fz` extern
+  declares the exception alone, and `ExternRaises::message` is `None`.
+- `extern_failure` answers `DeclaredFailure::Worded(atom)` for it, and
+  `worded_failure` refuses any ABI but `fz` and any result but `none`: a raising
+  extern returns to its caller, which unwinds (see `failure.rs`), so only an
+  extern that never returns ends the caller's path. Its return stays
+  `Scalar(Never)`, with no `Checked` pair, and the atom rides
+  `LoweredExtern::raises`.
+- `collect_executable_atoms` registers the exception's struct from
+  `LoweredExtern::raises`, so the runtime's `raise_exception` finds it. The
+  contract waits for `StructDefined` of the exception as for any declared
+  failure, and `semantic.rs` records the raise on the extern.
 
 ### A call that reads one property of its argument
 

@@ -56,13 +56,15 @@ pub struct FunctionSurface {
 
 /// The failure an extern declares: the exception a body raises, as written
 /// (an alias, resolved in the extern's own module), the message it carries,
-/// and the Erlang reason a `catch` binds for it.
+/// and the Erlang reason a `catch` binds for it. A `C` extern carries fixed
+/// text; an `fz` extern raises from the runtime, which words its own message,
+/// so it declares none.
 #[derive(Debug, Clone)]
 pub struct ExternRaises {
     pub exception: crate::modules::identity::ModuleName,
     /// Where the declaration writes the exception's name.
     pub span: Span,
-    pub message: String,
+    pub message: Option<String>,
     /// The atom of the Erlang reason (`:badarith`), when the declaration names one.
     pub reason: Option<String>,
 }

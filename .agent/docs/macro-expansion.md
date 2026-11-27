@@ -553,18 +553,21 @@ a node's metadata is always part of a constant.
   - splices `unquote(e)` by taking the next already-decoded splice in walk
     order and lowering it with the same `lower_expr` any other expression
     goes through, exactly as if `e` had been written at that position
-    directly, then passes the value through `Kernel.__unquoted__/1`. That
-    function tests it with the extern `fz_shallow_valid_ast`
+    directly, then tests it with the extern `fz_shallow_valid_ast`
     (`runtime/src/quoted_ast.rs`, a port of `elixir_quote.erl`'s
     `shallow_valid_ast`: a proper list, a pair, or a `{call, meta, args}` node,
-    read one level deep, where a struct, a map and a reference are refused) and
-    raises `ArgumentError` with Elixir's message, "tried to unquote invalid
-    AST: ... Did you forget to escape term using Macro.escape/1?", when it
-    fails. The raise is in `lib/kernel.fz` because only compiled code that names
-    `%ArgumentError{}` registers that struct. Three quotes skip the check
-    (`QuoteLowerer::lower_checked_unquote`):
+    read one level deep, where a struct, a map and a reference are refused). An
+    `If` on the answer keeps the value, and its false edge calls the extern
+    `fz_unquote_raise(value) :: none` (`runtime/src/failure.rs`), which raises
+    `ArgumentError` with Elixir's message, "tried to unquote invalid AST: ...
+    Did you forget to escape term using Macro.escape/1?". Both externs are
+    private to `Kernel` and are referenced by `World::reference_function`, so a
+    macro that unquotes analyses two externs and no wrapper function. The raise
+    is declared `raises: ArgumentError`, which registers that struct for the
+    runtime (see "An `fz` extern that raises" in [`externs`](externs.md)). Three
+    quotes skip the check (`QuoteLowerer::lower_checked_unquote`):
     - `quotes_bootstrap_code`: a quote written in the prelude or the runtime
-      library, whose `def` is what `Kernel.__unquoted__` is defined with;
+      library, which Elixir builds without the check too;
     - `define_args`: the `Macro.Env` argument of `Fz.Compiler.define(source,
       env)`, which fz carries inside the AST (the same argument
       `is_compiler_define_call` exempts from the compile-time check);
