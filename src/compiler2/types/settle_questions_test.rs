@@ -1,0 +1,1350 @@
+//! The equations fixture 01968 hands to `minimise`, as hand-built descriptors: 1,145 distinct
+//! emptiness and containment questions, which cost 7,993,842 asked when no answer is kept and
+//! 28,339 when an answer that used no outside assumption is kept for the rest of the root question.
+use super::*;
+use crate::compiler2::types::bits::BasicBits;
+use crate::compiler2::types::conj::Conj;
+use crate::compiler2::types::descr::Descr;
+use crate::compiler2::types::sigs::{ConsSig, ListSig};
+
+fn u(t: &mut Types, parts: &[Ty]) -> Ty {
+    let mut acc = t.none();
+    for p in parts {
+        acc = t.union(acc, *p);
+    }
+    acc
+}
+
+struct System {
+    nodes: Vec<Descr>,
+    #[allow(dead_code)]
+    roots: Vec<usize>,
+}
+
+fn system() -> (Types, System) {
+    let mut types = Types::new();
+    let t = &mut types;
+    t.interner.recursion.active = true;
+    let p2 = t.empty_list();
+    let v3 = u(t, &[p2]);
+    let p10 = t.str_t();
+    let v11 = u(t, &[p10]);
+    let c44 = t.recursive(1, |t, me| {
+        let k38 = me[0];
+        let k39 = v3;
+        let p40 = t.int();
+        let p41 = t.str_t();
+        let p42 = t.empty_list();
+        let p43 = t.intern(Descr::non_empty_list_of(k38, k39));
+        vec![u(t, &[p40, p41, p42, p43])]
+    });
+    let c55 = t.recursive(2, |t, me| {
+        let k25 = me[0];
+        let k26 = v3;
+        let k27 = me[1];
+        let k28 = v11;
+        let p29 = t.int();
+        let p30 = t.empty_list();
+        let p31 = t.intern(Descr::non_empty_list_of(k25, k26));
+        let p32 = t.empty_list();
+        let p33 = t.intern(Descr::non_empty_list_of(k27, k28));
+        let k34 = me[0];
+        let k35 = v3;
+        let k36 = me[1];
+        let k37 = v11;
+        let k45 = c44[0];
+        let k46 = v3;
+        let p47 = t.int();
+        let p48 = t.str_t();
+        let p49 = t.empty_list();
+        let p50 = t.intern(Descr::non_empty_list_of(k34, k35));
+        let p51 = t.empty_list();
+        let p52 = t.intern(Descr::non_empty_list_of(k36, k37));
+        let p53 = t.empty_list();
+        let p54 = t.intern(Descr::non_empty_list_of(k45, k46));
+        vec![
+            u(t, &[p29, p30, p31, p32, p33]),
+            u(t, &[p47, p48, p49, p50, p51, p52, p53, p54]),
+        ]
+    });
+    let c94 = t.recursive(2, |t, me| {
+        let k72 = me[0];
+        let k73 = v11;
+        let k74 = me[1];
+        let k75 = v3;
+        let k76 = c44[0];
+        let k77 = v3;
+        let p78 = t.str_t();
+        let p79 = t.empty_list();
+        let p80 = t.intern(Descr::non_empty_list_of(k72, k73));
+        let p81 = t.empty_list();
+        let p82 = t.intern(Descr::non_empty_list_of(k74, k75));
+        let p83 = t.empty_list();
+        let p84 = t.intern(Descr::non_empty_list_of(k76, k77));
+        let k85 = me[0];
+        let k86 = v11;
+        let k87 = me[1];
+        let k88 = v3;
+        let p89 = t.int();
+        let p90 = t.empty_list();
+        let p91 = t.intern(Descr::non_empty_list_of(k85, k86));
+        let p92 = t.empty_list();
+        let p93 = t.intern(Descr::non_empty_list_of(k87, k88));
+        vec![
+            u(t, &[p78, p79, p80, p81, p82, p83, p84]),
+            u(t, &[p89, p90, p91, p92, p93]),
+        ]
+    });
+    let c102 = t.recursive(1, |t, me| {
+        let k70 = me[0];
+        let k71 = v3;
+        let k95 = c94[0];
+        let k96 = v11;
+        let p97 = t.int();
+        let p98 = t.empty_list();
+        let p99 = t.intern(Descr::non_empty_list_of(k70, k71));
+        let p100 = t.empty_list();
+        let p101 = t.intern(Descr::non_empty_list_of(k95, k96));
+        vec![u(t, &[p97, p98, p99, p100, p101])]
+    });
+    let c124 = t.recursive(2, |t, me| {
+        let k105 = me[0];
+        let k106 = v11;
+        let k107 = me[1];
+        let k108 = v3;
+        let p109 = t.str_t();
+        let p110 = t.empty_list();
+        let p111 = t.intern(Descr::non_empty_list_of(k105, k106));
+        let p112 = t.empty_list();
+        let p113 = t.intern(Descr::non_empty_list_of(k107, k108));
+        let k114 = me[0];
+        let k115 = v11;
+        let k116 = me[1];
+        let k117 = v3;
+        let p118 = t.int();
+        let p119 = t.str_t();
+        let p120 = t.empty_list();
+        let p121 = t.intern(Descr::non_empty_list_of(k114, k115));
+        let p122 = t.empty_list();
+        let p123 = t.intern(Descr::non_empty_list_of(k116, k117));
+        vec![
+            u(t, &[p109, p110, p111, p112, p113]),
+            u(t, &[p118, p119, p120, p121, p122, p123]),
+        ]
+    });
+    let c133 = t.recursive(1, |t, me| {
+        let k68 = me[0];
+        let k69 = v3;
+        let k103 = c102[0];
+        let k104 = v3;
+        let k125 = c124[0];
+        let k126 = v11;
+        let p127 = t.empty_list();
+        let p128 = t.intern(Descr::non_empty_list_of(k68, k69));
+        let p129 = t.empty_list();
+        let p130 = t.intern(Descr::non_empty_list_of(k103, k104));
+        let p131 = t.empty_list();
+        let p132 = t.intern(Descr::non_empty_list_of(k125, k126));
+        vec![u(t, &[p127, p128, p129, p130, p131, p132])]
+    });
+    let c178 = t.recursive(1, |t, me| {
+        let k168 = me[0];
+        let k169 = v3;
+        let k170 = me[0];
+        let k171 = v11;
+        let p172 = t.int();
+        let p173 = t.str_t();
+        let p174 = t.empty_list();
+        let p175 = t.intern(Descr::non_empty_list_of(k168, k169));
+        let p176 = t.empty_list();
+        let p177 = t.intern(Descr::non_empty_list_of(k170, k171));
+        vec![u(t, &[p172, p173, p174, p175, p176, p177])]
+    });
+    let k277 = c178[0];
+    let k278 = v11;
+    let k279 = c55[0];
+    let k280 = v3;
+    let p281 = t.empty_list();
+    let p282 = t.intern(Descr::non_empty_list_of(k277, k278));
+    let p283 = t.empty_list();
+    let p284 = t.intern(Descr::non_empty_list_of(k279, k280));
+    let v285 = u(t, &[p281, p282, p283, p284]);
+    let k288 = c133[0];
+    let k289 = v3;
+    let k290 = c124[0];
+    let k291 = v11;
+    let k292 = c55[0];
+    let k293 = v3;
+    let p294 = t.intern(Descr::non_empty_list_of(k288, k289));
+    let p295 = t.intern(Descr::non_empty_list_of(k290, k291));
+    let p296 = t.intern(Descr::non_empty_list_of(k292, k293));
+    let v297 = u(t, &[p294, p295, p296]);
+    let k1 = Ty(NODE_BASE + 1);
+    let k4 = v3;
+    let k5 = Ty(NODE_BASE + 4);
+    let k6 = v3;
+    let k7 = Ty(NODE_BASE + 8);
+    let k8 = v3;
+    let k9 = Ty(NODE_BASE + 13);
+    let k12 = v11;
+    let k13 = Ty(NODE_BASE + 2);
+    let k14 = v11;
+    let k15 = Ty(NODE_BASE + 3);
+    let k16 = v3;
+    let k17 = Ty(NODE_BASE + 16);
+    let k18 = v3;
+    let k19 = Ty(NODE_BASE + 16);
+    let k20 = v11;
+    let k21 = Ty(NODE_BASE + 3);
+    let k22 = v3;
+    let k23 = Ty(NODE_BASE + 17);
+    let k24 = v11;
+    let k56 = c55[0];
+    let k57 = v3;
+    let k58 = Ty(NODE_BASE + 5);
+    let k59 = v3;
+    let k60 = Ty(NODE_BASE + 6);
+    let k61 = v11;
+    let k62 = Ty(NODE_BASE + 7);
+    let k63 = v3;
+    let k64 = Ty(NODE_BASE + 5);
+    let k65 = v3;
+    let k66 = Ty(NODE_BASE + 18);
+    let k67 = v11;
+    let k134 = c133[0];
+    let k135 = v3;
+    let k136 = c102[0];
+    let k137 = v3;
+    let k138 = Ty(NODE_BASE + 19);
+    let k139 = v11;
+    let k140 = Ty(NODE_BASE + 20);
+    let k141 = v3;
+    let k142 = Ty(NODE_BASE + 7);
+    let k143 = v3;
+    let k144 = Ty(NODE_BASE + 21);
+    let k145 = v11;
+    let k146 = c55[0];
+    let k147 = v3;
+    let k148 = Ty(NODE_BASE + 9);
+    let k149 = v3;
+    let k150 = Ty(NODE_BASE + 10);
+    let k151 = v3;
+    let k152 = Ty(NODE_BASE + 11);
+    let k153 = v3;
+    let k154 = Ty(NODE_BASE + 12);
+    let k155 = v11;
+    let k156 = Ty(NODE_BASE + 9);
+    let k157 = v3;
+    let k158 = Ty(NODE_BASE + 22);
+    let k159 = v11;
+    let k160 = c55[0];
+    let k161 = v3;
+    let k162 = Ty(NODE_BASE + 10);
+    let k163 = v3;
+    let k164 = Ty(NODE_BASE + 23);
+    let k165 = v11;
+    let k166 = c133[0];
+    let k167 = v3;
+    let k179 = c178[0];
+    let k180 = v11;
+    let k181 = c55[0];
+    let k182 = v3;
+    let k183 = Ty(NODE_BASE + 11);
+    let k184 = v3;
+    let k185 = Ty(NODE_BASE + 24);
+    let k186 = v11;
+    let k187 = c133[0];
+    let k188 = v3;
+    let k189 = c55[0];
+    let k190 = v3;
+    let k191 = c55[1];
+    let k192 = v11;
+    let k193 = Ty(NODE_BASE + 25);
+    let k194 = v11;
+    let k195 = Ty(NODE_BASE + 26);
+    let k196 = v3;
+    let k197 = Ty(NODE_BASE + 14);
+    let k198 = v3;
+    let k199 = Ty(NODE_BASE + 15);
+    let k200 = v11;
+    let k201 = Ty(NODE_BASE + 27);
+    let k202 = v3;
+    let k203 = Ty(NODE_BASE + 27);
+    let k204 = v11;
+    let k205 = Ty(NODE_BASE + 28);
+    let k206 = v11;
+    let k207 = Ty(NODE_BASE + 29);
+    let k208 = v3;
+    let k209 = c178[0];
+    let k210 = v3;
+    let k211 = c178[0];
+    let k212 = v11;
+    let k213 = Ty(NODE_BASE + 16);
+    let k214 = v3;
+    let k215 = Ty(NODE_BASE + 16);
+    let k216 = v11;
+    let k217 = c44[0];
+    let k218 = v3;
+    let k219 = c55[0];
+    let k220 = v3;
+    let k221 = c55[1];
+    let k222 = v11;
+    let k223 = Ty(NODE_BASE + 3);
+    let k224 = v3;
+    let k225 = Ty(NODE_BASE + 17);
+    let k226 = v11;
+    let k227 = c124[0];
+    let k228 = v11;
+    let k229 = c124[1];
+    let k230 = v3;
+    let k231 = Ty(NODE_BASE + 5);
+    let k232 = v3;
+    let k233 = Ty(NODE_BASE + 18);
+    let k234 = v11;
+    let k235 = c133[0];
+    let k236 = v3;
+    let k237 = c102[0];
+    let k238 = v3;
+    let k239 = c124[0];
+    let k240 = v11;
+    let k241 = c124[1];
+    let k242 = v3;
+    let k243 = Ty(NODE_BASE + 19);
+    let k244 = v11;
+    let k245 = Ty(NODE_BASE + 20);
+    let k246 = v3;
+    let k247 = c124[0];
+    let k248 = v11;
+    let k249 = c124[1];
+    let k250 = v3;
+    let k251 = Ty(NODE_BASE + 19);
+    let k252 = v11;
+    let k253 = Ty(NODE_BASE + 20);
+    let k254 = v3;
+    let k255 = c44[0];
+    let k256 = v3;
+    let k257 = c55[0];
+    let k258 = v3;
+    let k259 = c55[1];
+    let k260 = v11;
+    let k261 = Ty(NODE_BASE + 7);
+    let k262 = v3;
+    let k263 = Ty(NODE_BASE + 21);
+    let k264 = v11;
+    let k265 = c178[0];
+    let k266 = v3;
+    let k267 = c178[0];
+    let k268 = v11;
+    let k269 = Ty(NODE_BASE + 9);
+    let k270 = v3;
+    let k271 = Ty(NODE_BASE + 22);
+    let k272 = v11;
+    let k273 = c55[0];
+    let k274 = v3;
+    let k275 = c178[0];
+    let k276 = v3;
+    let k286 = v285;
+    let k287 = v3;
+    let k298 = v297;
+    let k299 = v3;
+    let k300 = c133[0];
+    let k301 = v3;
+    let k302 = c55[0];
+    let k303 = v3;
+    let k304 = Ty(NODE_BASE + 10);
+    let k305 = v3;
+    let k306 = Ty(NODE_BASE + 23);
+    let k307 = v11;
+    let k308 = c133[0];
+    let k309 = v3;
+    let k310 = c178[0];
+    let k311 = v11;
+    let k312 = c55[0];
+    let k313 = v3;
+    let k314 = c124[0];
+    let k315 = v11;
+    let k316 = c124[1];
+    let k317 = v3;
+    let k318 = Ty(NODE_BASE + 11);
+    let k319 = v3;
+    let k320 = Ty(NODE_BASE + 24);
+    let k321 = v11;
+    let k322 = c133[0];
+    let k323 = v3;
+    let k324 = c55[0];
+    let k325 = v3;
+    let k326 = c55[1];
+    let k327 = v11;
+    let k328 = c124[0];
+    let k329 = v11;
+    let k330 = c124[1];
+    let k331 = v3;
+    let k332 = Ty(NODE_BASE + 25);
+    let k333 = v11;
+    let k334 = Ty(NODE_BASE + 26);
+    let k335 = v3;
+    let k336 = c178[0];
+    let k337 = v3;
+    let k338 = c178[0];
+    let k339 = v11;
+    let k340 = Ty(NODE_BASE + 25);
+    let k341 = v11;
+    let k342 = Ty(NODE_BASE + 26);
+    let k343 = v3;
+    let k344 = c178[0];
+    let k345 = v3;
+    let k346 = c178[0];
+    let k347 = v11;
+    let k348 = Ty(NODE_BASE + 27);
+    let k349 = v3;
+    let k350 = Ty(NODE_BASE + 27);
+    let k351 = v11;
+    let k352 = c124[0];
+    let k353 = v11;
+    let k354 = c124[1];
+    let k355 = v3;
+    let k356 = Ty(NODE_BASE + 28);
+    let k357 = v11;
+    let k358 = Ty(NODE_BASE + 29);
+    let k359 = v3;
+    let k360 = c124[0];
+    let k361 = v11;
+    let k362 = c124[1];
+    let k363 = v3;
+    let k364 = Ty(NODE_BASE + 28);
+    let k365 = v11;
+    let k366 = Ty(NODE_BASE + 29);
+    let k367 = v3;
+    let mut d0 = Descr::none();
+    d0.brands = Descr::unbranded().brands;
+    d0.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k1, last: k4 }),
+        }],
+        neg: vec![],
+    });
+    d0.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k5, last: k6 }),
+        }],
+        neg: vec![],
+    });
+    d0.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k7, last: k8 }),
+        }],
+        neg: vec![],
+    });
+    d0.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k9, last: k12 }),
+        }],
+        neg: vec![],
+    });
+    let mut d1 = Descr::none();
+    d1.brands = Descr::unbranded().brands;
+    d1.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k13, last: k14 }),
+        }],
+        neg: vec![],
+    });
+    d1.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k15, last: k16 }),
+        }],
+        neg: vec![],
+    });
+    let mut d2 = Descr::none();
+    d2.brands = Descr::unbranded().brands;
+    d2.basic = BasicBits(3);
+    d2.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k17, last: k18 }),
+        }],
+        neg: vec![],
+    });
+    d2.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k19, last: k20 }),
+        }],
+        neg: vec![],
+    });
+    let mut d3 = Descr::none();
+    d3.brands = Descr::unbranded().brands;
+    d3.basic = BasicBits(2);
+    d3.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k21, last: k22 }),
+        }],
+        neg: vec![],
+    });
+    d3.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k23, last: k24 }),
+        }],
+        neg: vec![],
+    });
+    d3.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k56, last: k57 }),
+        }],
+        neg: vec![],
+    });
+    let mut d4 = Descr::none();
+    d4.brands = Descr::unbranded().brands;
+    d4.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k58, last: k59 }),
+        }],
+        neg: vec![],
+    });
+    d4.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k60, last: k61 }),
+        }],
+        neg: vec![],
+    });
+    d4.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k62, last: k63 }),
+        }],
+        neg: vec![],
+    });
+    let mut d5 = Descr::none();
+    d5.brands = Descr::unbranded().brands;
+    d5.basic = BasicBits(2);
+    d5.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k64, last: k65 }),
+        }],
+        neg: vec![],
+    });
+    d5.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k66, last: k67 }),
+        }],
+        neg: vec![],
+    });
+    d5.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k134, last: k135 }),
+        }],
+        neg: vec![],
+    });
+    d5.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k136, last: k137 }),
+        }],
+        neg: vec![],
+    });
+    let mut d6 = Descr::none();
+    d6.brands = Descr::unbranded().brands;
+    d6.basic = BasicBits(1);
+    d6.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k138, last: k139 }),
+        }],
+        neg: vec![],
+    });
+    d6.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k140, last: k141 }),
+        }],
+        neg: vec![],
+    });
+    let mut d7 = Descr::none();
+    d7.brands = Descr::unbranded().brands;
+    d7.basic = BasicBits(2);
+    d7.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k142, last: k143 }),
+        }],
+        neg: vec![],
+    });
+    d7.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k144, last: k145 }),
+        }],
+        neg: vec![],
+    });
+    d7.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k146, last: k147 }),
+        }],
+        neg: vec![],
+    });
+    let mut d8 = Descr::none();
+    d8.brands = Descr::unbranded().brands;
+    d8.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k148, last: k149 }),
+        }],
+        neg: vec![],
+    });
+    d8.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k150, last: k151 }),
+        }],
+        neg: vec![],
+    });
+    d8.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k152, last: k153 }),
+        }],
+        neg: vec![],
+    });
+    d8.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k154, last: k155 }),
+        }],
+        neg: vec![],
+    });
+    let mut d9 = Descr::none();
+    d9.brands = Descr::unbranded().brands;
+    d9.basic = BasicBits(2);
+    d9.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k156, last: k157 }),
+        }],
+        neg: vec![],
+    });
+    d9.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k158, last: k159 }),
+        }],
+        neg: vec![],
+    });
+    d9.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k160, last: k161 }),
+        }],
+        neg: vec![],
+    });
+    let mut d10 = Descr::none();
+    d10.brands = Descr::unbranded().brands;
+    d10.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k162, last: k163 }),
+        }],
+        neg: vec![],
+    });
+    d10.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k164, last: k165 }),
+        }],
+        neg: vec![],
+    });
+    d10.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k166, last: k167 }),
+        }],
+        neg: vec![],
+    });
+    d10.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k179, last: k180 }),
+        }],
+        neg: vec![],
+    });
+    d10.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k181, last: k182 }),
+        }],
+        neg: vec![],
+    });
+    let mut d11 = Descr::none();
+    d11.brands = Descr::unbranded().brands;
+    d11.basic = BasicBits(2);
+    d11.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k183, last: k184 }),
+        }],
+        neg: vec![],
+    });
+    d11.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k185, last: k186 }),
+        }],
+        neg: vec![],
+    });
+    d11.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k187, last: k188 }),
+        }],
+        neg: vec![],
+    });
+    d11.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k189, last: k190 }),
+        }],
+        neg: vec![],
+    });
+    d11.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k191, last: k192 }),
+        }],
+        neg: vec![],
+    });
+    let mut d12 = Descr::none();
+    d12.brands = Descr::unbranded().brands;
+    d12.basic = BasicBits(1);
+    d12.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k193, last: k194 }),
+        }],
+        neg: vec![],
+    });
+    d12.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k195, last: k196 }),
+        }],
+        neg: vec![],
+    });
+    let mut d13 = Descr::none();
+    d13.brands = Descr::unbranded().brands;
+    d13.basic = BasicBits(1);
+    d13.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k197, last: k198 }),
+        }],
+        neg: vec![],
+    });
+    d13.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k199, last: k200 }),
+        }],
+        neg: vec![],
+    });
+    let mut d14 = Descr::none();
+    d14.brands = Descr::unbranded().brands;
+    d14.basic = BasicBits(3);
+    d14.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k201, last: k202 }),
+        }],
+        neg: vec![],
+    });
+    d14.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k203, last: k204 }),
+        }],
+        neg: vec![],
+    });
+    let mut d15 = Descr::none();
+    d15.brands = Descr::unbranded().brands;
+    d15.basic = BasicBits(1);
+    d15.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k205, last: k206 }),
+        }],
+        neg: vec![],
+    });
+    d15.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k207, last: k208 }),
+        }],
+        neg: vec![],
+    });
+    let mut d16 = Descr::none();
+    d16.brands = Descr::unbranded().brands;
+    d16.basic = BasicBits(3);
+    d16.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k209, last: k210 }),
+        }],
+        neg: vec![],
+    });
+    d16.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k211, last: k212 }),
+        }],
+        neg: vec![],
+    });
+    d16.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k213, last: k214 }),
+        }],
+        neg: vec![],
+    });
+    d16.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k215, last: k216 }),
+        }],
+        neg: vec![],
+    });
+    let mut d17 = Descr::none();
+    d17.brands = Descr::unbranded().brands;
+    d17.basic = BasicBits(3);
+    d17.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k217, last: k218 }),
+        }],
+        neg: vec![],
+    });
+    d17.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k219, last: k220 }),
+        }],
+        neg: vec![],
+    });
+    d17.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k221, last: k222 }),
+        }],
+        neg: vec![],
+    });
+    d17.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k223, last: k224 }),
+        }],
+        neg: vec![],
+    });
+    d17.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k225, last: k226 }),
+        }],
+        neg: vec![],
+    });
+    let mut d18 = Descr::none();
+    d18.brands = Descr::unbranded().brands;
+    d18.basic = BasicBits(3);
+    d18.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k227, last: k228 }),
+        }],
+        neg: vec![],
+    });
+    d18.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k229, last: k230 }),
+        }],
+        neg: vec![],
+    });
+    d18.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k231, last: k232 }),
+        }],
+        neg: vec![],
+    });
+    d18.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k233, last: k234 }),
+        }],
+        neg: vec![],
+    });
+    d18.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k235, last: k236 }),
+        }],
+        neg: vec![],
+    });
+    d18.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k237, last: k238 }),
+        }],
+        neg: vec![],
+    });
+    let mut d19 = Descr::none();
+    d19.brands = Descr::unbranded().brands;
+    d19.basic = BasicBits(1);
+    d19.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k239, last: k240 }),
+        }],
+        neg: vec![],
+    });
+    d19.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k241, last: k242 }),
+        }],
+        neg: vec![],
+    });
+    d19.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k243, last: k244 }),
+        }],
+        neg: vec![],
+    });
+    d19.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k245, last: k246 }),
+        }],
+        neg: vec![],
+    });
+    let mut d20 = Descr::none();
+    d20.brands = Descr::unbranded().brands;
+    d20.basic = BasicBits(3);
+    d20.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k247, last: k248 }),
+        }],
+        neg: vec![],
+    });
+    d20.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k249, last: k250 }),
+        }],
+        neg: vec![],
+    });
+    d20.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k251, last: k252 }),
+        }],
+        neg: vec![],
+    });
+    d20.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k253, last: k254 }),
+        }],
+        neg: vec![],
+    });
+    let mut d21 = Descr::none();
+    d21.brands = Descr::unbranded().brands;
+    d21.basic = BasicBits(3);
+    d21.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k255, last: k256 }),
+        }],
+        neg: vec![],
+    });
+    d21.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k257, last: k258 }),
+        }],
+        neg: vec![],
+    });
+    d21.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k259, last: k260 }),
+        }],
+        neg: vec![],
+    });
+    d21.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k261, last: k262 }),
+        }],
+        neg: vec![],
+    });
+    d21.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k263, last: k264 }),
+        }],
+        neg: vec![],
+    });
+    let mut d22 = Descr::none();
+    d22.brands = Descr::unbranded().brands;
+    d22.basic = BasicBits(3);
+    d22.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k265, last: k266 }),
+        }],
+        neg: vec![],
+    });
+    d22.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k267, last: k268 }),
+        }],
+        neg: vec![],
+    });
+    d22.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k269, last: k270 }),
+        }],
+        neg: vec![],
+    });
+    d22.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k271, last: k272 }),
+        }],
+        neg: vec![],
+    });
+    d22.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k273, last: k274 }),
+        }],
+        neg: vec![],
+    });
+    let mut d23 = Descr::none();
+    d23.brands = Descr::unbranded().brands;
+    d23.basic = BasicBits(1);
+    d23.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: false,
+            cons: Some(ConsSig { elem: k275, last: k276 }),
+        }],
+        neg: vec![
+            ListSig {
+                empty: false,
+                cons: Some(ConsSig { elem: k286, last: k287 }),
+            },
+            ListSig {
+                empty: false,
+                cons: Some(ConsSig { elem: k298, last: k299 }),
+            },
+            ListSig {
+                empty: false,
+                cons: Some(ConsSig { elem: k300, last: k301 }),
+            },
+            ListSig {
+                empty: false,
+                cons: Some(ConsSig { elem: k302, last: k303 }),
+            },
+        ],
+    });
+    d23.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k304, last: k305 }),
+        }],
+        neg: vec![],
+    });
+    d23.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k306, last: k307 }),
+        }],
+        neg: vec![],
+    });
+    d23.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k308, last: k309 }),
+        }],
+        neg: vec![],
+    });
+    d23.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k310, last: k311 }),
+        }],
+        neg: vec![],
+    });
+    d23.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k312, last: k313 }),
+        }],
+        neg: vec![],
+    });
+    let mut d24 = Descr::none();
+    d24.brands = Descr::unbranded().brands;
+    d24.basic = BasicBits(3);
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k314, last: k315 }),
+        }],
+        neg: vec![],
+    });
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k316, last: k317 }),
+        }],
+        neg: vec![],
+    });
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k318, last: k319 }),
+        }],
+        neg: vec![],
+    });
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k320, last: k321 }),
+        }],
+        neg: vec![],
+    });
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k322, last: k323 }),
+        }],
+        neg: vec![],
+    });
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k324, last: k325 }),
+        }],
+        neg: vec![],
+    });
+    d24.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k326, last: k327 }),
+        }],
+        neg: vec![],
+    });
+    let mut d25 = Descr::none();
+    d25.brands = Descr::unbranded().brands;
+    d25.basic = BasicBits(1);
+    d25.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k328, last: k329 }),
+        }],
+        neg: vec![],
+    });
+    d25.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k330, last: k331 }),
+        }],
+        neg: vec![],
+    });
+    d25.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k332, last: k333 }),
+        }],
+        neg: vec![],
+    });
+    d25.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k334, last: k335 }),
+        }],
+        neg: vec![],
+    });
+    let mut d26 = Descr::none();
+    d26.brands = Descr::unbranded().brands;
+    d26.basic = BasicBits(3);
+    d26.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k336, last: k337 }),
+        }],
+        neg: vec![],
+    });
+    d26.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k338, last: k339 }),
+        }],
+        neg: vec![],
+    });
+    d26.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k340, last: k341 }),
+        }],
+        neg: vec![],
+    });
+    d26.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k342, last: k343 }),
+        }],
+        neg: vec![],
+    });
+    let mut d27 = Descr::none();
+    d27.brands = Descr::unbranded().brands;
+    d27.basic = BasicBits(3);
+    d27.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k344, last: k345 }),
+        }],
+        neg: vec![],
+    });
+    d27.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k346, last: k347 }),
+        }],
+        neg: vec![],
+    });
+    d27.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k348, last: k349 }),
+        }],
+        neg: vec![],
+    });
+    d27.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k350, last: k351 }),
+        }],
+        neg: vec![],
+    });
+    let mut d28 = Descr::none();
+    d28.brands = Descr::unbranded().brands;
+    d28.basic = BasicBits(1);
+    d28.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k352, last: k353 }),
+        }],
+        neg: vec![],
+    });
+    d28.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k354, last: k355 }),
+        }],
+        neg: vec![],
+    });
+    d28.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k356, last: k357 }),
+        }],
+        neg: vec![],
+    });
+    d28.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k358, last: k359 }),
+        }],
+        neg: vec![],
+    });
+    let mut d29 = Descr::none();
+    d29.brands = Descr::unbranded().brands;
+    d29.basic = BasicBits(3);
+    d29.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k360, last: k361 }),
+        }],
+        neg: vec![],
+    });
+    d29.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k362, last: k363 }),
+        }],
+        neg: vec![],
+    });
+    d29.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k364, last: k365 }),
+        }],
+        neg: vec![],
+    });
+    d29.lists.push(Conj {
+        pos: vec![ListSig {
+            empty: true,
+            cons: Some(ConsSig { elem: k366, last: k367 }),
+        }],
+        neg: vec![],
+    });
+    let nodes = vec![
+        d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23,
+        d24, d25, d26, d27, d28, d29,
+    ];
+    let roots = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+    (types, System { nodes, roots })
+}
+
+/// The most questions the solve of the system above may ask. Without kept
+/// answers it asks 7,310,572; the system holds about a thousand distinct ones.
+const QUESTIONS_ASKED_AT_MOST: u64 = 19_195;
+
+#[test]
+fn a_question_answered_once_is_not_asked_again_while_its_root_is_open() {
+    let (mut t, sys) = system();
+    let _ = t.settle(sys.nodes);
+    let asked = t.interner.recursion.questions_asked();
+    assert!(asked <= QUESTIONS_ASKED_AT_MOST, "the solve asked {asked} questions");
+}
+
+#[test]
+fn every_answer_the_solve_keeps_is_the_answer_decided_again_from_nothing() {
+    let (mut t, sys) = system();
+    t.interner.recursion.check_kept_answers();
+    let _ = t.settle(sys.nodes);
+    let (checked, differing) = t.interner.recursion.kept_answers_checked();
+    assert!(checked > 0, "the solve kept no answer to check");
+    assert_eq!(
+        differing, 0,
+        "{differing} of {checked} kept answers differ from a fresh decision"
+    );
+}
