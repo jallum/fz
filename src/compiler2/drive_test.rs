@@ -9662,6 +9662,42 @@ fn compiler2_native_binary_clauses_joining_with_different_facts_lower_verified()
     assert!(clif.contains("brif "), "the dispatch is lowered whole:\n{clif}");
 }
 
+/// Clauses that each begin with a one-byte read at the cursor, ending in a
+/// clause that recurses on the rest: the shape of the JSON string scanner.
+const BYTE_SCANNER: &str = "defmodule Scan do\n\
+     \x20 def pick([h | _]), do: h\n\
+     \x20 def scan(s, b = <<\"\\\"\", r :: binary>>, acc), do: {:ok, s, b, r, acc}\n\
+     \x20 def scan(s, b = <<\"\\\\\", r :: binary>>, acc), do: {:esc, s, b, r, acc}\n\
+     \x20 def scan(_s, b = <<c, _r :: binary>>, _acc) when c < 32, do: {:error, b}\n\
+     \x20 def scan(s, <<c, r :: binary>>, acc) when c < 128, do: scan(s, r, acc)\n\
+     \x20 def scan(_s, \"\", _acc), do: {:error, \"\"}\n\
+     \x20 def scan(s, b, acc), do: {:other, s, b, acc}\n\
+     end\n\
+     def main() do\n\
+     \x20 dbg(Scan.scan(\"x\", Scan.pick([\"abc\", 7]), 0))\n\
+     \x20 nil\n\
+     end\n";
+
+/// Every clause of a byte scanner begins by asking whether a byte fits at the
+/// cursor and reading it. A clause that follows one which began the same way
+/// is reached either after that byte was read or after it did not fit; the
+/// first arrival holds the byte and the second ends the dispatch, so the
+/// clause does not ask again and does not read again. The byte is read once
+/// for the whole chain: an unaligned byte is the only read that swaps bytes.
+#[test]
+fn compiler2_native_a_byte_scanner_reads_its_byte_once() {
+    // `scan` is compiled for a binary argument and for any other; the loop is
+    // the larger of the two.
+    let (_, clif) = lowered_clif_by_function(BYTE_SCANNER)
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("scan__e"))
+        .max_by_key(|(_, clif)| clif.lines().count())
+        .expect("scan is lowered");
+    let reads = clif.lines().filter(|line| line.contains(" = bswap ")).count();
+
+    assert_eq!(reads, 1, "the first byte at the cursor is read once:\n{clif}");
+}
+
 /// A share is written where it stands, from what the value's type says. In
 /// each program below `retained` passes its argument to `keep` and still
 /// holds it, so the argument is shared before the call. Sharing a binary
