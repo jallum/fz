@@ -1,0 +1,19 @@
+#---
+# purpose: a return type that never settles is reported as one diagnostic, not searched for until the compiler times out.
+# expect: diagnostic
+# diagnostic.code: type/return-did-not-converge
+#---
+defmodule Main do
+  def esc(v) when is_atom(v), do: v
+  def esc({:k, v}), do: {:k, esc_list(v)}
+  def esc({a, b}), do: {esc(a), esc(b)}
+  def esc(v) when is_tuple(v), do: {:{}, [], esc_list(Tuple.to_list(v))}
+  def esc(v) when is_list(v), do: esc_list(v)
+
+  defp esc_list([]), do: []
+  defp esc_list([h | t]) when is_list(t), do: [esc(h) | esc_list(t)]
+  defp esc_list([h | t]), do: [{:|, [], [esc(h), esc(t)]}]
+
+  def main(), do: IO.inspect(esc({:a, {:k, [:b, {:c, :d}]}, :e}))
+end
+Main.main()

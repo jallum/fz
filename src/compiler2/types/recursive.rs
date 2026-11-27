@@ -38,9 +38,13 @@
 //! Emptiness and containment walk children, and below a recursive type a walk
 //! can come back to a question it is already deciding. Such a question is
 //! assumed to hold (`Recursion::assume`): a counterexample is a finite value,
-//! so it is found at finite depth without the assumption. Assumptions live
-//! only on the stack of questions being decided and no answer below the root
-//! is remembered, so an assumption never outlives the question it served.
+//! so it is found at finite depth without the assumption. A question being
+//! decided is an assumption; a question decided is a fact only if the walk
+//! that decided it never came back to a question opened outside it. Such an
+//! answer used no assumption, so it is the answer of the type itself and
+//! stands until the root question finishes. An answer that did come back to
+//! an outer question is dropped when its own question closes, so an
+//! assumption never outlives the question it served.
 //!
 //! A set operation on recursive operands can likewise arrive back at itself.
 //! The operation in flight answers its own re-entry with a fresh binder, and
@@ -85,7 +89,7 @@ pub(super) struct Recursion {
     members: HashMap<Ty, Member>,
     clusters: Vec<Cluster>,
     by_key: HashMap<Vec<Descr>, usize>,
-    questions: RefCell<HashSet<Question>>,
+    questions: RefCell<Questions>,
     next_binder: u32,
     /// The constructions in flight over recursive types, each with the
     /// binder that answers a re-entry.
@@ -145,6 +149,117 @@ pub(super) enum Mapper {
     ),
 }
 
+/// What is known of a question: it is being decided, or it was decided without
+/// leaning on any question still being decided.
+enum Standing {
+    /// Being decided, at this depth of the stack of open questions.
+    Open(usize),
+    /// Decided without arriving back at a question opened outside it.
+    Decided(bool),
+}
+
+/// The questions asked since the root question began.
+struct Questions {
+    standing: HashMap<Question, Standing>,
+    /// How many questions are open.
+    open: usize,
+    /// The shallowest open question the walk since the innermost open question
+    /// began arrived back at.
+    shallowest_return: usize,
+    /// How many questions have been asked, answered or not.
+    #[cfg(test)]
+    asked: u64,
+    /// Whether decided answers are not kept: the questions of a fresh decision
+    /// that checks a kept answer.
+    #[cfg(test)]
+    forgetful: bool,
+    /// Whether every kept answer is checked against a fresh decision.
+    #[cfg(test)]
+    checking: bool,
+    /// How many kept answers were checked, and how many of those differed.
+    #[cfg(test)]
+    checked: (u64, u64),
+}
+
+impl Default for Questions {
+    fn default() -> Self {
+        Self {
+            standing: HashMap::default(),
+            open: 0,
+            shallowest_return: usize::MAX,
+            #[cfg(test)]
+            asked: 0,
+            #[cfg(test)]
+            forgetful: false,
+            #[cfg(test)]
+            checking: false,
+            #[cfg(test)]
+            checked: (0, 0),
+        }
+    }
+}
+
+impl Questions {
+    /// The answer `question` already has: assumed while it is open, kept once
+    /// decided. An open question that is returned to records how far out the
+    /// walk reached.
+    fn answer(&mut self, question: &Question) -> Option<Reply> {
+        #[cfg(test)]
+        {
+            self.asked += 1;
+        }
+        match self.standing.get(question)? {
+            Standing::Open(depth) => {
+                self.shallowest_return = self.shallowest_return.min(*depth);
+                Some(Reply::Assumed)
+            }
+            Standing::Decided(verdict) => Some(Reply::Kept(*verdict)),
+        }
+    }
+
+    /// Begin deciding `question`; returns its depth and the outer walk's
+    /// reach, to hand back to [`close`](Self::close).
+    fn open(&mut self, question: &Question) -> (usize, usize) {
+        let depth = self.open;
+        self.open += 1;
+        self.standing.insert(question.clone(), Standing::Open(depth));
+        (depth, std::mem::replace(&mut self.shallowest_return, usize::MAX))
+    }
+
+    /// Finish deciding `question`. The answer is kept unless the walk arrived
+    /// back at a question opened outside it, and every kept answer goes with
+    /// the root question.
+    fn close(&mut self, question: Question, verdict: bool, (depth, outer): (usize, usize)) {
+        let reached = std::mem::replace(&mut self.shallowest_return, outer);
+        self.open -= 1;
+        if depth == 0 {
+            self.standing.clear();
+        } else if reached < depth {
+            self.shallowest_return = outer.min(reached);
+            self.standing.remove(&question);
+        } else if self.forgetful() {
+            self.standing.remove(&question);
+        } else {
+            self.standing.insert(question, Standing::Decided(verdict));
+        }
+    }
+
+    fn forgetful(&self) -> bool {
+        #[cfg(test)]
+        return self.forgetful;
+        #[cfg(not(test))]
+        false
+    }
+}
+
+/// How an asked question was already answered.
+enum Reply {
+    /// It is open: the walk came back to it, so it holds by assumption.
+    Assumed,
+    /// It was decided earlier in this root question without any assumption.
+    Kept(bool),
+}
+
 /// A question emptiness or containment can arrive back at.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum Question {
@@ -172,12 +287,59 @@ impl Recursion {
     /// Decide `question`, assuming it holds wherever deciding it arrives back
     /// at it.
     pub(super) fn assume(&self, question: Question, decide: impl FnOnce() -> bool) -> bool {
-        if !self.questions.borrow_mut().insert(question.clone()) {
-            return true;
+        let reply = self.questions.borrow_mut().answer(&question);
+        match reply {
+            Some(Reply::Assumed) => return true,
+            Some(Reply::Kept(verdict)) => {
+                #[cfg(test)]
+                if self.questions.borrow().checking {
+                    return self.confirmed(question, verdict, decide);
+                }
+                return verdict;
+            }
+            None => {}
         }
+        let began = self.questions.borrow_mut().open(&question);
         let verdict = decide();
-        self.questions.borrow_mut().remove(&question);
+        self.questions.borrow_mut().close(question, verdict, began);
         verdict
+    }
+}
+
+#[cfg(test)]
+impl Recursion {
+    /// A kept answer, once decided again with nothing kept and nothing
+    /// assumed, and whether the two agree. Returns the kept answer.
+    fn confirmed(&self, question: Question, kept: bool, decide: impl FnOnce() -> bool) -> bool {
+        let fresh = Questions {
+            forgetful: true,
+            ..Questions::default()
+        };
+        let outer = std::mem::replace(&mut *self.questions.borrow_mut(), fresh);
+        let again = self.assume(question, decide);
+        let fresh = std::mem::replace(&mut *self.questions.borrow_mut(), outer);
+        let mut questions = self.questions.borrow_mut();
+        let _ = fresh;
+        questions.checked.0 += 1;
+        questions.checked.1 += u64::from(again != kept);
+        kept
+    }
+
+    /// From now on, every kept answer is decided again with nothing kept and
+    /// nothing assumed, and the two compared.
+    pub(super) fn check_kept_answers(&self) {
+        self.questions.borrow_mut().checking = true;
+    }
+
+    /// How many questions have been asked since the world began.
+    pub(super) fn questions_asked(&self) -> u64 {
+        self.questions.borrow().asked
+    }
+
+    /// How many kept answers were decided again, and how many of those
+    /// differed from the kept one.
+    pub(super) fn kept_answers_checked(&self) -> (u64, u64) {
+        self.questions.borrow().checked
     }
 }
 
@@ -869,3 +1031,7 @@ pub(super) fn cmp_members(order: &ClauseOrder<'_>, a: (&[Descr], usize), b: (&[D
 #[cfg(test)]
 #[path = "recursive_test.rs"]
 mod recursive_test;
+
+#[cfg(test)]
+#[path = "settle_questions_test.rs"]
+mod settle_questions_test;

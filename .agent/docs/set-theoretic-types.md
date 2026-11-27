@@ -917,11 +917,19 @@ has to stop where it started.
   no member reaches itself through a type that is not a member
   (`assert_cycles_stay_in_cluster`), because walkers stop at members and a
   cycle through any other type is never guarded.
-- **Questions.** `Descr::is_empty`, `is_subtype` and `is_disjoint` keep the
-  questions in flight (`Recursion::assume`) once any recursive type exists and
-  only for descriptors whose children reach one (`TyAttrs::recursive`). A
-  re-entered question is assumed to hold; nothing below the root question is
-  remembered.
+- **Questions.** `Descr::is_empty`, `is_subtype` and `is_disjoint` keep one
+  table of questions (`Recursion::questions`) once any recursive type exists
+  and only for descriptors whose children reach one (`TyAttrs::recursive`).
+  An entry is `Open` while its question is being decided: arriving back at it
+  assumes it holds, and records how far out the walk reached. When a question
+  closes it becomes `Decided` unless its walk arrived back at a question
+  opened outside it; a question that leaned on an outer assumption is removed,
+  because its answer is only true while that assumption stands. A `Decided`
+  entry answers the same question for the rest of the root question, and the
+  table is emptied when the root question closes, so no answer outlives it.
+  Under `cfg(test)` the table counts the questions asked and can check every
+  `Decided` answer against the question decided again with nothing kept and
+  nothing assumed.
 - **Constructions.** A set operation on a recursive operand, and the interning
   of a descriptor that reaches one, run through `Types::recursive_operation`:
   a re-entry is answered by the construction's binder, and a result that

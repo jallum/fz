@@ -517,3 +517,175 @@ fn erasing_closure_identity_of_a_closure_that_captures_its_own_type_ends() {
         "erasing is idempotent on the recursive result"
     );
 }
+
+fn question(t: &mut Types, ty: Ty) -> Question {
+    Question::Empty(t.descr(&ty).clone())
+}
+
+/// Ask a deciding closure's question and count how often it was really decided.
+fn decided<'a>(
+    recursion: &'a Recursion,
+    question: &'a Question,
+    decisions: &'a std::cell::Cell<u32>,
+    walk: impl FnOnce() -> bool + 'a,
+) -> bool {
+    recursion.assume(question.clone(), || {
+        decisions.set(decisions.get() + 1);
+        walk()
+    })
+}
+
+#[test]
+fn a_question_that_leaned_on_no_open_question_is_decided_once_per_root() {
+    let mut t = Types::new();
+    let (int, str_t) = (t.int(), t.str_t());
+    let (outer, inner) = (question(&mut t, int), question(&mut t, str_t));
+    let recursion = Recursion::default();
+    let decisions = std::cell::Cell::new(0);
+    recursion.assume(outer, || {
+        let first = decided(&recursion, &inner, &decisions, || false);
+        let again = decided(&recursion, &inner, &decisions, || unreachable!("answered already"));
+        assert_eq!((first, again), (false, false), "the kept answer is the decided one");
+        true
+    });
+    assert_eq!(decisions.get(), 1);
+    decided(&recursion, &inner, &decisions, || true);
+    assert_eq!(decisions.get(), 2, "nothing outlives the root question");
+}
+
+#[test]
+fn a_question_that_leaned_on_an_open_question_is_decided_again_when_asked_again() {
+    let mut t = Types::new();
+    let (int, str_t) = (t.int(), t.str_t());
+    let (outer, inner) = (question(&mut t, int), question(&mut t, str_t));
+    let recursion = Recursion::default();
+    let decisions = std::cell::Cell::new(0);
+    recursion.assume(outer.clone(), || {
+        let leaning = decided(&recursion, &inner, &decisions, || {
+            recursion.assume(outer.clone(), || unreachable!())
+        });
+        assert!(leaning, "arriving back at an open question assumes it holds");
+        let standing = decided(&recursion, &inner, &decisions, || false);
+        assert!(
+            !standing,
+            "the assumption the first answer leaned on did not outlive it"
+        );
+        false
+    });
+    assert_eq!(decisions.get(), 2);
+}
+
+#[test]
+fn a_question_two_levels_inside_the_one_it_leaned_on_is_not_kept_either() {
+    let mut t = Types::new();
+    let (int, str_t, nil) = (t.int(), t.str_t(), t.nil());
+    let (root, middle, deep) = (question(&mut t, int), question(&mut t, str_t), question(&mut t, nil));
+    let recursion = Recursion::default();
+    let decisions = std::cell::Cell::new(0);
+    recursion.assume(root.clone(), || {
+        decided(&recursion, &middle, &decisions, || {
+            decided(&recursion, &deep, &decisions, || {
+                recursion.assume(root.clone(), || unreachable!())
+            })
+        });
+        let again = decided(&recursion, &middle, &decisions, || false);
+        assert!(!again, "the middle question leaned on the root through the deep one");
+        true
+    });
+    assert_eq!(decisions.get(), 3);
+}
+
+/// Every pair drawn from `tys`, asked as emptiness of the difference, of the
+/// meet, and as containment, with every kept answer decided again from nothing.
+/// Returns how many answers were checked and how many differed.
+fn kept_answers_checked_over(t: &mut Types, tys: &[Ty]) -> (u64, u64) {
+    t.interner.recursion.check_kept_answers();
+    for &a in tys {
+        for &b in tys {
+            let (minus, meet) = (t.difference(a, b), t.intersect(a, b));
+            let _ = (t.is_empty(&minus), t.is_empty(&meet), t.is_subtype(&a, &b));
+        }
+    }
+    t.interner.recursion.kept_answers_checked()
+}
+
+#[test]
+fn a_kept_answer_about_a_recursive_pair_is_the_answer_decided_from_nothing() {
+    let mut t = Types::new();
+    let pair = t.recursive(2, |t, me| {
+        let (int, str_t, nil) = (t.int(), t.str_t(), t.nil());
+        let (over_b, over_a, over_b_again) = (
+            t.non_empty_list(me[1]),
+            t.non_empty_list(me[0]),
+            t.non_empty_list(me[1]),
+        );
+        let a = [int, nil, over_b].into_iter().fold(t.none(), |acc, x| t.union(acc, x));
+        let b = [str_t, nil, over_a, over_b_again]
+            .into_iter()
+            .fold(t.none(), |acc, x| t.union(acc, x));
+        vec![a, b]
+    });
+    let ints_and_strs = t.recursive(1, |t, me| {
+        let (int, str_t, nil) = (t.int(), t.str_t(), t.nil());
+        let nested = t.non_empty_list(me[0]);
+        vec![
+            [int, str_t, nil, nested]
+                .into_iter()
+                .fold(t.none(), |acc, x| t.union(acc, x)),
+        ]
+    })[0];
+    let (checked, differing) = kept_answers_checked_over(&mut t, &[pair[0], pair[1], ints_and_strs]);
+    assert!(checked > 0, "no answer was kept to check");
+    assert_eq!(differing, 0);
+}
+
+#[test]
+fn a_kept_answer_about_two_spellings_of_one_tree_is_the_answer_decided_from_nothing() {
+    let mut t = Types::new();
+    let tree = t.recursive(1, |t, me| {
+        let (nil, int) = (t.nil(), t.int());
+        let node = t.tuple(&[int, me[0], me[0]]);
+        let nodes = t.non_empty_list(node);
+        vec![[nil, nodes].into_iter().fold(t.none(), |acc, x| t.union(acc, x))]
+    })[0];
+    let unfolded = t.recursive(1, |t, me| {
+        let (nil, int) = (t.nil(), t.int());
+        let leaf = t.tuple(&[int, me[0], me[0]]);
+        let child = t.union(nil, leaf);
+        let node = t.tuple(&[int, child, me[0]]);
+        let nodes = t.non_empty_list(node);
+        let inner = t.non_empty_list(nodes);
+        vec![[nil, nodes, inner].into_iter().fold(t.none(), |acc, x| t.union(acc, x))]
+    })[0];
+    let chain = chain(&mut t);
+    let (checked, differing) = kept_answers_checked_over(&mut t, &[tree, unfolded, chain]);
+    assert!(checked > 0, "no answer was kept to check");
+    assert_eq!(differing, 0);
+}
+
+#[test]
+fn a_kept_answer_that_could_lean_on_an_outer_assumption_is_the_answer_decided_from_nothing() {
+    let mut t = Types::new();
+    let int = t.int();
+    let ints = t.recursive(1, |t, me| {
+        let nil = t.nil();
+        let link = t.tuple(&[int, me[0]]);
+        vec![t.union(nil, link)]
+    })[0];
+    let pairs = t.recursive(1, |t, me| {
+        let nil = t.nil();
+        let two = t.tuple(&[int, me[0]]);
+        let two = t.tuple(&[int, two]);
+        vec![t.union(nil, two)]
+    })[0];
+    let triples = t.recursive(1, |t, me| {
+        let nil = t.nil();
+        let three = t.tuple(&[int, me[0]]);
+        let three = t.tuple(&[int, three]);
+        let three = t.tuple(&[int, three]);
+        vec![t.union(nil, three)]
+    })[0];
+    let (checked, differing) = kept_answers_checked_over(&mut t, &[ints, pairs, triples]);
+    assert!(checked > 0, "no answer was kept to check");
+    assert_eq!(differing, 0);
+}
