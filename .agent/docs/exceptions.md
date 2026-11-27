@@ -687,18 +687,16 @@ requests no module: the arm names `Map.update_failure/2` through the atom
 `Elixir.Map` (`push_library_call`, a `DirectCallee::ModuleValue`), which the
 semantic walk resolves only on reaching the call, so a program that only
 updates maps it knows are maps never loads `Map`. A base whose type is no map
-at all leaves the map arm unreachable, and that is the compile error
-`type/not-a-map` at the update (`emit_not_a_map`, raised where the semantic walk
-finds the dispatch's `map_update` site with no reachable outcome).
+at all leaves the map arm unreachable: the update still compiles, and its miss
+arm raises when it runs, as in Elixir, which only warns.
 
 A field read `v.a` and an index read `v[k]` are two expressions from the front
 door on (`Expr::Field` and `Expr::Index`), and each lowers to the same dispatch
 on `%{}` over its base. The arm of a field read is the read by name, and the
 miss calls `Map.field_failure/1`, which raises `BadMapError`; a base whose type
 is a map folds the dispatch away, and a base whose type is no map takes the miss
-arm and raises when the read runs: a read is never a compile error, as in Elixir,
-which only warns. Only a map update carries the `map_base` site that reports
-`type/not-a-map`. The one field of a resource, `value`, reads without a raise: its
+arm and raises when the read runs. No map expression is a compile error for the
+type of its base, as in Elixir, which only warns. The one field of a resource, `value`, reads without a raise: its
 arm takes a resource as well as a map (the decision tests the runtime kinds map
 and resource together), so `r.value` reads the payload of a resource and a base
 that is neither still raises. The arm of an index read is the inline map read,
