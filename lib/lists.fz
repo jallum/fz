@@ -167,4 +167,26 @@ defmodule :lists do
   @spec unzip([{a, b}], [a], [b]) :: {[a], [b]} when a: var, b: var
   defp unzip([{x, y} | ts], xs, ys), do: unzip(ts, [x | xs], [y | ys])
   defp unzip([], xs, ys), do: {reverse(xs), reverse(ys)}
+
+  @doc """
+  Combines `map/2` and `foldl/3` in one pass: calls `fun` on each element of
+  `list` and the accumulator, starting from `acc0`, and returns the mapped list
+  with the final accumulator.
+
+  ## Examples
+
+      :lists.mapfoldl(fn x, sum -> {x * 2, sum + x} end, 0, [1, 2, 3])
+      #=> {[2, 4, 6], 6}
+
+  """
+  @spec mapfoldl((a, c -> {b, c}), c, [a]) :: {[b], c} when a: var, b: var, c: var
+  def mapfoldl(f, accu, list) when is_function(f, 2), do: mapfoldl_1(f, list, [], accu)
+
+  @spec mapfoldl_1((a, c -> {b, c}), [a], [b], c) :: {[b], c} when a: var, b: var, c: var
+  defp mapfoldl_1(f, [hd | tail], map_acc, fold_acc0) do
+    {m, fold_acc1} = f.(hd, fold_acc0)
+    mapfoldl_1(f, tail, [m | map_acc], fold_acc1)
+  end
+
+  defp mapfoldl_1(_f, [], map_acc, fold_acc), do: {reverse(map_acc), fold_acc}
 end
