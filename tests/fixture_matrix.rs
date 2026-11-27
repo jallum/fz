@@ -281,6 +281,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_struct_update_rewrites_only_a_base_nothing_else_holds,
         ),
         (
+            "a_resumed_frame_never_pops_across_a_block_boundary",
+            a_resumed_frame_never_pops_across_a_block_boundary,
+        ),
+        (
             "each_place_a_binary_gains_a_second_holder_marks_it_shared",
             each_place_a_binary_gains_a_second_holder_marks_it_shared,
         ),
@@ -3909,6 +3913,39 @@ fn binaries_shared_by_process(fixture: &FixtureCase, path: FixtureMatrixPath) ->
         .collect();
     by_pid.sort_unstable();
     by_pid.into_iter().map(|(_, shared)| shared).collect()
+}
+
+/// A frame is popped when it resumes and ends at the bump pointer. With a
+/// block's end another block's start, the frame that ends one block and the
+/// callee's frame that begins the next pass the same test, and the pop moves
+/// the pointer below the second block. Later allocations then write into the
+/// first block's tail, which corrupts memory with telemetry on or off, and the
+/// young byte count underflows. The fixture runs with telemetry because the
+/// runtime's debug arithmetic makes that underflow a panic.
+fn a_resumed_frame_never_pops_across_a_block_boundary() {
+    let fixture =
+        FixtureCase::new("fixtures/01751_a_deep_non_tail_recursion_pops_each_resumed_frame_within_its_own_block.fz");
+    let header = parse_header(&fixture).unwrap_or_else(|error| panic!("parse fixture header: {error}"));
+    for path in [
+        FixtureMatrixPath::Run,
+        FixtureMatrixPath::Interp,
+        FixtureMatrixPath::Build,
+    ] {
+        let (out, _log) = run_path_logged(&fixture, &header, path)
+            .unwrap_or_else(|error| panic!("{path:?} {} with telemetry: {error}", fixture.display_path().display()));
+        assert!(
+            out.status.success(),
+            "{path:?} {} exited {}: {}",
+            fixture.display_path().display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "4504500\n",
+            "{path:?}: the sum of the frames"
+        );
+    }
 }
 
 /// Each process publishes one fresh binary at one place and sends what it

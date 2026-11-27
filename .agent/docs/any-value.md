@@ -607,7 +607,13 @@ which is why no reader may ask the table about a freed address (the debug
 classifier cannot tell a stale pointer into a free pooled block from a live
 one). Exact and huge spans come from the splitting span list and write on make
 and clear on release. The range and the table grow by hinted mmap at their
-exact ends; an extension that lands elsewhere panics. Debug builds also record old blocks and
+exact ends; an extension that lands elsewhere panics. No block's end is another
+block's start: `span_len` gives every span 16 to 32 bytes of slack past its
+block's capacity, which holds no object, and the next span begins after it.
+A block's capacity, `block_end` and its in-use bytes do not count the slack.
+Frame release
+relies on it: "the frame ends at `bump_top`" cannot hold across a block
+boundary. Debug builds also record old blocks and
 cross-check (`FromSpace::assert_classified`, `HeapView::assert_classified`): an
 untagged pointer must lie in a young or old block (`HeapView` also asks that it
 lie in the source heap's blocks), a tagged one in none, and none may lie in

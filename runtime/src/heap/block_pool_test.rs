@@ -599,3 +599,85 @@ fn an_idle_block_is_trimmed_once_it_has_outlasted_an_epoch_of_everything_the_poo
     assert!(pool_footprint().pages_given_back > 0);
     pool_drain_for_test();
 }
+
+/// Capacities that are multiples of 32, the granule: a table entry, a block the
+/// pool does not recycle (it lies between table entries), and a small pooled one. A span exactly as long as
+/// its capacity would end where the next span starts.
+fn granule_multiple_capacities() -> [usize; 3] {
+    [SIZE_TABLE[1], EXACT_CAPACITY, 7 * GRANULE]
+}
+
+/// Panics when any block's end is another block's start: the pointer one past
+/// a block must not be a pointer into its neighbour, so that "this frame ends
+/// at the bump pointer" can only hold inside one block.
+fn assert_no_block_ends_where_another_starts(blocks: &[(*mut u8, usize)]) {
+    let starts: Vec<usize> = blocks.iter().map(|&(p, _)| p as usize).collect();
+    for &(p, capacity) in blocks {
+        let end = p as usize + capacity;
+        assert!(
+            !starts.contains(&end),
+            "the {capacity}-byte block at {p:p} ends where another block starts"
+        );
+    }
+}
+
+/// A multiple of 32 that no pool class holds, so its span comes from the span list.
+const EXACT_CAPACITY: usize = 100 * GRANULE;
+
+const BLOCKS_PER_CAPACITY: usize = 64;
+
+#[test]
+fn freshly_claimed_blocks_never_end_where_another_block_starts() {
+    start();
+    for capacity in granule_multiple_capacities() {
+        let blocks: Vec<_> = (0..BLOCKS_PER_CAPACITY)
+            .map(|_| (pool_alloc(capacity, Age::Young), capacity))
+            .collect();
+        assert_no_block_ends_where_another_starts(&blocks);
+        for (p, capacity) in blocks {
+            pool_free(p, capacity);
+        }
+    }
+    pool_drain_for_test();
+}
+
+#[test]
+fn reused_spans_never_end_where_another_block_starts() {
+    start();
+    for capacity in granule_multiple_capacities() {
+        let first: Vec<_> = (0..BLOCKS_PER_CAPACITY)
+            .map(|_| (pool_alloc(capacity, Age::Young), capacity))
+            .collect();
+        for (p, capacity) in first {
+            pool_free(p, capacity);
+        }
+        pool_drain_for_test();
+        let again: Vec<_> = (0..BLOCKS_PER_CAPACITY)
+            .map(|_| (pool_alloc(capacity, Age::Young), capacity))
+            .collect();
+        assert_no_block_ends_where_another_starts(&again);
+        for (p, capacity) in again {
+            pool_free(p, capacity);
+        }
+    }
+    pool_drain_for_test();
+}
+
+#[test]
+fn a_block_cut_from_a_returned_span_never_ends_where_another_block_starts() {
+    start();
+    let big = EXACT_CAPACITY * 8;
+    let small = EXACT_CAPACITY;
+    let spans: Vec<_> = (0..BLOCKS_PER_CAPACITY).map(|_| pool_alloc(big, Age::Young)).collect();
+    for p in spans {
+        pool_free(p, big);
+    }
+    let cut: Vec<_> = (0..BLOCKS_PER_CAPACITY * 4)
+        .map(|_| (pool_alloc(small, Age::Young), small))
+        .collect();
+    assert_no_block_ends_where_another_starts(&cut);
+    for (p, capacity) in cut {
+        pool_free(p, capacity);
+    }
+    pool_drain_for_test();
+}
