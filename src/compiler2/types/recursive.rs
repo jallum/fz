@@ -39,8 +39,11 @@
 //! can come back to a question it is already deciding. Such a question is
 //! assumed to hold (`Recursion::assume`): a counterexample is a finite value,
 //! so it is found at finite depth without the assumption. Assumptions live
-//! only on the stack of questions being decided and no answer below the root
-//! is remembered, so an assumption never outlives the question it served.
+//! only on the stack of questions being decided. An answer whose walk never
+//! came back to a question opened outside it used no assumption, so it is the
+//! answer of the type itself and is kept until the root question finishes;
+//! an answer that did come back is never kept, so an assumption never
+//! outlives the question it served.
 //!
 //! A set operation on recursive operands can likewise arrive back at itself.
 //! The operation in flight answers its own re-entry with a fresh binder, and
@@ -85,7 +88,16 @@ pub(super) struct Recursion {
     members: HashMap<Ty, Member>,
     clusters: Vec<Cluster>,
     by_key: HashMap<Vec<Descr>, usize>,
-    questions: RefCell<HashSet<Question>>,
+    /// The questions being decided, each with its depth on the stack.
+    questions: RefCell<HashMap<Question, usize>>,
+    /// Answers, within the top-level question being decided, that no
+    /// assumption outside their own subtree fed; dropped when it finishes.
+    closed_answers: RefCell<HashMap<Question, bool>>,
+    /// The shallowest open question the walk since the current question began
+    /// arrived back at.
+    shallowest_return: std::cell::Cell<usize>,
+    /// How many questions have been asked, answered or not.
+    pub(super) asked: std::cell::Cell<u64>,
     next_binder: u32,
     /// The constructions in flight over recursive types, each with the
     /// binder that answers a re-entry.
@@ -93,10 +105,29 @@ pub(super) struct Recursion {
     /// What each operation binder stands for, once its operation finished but
     /// its result still mentioned an operation further out.
     pending: HashMap<TypeVarId, Ty>,
-    /// The members of the cluster whose descriptors are being put in normal
-    /// form: ids already handed out and not yet indexed.
-    pub(super) committing: Vec<Ty>,
+    /// The equation graphs being normalised, innermost last.
+    pub(super) windows: Vec<Window>,
 }
+
+/// The nodes of one equation graph while it is normalised: unindexed arena
+/// slots that exist for the walk, found by descriptor so that a descriptor
+/// naming a node is minted once.
+#[derive(Default)]
+pub(super) struct Window {
+    nodes: Vec<Ty>,
+    by_descr: HashMap<Descr, Ty>,
+}
+
+/// An equation graph: node descriptors, children naming nodes as
+/// `NODE_BASE + n`, and the node each binder stands for.
+#[derive(Clone, PartialEq)]
+struct System {
+    nodes: Vec<Descr>,
+    roots: Vec<usize>,
+}
+
+/// A graph that needs more rounds than this has not reached a fixpoint.
+const MAX_ROUNDS: usize = 8;
 
 #[derive(Clone, Copy)]
 struct Member {
@@ -172,11 +203,28 @@ impl Recursion {
     /// Decide `question`, assuming it holds wherever deciding it arrives back
     /// at it.
     pub(super) fn assume(&self, question: Question, decide: impl FnOnce() -> bool) -> bool {
-        if !self.questions.borrow_mut().insert(question.clone()) {
+        self.asked.set(self.asked.get() + 1);
+        if let Some(depth) = self.questions.borrow().get(&question).copied() {
+            self.shallowest_return.set(self.shallowest_return.get().min(depth));
             return true;
         }
+        if let Some(verdict) = self.closed_answers.borrow().get(&question).copied() {
+            return verdict;
+        }
+        let depth = self.questions.borrow().len();
+        self.questions.borrow_mut().insert(question.clone(), depth);
+        let outer = self.shallowest_return.replace(usize::MAX);
         let verdict = decide();
+        let returned = self.shallowest_return.replace(outer);
         self.questions.borrow_mut().remove(&question);
+        if returned < depth {
+            self.shallowest_return.set(outer.min(returned));
+        } else {
+            self.closed_answers.borrow_mut().insert(question, verdict);
+        }
+        if depth == 0 {
+            self.closed_answers.borrow_mut().clear();
+        }
         verdict
     }
 }
@@ -362,11 +410,116 @@ impl Types {
     /// Solve the equations `binders[i] = bodies[i]` and commit the solution.
     pub(super) fn solve_equations(&mut self, binders: &[TypeVarId], bodies: &[Ty]) -> Vec<Ty> {
         self.interner.recursion.active = true;
-        let graph = self.equation_graph(binders, bodies);
-        let graph = self.settle(graph);
-        let (classes, _) = self.refine(&graph);
-        let resolved = self.resolve_classes(&graph, &classes);
-        (0..binders.len()).map(|i| resolved[classes[i]]).collect()
+        let nodes = self.equation_graph(binders, bodies);
+        let system = self.minimise(System {
+            nodes,
+            roots: (0..binders.len()).collect(),
+        });
+        let (classes, _) = self.refine(&system.nodes);
+        let resolved = self.resolve_classes(&system.nodes, &classes);
+        system.roots.iter().map(|root| resolved[classes[*root]]).collect()
+    }
+
+    /// The system normalised and minimised until a round changes nothing.
+    /// Each round reads only the previous round's graph.
+    fn minimise(&mut self, system: System) -> System {
+        let mut current = self.quotient(system);
+        let mut history = vec![current.clone()];
+        loop {
+            let normalised = self.normalise_round(&current);
+            let next = self.quotient(normalised);
+            if next == current {
+                return current;
+            }
+            assert!(
+                !history.contains(&next),
+                "the equations oscillate: a round returned to an earlier graph"
+            );
+            assert!(
+                history.len() < MAX_ROUNDS,
+                "the equations did not reach a fixpoint in {MAX_ROUNDS} rounds"
+            );
+            history.push(next.clone());
+            current = next;
+        }
+    }
+
+    /// One round: the nodes are placed in the arena, emptiness and absorption
+    /// settle them, and each is put in normal form against the settled graph.
+    /// A descriptor the normal form builds that names a node is minted as a
+    /// node (`Types::intern`). Nodes are taken back unless something else was
+    /// interned among them.
+    fn normalise_round(&mut self, system: &System) -> System {
+        let nodes = self.open_window(&system.nodes);
+        self.settle_nodes(&nodes);
+        let normalised: Vec<Descr> = nodes
+            .iter()
+            .map(|ty| {
+                let d = self.descr(ty).clone();
+                self.normal_form(d)
+            })
+            .collect();
+        for (ty, d) in nodes.iter().zip(normalised) {
+            self.interner.arena[ty.0 as usize] = d;
+        }
+        System {
+            nodes: self.close_window(),
+            roots: system.roots.clone(),
+        }
+    }
+
+    /// One node per class, in class order, holding the class's canonical shape;
+    /// what no root reaches is dropped.
+    fn quotient(&mut self, system: System) -> System {
+        let (classes, shapes) = self.refine(&system.nodes);
+        let count = classes.iter().copied().max().map_or(0, |c| c + 1);
+        let names: HashMap<Ty, usize> = (0..count as u32)
+            .map(|c| (self.type_var(TypeVarId(CANON_TAG | c)), c as usize))
+            .collect();
+        let mut by_class: Vec<Option<Descr>> = vec![None; count];
+        for (node, class) in classes.iter().enumerate() {
+            by_class[*class].get_or_insert_with(|| {
+                let mut d = shapes[node].clone();
+                d.map_children(&mut |child, _| names.get(&child).map_or(child, |c| Ty(NODE_BASE + *c as u32)));
+                d
+            });
+        }
+        let by_class: Vec<Descr> = by_class
+            .into_iter()
+            .map(|d| d.expect("every class has a node"))
+            .collect();
+        let mut reached: Vec<usize> = Vec::new();
+        let mut pending: Vec<usize> = system.roots.iter().map(|root| classes[*root]).collect();
+        while let Some(class) = pending.pop() {
+            if reached.contains(&class) {
+                continue;
+            }
+            reached.push(class);
+            pending.extend(
+                by_class[class]
+                    .children()
+                    .filter(|(child, _)| child.0 >= NODE_BASE)
+                    .map(|(child, _)| (child.0 - NODE_BASE) as usize),
+            );
+        }
+        reached.sort_unstable();
+        let renumber = |class: usize| reached.iter().position(|c| *c == class).expect("a reached class");
+        let nodes = reached
+            .iter()
+            .map(|class| {
+                let mut d = by_class[*class].clone();
+                d.map_children(&mut |child, _| {
+                    if child.0 >= NODE_BASE {
+                        Ty(NODE_BASE + renumber((child.0 - NODE_BASE) as usize) as u32)
+                    } else {
+                        child
+                    }
+                });
+                d
+            })
+            .collect();
+        let roots = system.roots.iter().map(|root| renumber(classes[*root])).collect();
+        System { nodes, roots }
     }
 
     /// The equations as a graph over descriptors. Node `i < binders.len()` is
@@ -425,77 +578,130 @@ impl Types {
         out
     }
 
-    /// The graph with what is empty removed and what is covered absorbed.
-    /// The nodes are placed in the arena unindexed for the walk, so emptiness
-    /// and containment read the cycles, and are taken out again before
-    /// anything else is interned.
-    fn settle(&mut self, graph: Vec<Descr>) -> Vec<Descr> {
+    /// Places the graph's nodes in the arena unindexed, so emptiness,
+    /// containment and normal form read the cycles, and opens the window that
+    /// mints the nodes normal form builds.
+    fn open_window(&mut self, graph: &[Descr]) -> Vec<Ty> {
         let base = self.interner.arena.len() as u32;
-        let to_arena = |child: Ty| {
-            if child.0 >= NODE_BASE {
-                Ty(child.0 - NODE_BASE + base)
-            } else {
-                child
-            }
-        };
-        for node in &graph {
+        let mut window = Window::default();
+        for node in graph {
             let mut d = node.clone();
-            d.map_children(&mut |child, _| to_arena(child));
-            let attrs = node_attrs(&self.interner.attrs, &d, base);
-            self.interner.push_unindexed(d, attrs);
-        }
-        let nodes = (base..base + graph.len() as u32).map(Ty);
-        let empty: Vec<bool> = nodes
-            .clone()
-            .map(|ty| {
-                let cx = self.ctx();
-                cx.descr(&ty).is_empty(cx)
-            })
-            .collect();
-        let none = self.core.none;
-        for (ty, is_empty) in nodes.clone().zip(&empty) {
-            let mut d = if *is_empty {
-                Descr::none()
-            } else {
-                self.descr(&ty).clone()
-            };
             d.map_children(&mut |child, _| {
-                let node = child.0.checked_sub(base).filter(|n| (*n as usize) < empty.len());
-                match node {
-                    Some(n) if empty[n as usize] => none,
-                    _ => child,
+                if child.0 >= NODE_BASE {
+                    Ty(child.0 - NODE_BASE + base)
+                } else {
+                    child
                 }
             });
-            self.interner.arena[ty.0 as usize] = d;
+            let attrs = node_attrs(&self.interner.attrs, &d, base);
+            let ty = self.interner.push_unindexed(d.clone(), attrs);
+            window.by_descr.entry(d).or_insert(ty);
+            window.nodes.push(ty);
         }
-        for ty in nodes.clone() {
-            let d = self.settled_node(ty);
-            self.interner.arena[ty.0 as usize] = d;
+        let nodes = window.nodes.clone();
+        self.interner.recursion.windows.push(window);
+        nodes
+    }
+
+    /// The node for a descriptor that names a node of the open graph: the one
+    /// already holding it, else a new one. The descriptor is first put in the
+    /// form every node is in (covered clauses absorbed, clauses ordered), so a
+    /// built union that says what a node already says is that node. Nothing
+    /// that names a node is interned.
+    pub(super) fn mint(&mut self, d: Descr) -> Ty {
+        let window = self
+            .interner
+            .recursion
+            .windows
+            .last()
+            .expect("a node is named inside a window");
+        if let Some(ty) = window.by_descr.get(&d) {
+            return *ty;
         }
-        let frozen: Vec<Descr> = nodes
+        let mut d = self.settled(d);
+        self.clause_order().sort_axes(&mut d);
+        let window = self.interner.recursion.windows.last().expect("a node is named inside a window");
+        if let Some(ty) = window.nodes.iter().find(|ty| *self.descr(ty) == d) {
+            return *ty;
+        }
+        let attrs = attrs::attrs_of(&self.interner.attrs, &d).with_recursion(true);
+        let ty = self.interner.push_unindexed(d.clone(), attrs);
+        let window = self.interner.recursion.windows.last_mut().expect("a window is open");
+        window.by_descr.insert(d, ty);
+        window.nodes.push(ty);
+        ty
+    }
+
+    /// Whether `d` names a node of a graph being normalised.
+    pub(super) fn names_node(&self, d: &Descr) -> bool {
+        let recursion = &self.interner.recursion;
+        !recursion.windows.is_empty()
+            && d.children()
+                .any(|(child, _)| self.interner.attrs[child.0 as usize].unsettled())
+    }
+
+    /// The graph the window holds, nodes written as `NODE_BASE + n`; the window
+    /// is closed and its nodes taken back when nothing else was placed among
+    /// them. Otherwise they stay in the arena, unindexed and named by nothing.
+    fn close_window(&mut self) -> Vec<Descr> {
+        let window = self.interner.recursion.windows.pop().expect("a window is open");
+        let index: HashMap<Ty, usize> = window.nodes.iter().enumerate().map(|(n, ty)| (*ty, n)).collect();
+        let graph = window
+            .nodes
+            .iter()
             .map(|ty| {
-                let mut d = self.descr(&ty).clone();
-                d.map_children(&mut |child, _| {
-                    if child.0 >= base {
-                        Ty(child.0 - base + NODE_BASE)
-                    } else {
-                        child
-                    }
-                });
+                let mut d = self.descr(ty).clone();
+                d.map_children(&mut |child, _| index.get(&child).map_or(child, |n| Ty(NODE_BASE + *n as u32)));
                 d
             })
             .collect();
-        self.interner.truncate(base as usize);
-        frozen
+        let first = window.nodes[0].0 as usize;
+        if self.interner.arena.len() - first == window.nodes.len() {
+            self.interner.truncate(first);
+        }
+        graph
+    }
+
+    /// The nodes with what is empty removed and what is covered absorbed.
+    fn settle_nodes(&mut self, nodes: &[Ty]) {
+        let empty: Vec<bool> = nodes
+            .iter()
+            .map(|ty| {
+                let cx = self.ctx();
+                cx.descr(ty).is_empty(cx)
+            })
+            .collect();
+        let none = self.core.none;
+        let position: HashMap<Ty, usize> = nodes.iter().enumerate().map(|(n, ty)| (*ty, n)).collect();
+        for (ty, is_empty) in nodes.iter().zip(&empty) {
+            let mut d = if *is_empty {
+                Descr::none()
+            } else {
+                self.descr(ty).clone()
+            };
+            d.map_children(&mut |child, _| match position.get(&child) {
+                Some(n) if empty[*n] => none,
+                _ => child,
+            });
+            self.interner.arena[ty.0 as usize] = d;
+        }
+        for ty in nodes {
+            let d = self.settled_node(*ty);
+            self.interner.arena[ty.0 as usize] = d;
+        }
     }
 
     /// One node with its empty clauses dropped and its covered clauses
     /// absorbed, every question walked rather than remembered: the node ids
     /// are about to be taken back.
     fn settled_node(&self, ty: Ty) -> Descr {
+        self.settled(self.descr(&ty).clone())
+    }
+
+    /// `d` with its empty clauses dropped and its covered clauses absorbed.
+    fn settled(&self, mut d: Descr) -> Descr {
         let cx = self.ctx();
         let none = self.core.none;
-        let mut d = cx.descr(&ty).clone();
         axis::drop_empty_clauses(cx, &mut d, &|coordinate| *coordinate == none);
         let subtype = &|narrower: &Ty, wider: &Ty| cx.descr(narrower).is_subtype(cx, cx.descr(wider));
         let covers = &|wider: &Descr, narrower: &Descr| narrower.is_subtype(cx, wider);
@@ -671,25 +877,12 @@ impl Types {
             self.interner
                 .push_unindexed(d, TyAttrs::default().with_recursion(false));
         }
-        self.normalize_members(&ids);
         self.assert_cycles_stay_in_cluster(&ids, base);
         self.settle_member_attrs(&ids);
         for id in &ids {
             self.interner.index_existing(*id);
         }
         ids
-    }
-
-    /// Puts each member's descriptor in normal form while the members count as
-    /// committing: normalising must not intern a type that names one of them.
-    fn normalize_members(&mut self, ids: &[Ty]) {
-        let outer = std::mem::replace(&mut self.interner.recursion.committing, ids.to_vec());
-        for id in ids {
-            let d = self.descr(id).clone();
-            let d = self.normal_form(d);
-            self.interner.arena[id.0 as usize] = d;
-        }
-        self.interner.recursion.committing = outer;
     }
 
     /// No type built while the members were normalised may sit on a cycle
@@ -869,3 +1062,11 @@ pub(super) fn cmp_members(order: &ClauseOrder<'_>, a: (&[Descr], usize), b: (&[D
 #[cfg(test)]
 #[path = "recursive_test.rs"]
 mod recursive_test;
+
+#[cfg(test)]
+#[path = "minimise_oscillation_test.rs"]
+mod minimise_oscillation_test;
+
+#[cfg(test)]
+#[path = "minimise_questions_test.rs"]
+mod minimise_questions_test;

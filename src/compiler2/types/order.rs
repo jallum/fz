@@ -196,6 +196,16 @@ impl<'a> ClauseOrder<'a> {
             return Ordering::Equal;
         }
         let recursion = self.cx.recursion;
+        let (node_a, node_b) = (self.cx.attrs(&a).unsettled(), self.cx.attrs(&b).unsettled());
+        if node_a || node_b {
+            // Nodes of a graph being normalised name each other, and a
+            // comparison of their descriptors would not end: they keep graph order.
+            return match (node_a, node_b) {
+                (true, true) => a.cmp(&b),
+                (true, false) => Ordering::Greater,
+                _ => Ordering::Less,
+            };
+        }
         match (recursion.member_key(a), recursion.member_key(b)) {
             (Some(a), Some(b)) => super::recursive::cmp_members(self, a, b),
             (Some(_), None) => Ordering::Greater,

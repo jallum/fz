@@ -74,15 +74,15 @@ enum Head {
     Map(Vec<MapKey>),
 }
 
-/// A node's principal-functor view: the non-constructor part, and per head the
-/// children of each slot across every clause with that head.
+/// A node's principal-functor view: per head, the clauses (rows) with that head,
+/// each holding the child of every slot.
 struct Pf {
-    heads: Vec<(Head, Vec<Vec<Ty>>)>,
+    heads: Vec<(Head, Vec<Vec<Option<Ty>>>)>,
 }
 
 impl Pf {
     fn of(types: &Types, set: &[Ty]) -> Pf {
-        let mut heads: Vec<(Head, Vec<Vec<Ty>>)> = Vec::new();
+        let mut heads: Vec<(Head, Vec<Vec<Option<Ty>>>)> = Vec::new();
         for ty in set {
             let d = types.descr(ty);
             for conj in &d.tuples {
@@ -120,18 +120,16 @@ impl Pf {
         Pf { heads }
     }
 
-    fn slots(&self, head: &Head) -> Option<&Vec<Vec<Ty>>> {
+    fn rows(&self, head: &Head) -> Option<&Vec<Vec<Option<Ty>>>> {
         self.heads.iter().find(|(h, _)| h == head).map(|(_, s)| s)
     }
 }
 
-fn add(heads: &mut Vec<(Head, Vec<Vec<Ty>>)>, head: Head, kids: Vec<Option<Ty>>) {
-    if let Some((_, slots)) = heads.iter_mut().find(|(h, _)| *h == head) {
-        for (slot, kid) in slots.iter_mut().zip(kids) {
-            slot.extend(kid);
-        }
+fn add(heads: &mut Vec<(Head, Vec<Vec<Option<Ty>>>)>, head: Head, kids: Vec<Option<Ty>>) {
+    if let Some((_, rows)) = heads.iter_mut().find(|(h, _)| *h == head) {
+        rows.push(kids);
     } else {
-        heads.push((head, kids.into_iter().map(|k| k.into_iter().collect()).collect()));
+        heads.push((head, vec![kids]));
     }
 }
 
@@ -160,6 +158,21 @@ fn atom_only(types: &Types, ty: &Ty) -> Option<Ty> {
         && d.funcs.is_empty()
         && d.maps.is_empty();
     atoms_only.then_some(*ty)
+}
+
+/// The constructor clauses of a descriptor, each alone: the unit growth is judged by.
+fn clauses(d: &Descr) -> Vec<Descr> {
+    let alone = |f: &dyn Fn(&mut Descr)| {
+        let mut one = Descr { brands: d.brands.clone(), ..Descr::none() };
+        f(&mut one);
+        one
+    };
+    let mut out = Vec::new();
+    out.extend(d.tuples.iter().map(|c| alone(&|o| o.tuples = vec![c.clone()])));
+    out.extend(d.lists.iter().map(|c| alone(&|o| o.lists = vec![c.clone()])));
+    out.extend(d.resources.iter().map(|c| alone(&|o| o.resources = vec![c.clone()])));
+    out.extend(d.maps.iter().map(|c| alone(&|o| o.maps = vec![c.clone()])));
+    out
 }
 
 /// What to do at one slot: fold it, or look further down.
@@ -201,11 +214,13 @@ impl Walk<'_> {
             olds: olds.to_vec(),
         });
         let mut plan = Plan::default();
-        for (head, new_slots) in &pn.heads {
-            let Some(old_slots) = po.slots(head) else { continue };
-            for (i, (os, ns)) in old_slots.iter().zip(new_slots).enumerate() {
+        for (head, new_rows) in &pn.heads {
+            let Some(old_rows) = po.rows(head) else { continue };
+            let arity = new_rows.iter().chain(old_rows).map(Vec::len).min().unwrap_or(0);
+            for i in 0..arity {
+                let (os, ns) = self.along(old_rows, new_rows, i);
                 self.path.push(i as u16);
-                if let Some(cut) = self.slot(os, ns) {
+                if let Some(cut) = self.slot(&os, &ns) {
                     plan.cuts.push(((head.clone(), i), cut));
                 }
                 self.path.pop();
@@ -213,6 +228,41 @@ impl Walk<'_> {
         }
         self.frames.pop();
         Rc::new(plan)
+    }
+
+    /// What slot `i` held before and holds now, read along the clauses that
+    /// differ only at `i`. A new clause grows an old one along slot `i` when
+    /// every other slot of the new clause lies inside the old one's; a clause
+    /// already inside such an old clause has not grown. A neighbouring clause
+    /// that is wide at `i` cannot hide growth in a clause that is not.
+    fn along(&self, old_rows: &[Vec<Option<Ty>>], new_rows: &[Vec<Option<Ty>>], i: usize) -> (Vec<Ty>, Vec<Ty>) {
+        let types = self.types;
+        let inside = |a: &Option<Ty>, b: &Option<Ty>| match (a, b) {
+            (Some(a), Some(b)) => types.is_subtype(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        let (mut os, mut ns) = (Vec::new(), Vec::new());
+        for new in new_rows {
+            let Some(n) = new[i] else { continue };
+            let paired: Vec<Ty> = old_rows
+                .iter()
+                .filter(|old| new.iter().zip(old.iter()).enumerate().all(|(j, (a, b))| j == i || inside(a, b)))
+                .filter_map(|old| old[i])
+                .collect();
+            if paired.iter().any(|o| types.is_subtype(&n, o)) {
+                continue;
+            }
+            os.extend(paired.into_iter().filter(|o| !os.contains(o)).collect::<Vec<_>>());
+            if !ns.contains(&n) {
+                ns.push(n);
+            }
+        }
+        if os.is_empty() || ns.is_empty() {
+            let column = |rows: &[Vec<Option<Ty>>]| -> Vec<Ty> { rows.iter().filter_map(|r| r[i]).collect() };
+            return (column(old_rows), column(new_rows));
+        }
+        (os, ns)
     }
 
     fn slot(&mut self, os: &[Ty], ns: &[Ty]) -> Option<Cut> {
@@ -255,20 +305,20 @@ impl Walk<'_> {
         types.is_subtype(new, old) || types.descr(new).is_subtype(cx, &with_empty)
     }
 
-    /// The innermost ancestor frame whose old members hold a live child of
-    /// the slot, and whose joined members hold the whole slot value.
+    /// The innermost ancestor frame whose old members hold a constructor
+    /// clause of a live child, and whose joined members hold every
+    /// constructor clause of the slot's old values.
     fn returned_ancestor(&self, olds: &[Ty], live: &[Ty]) -> Option<usize> {
         let types = self.types;
-        self.frames.iter().rposition(|f| {
-            let returned = live
-                .iter()
-                .any(|n| types.descr(n).has_constructors() && f.olds.iter().any(|o| types.is_subtype(n, o)));
-            returned
-                && olds
-                    .iter()
-                    .chain(live)
-                    .all(|n| f.members.iter().any(|m| types.is_subtype(n, m)))
-        })
+        let returns = |f: &Frame| {
+            live.iter().any(|n| types.holds_a_clause_within(n, &f.olds))
+                && olds.iter().all(|n| !types.has_clause_outside(n, &f.members))
+        };
+        let whole = |f: &Frame| live.iter().all(|n| !types.has_clause_outside(n, &f.members));
+        self.frames
+            .iter()
+            .rposition(|f| returns(f) && whole(f))
+            .or_else(|| self.frames.iter().rposition(returns))
     }
 
     fn judge(&mut self, olds: &[Ty], live: &[Ty]) -> Option<Cut> {
@@ -281,7 +331,7 @@ impl Walk<'_> {
                 kind,
                 ancestor_depth: depth,
             });
-            return Some(Cut::Fold(kind, depth, self.frames[depth].olds.as_slice().into()));
+            return Some(Cut::Fold(kind, depth, self.frames[depth].members.as_slice().into()));
         }
         let reopened: Vec<Ty> = olds
             .iter()
@@ -314,7 +364,7 @@ impl Walk<'_> {
         let own = Pf::of(types, &[*member]);
         let others: Vec<Ty> = live.iter().copied().filter(|n| n != member).collect();
         let theirs = Pf::of(types, &others);
-        theirs.heads.iter().all(|(h, _)| own.slots(h).is_some())
+        theirs.heads.iter().all(|(h, _)| own.rows(h).is_some())
     }
 
     fn kind(&self, node: &[Ty], ancestor: &[Ty]) -> ClashKind {
@@ -332,6 +382,54 @@ impl Walk<'_> {
 }
 
 impl Types {
+    /// Some constructor clause of `ty` lies inside one of `set`.
+    fn holds_a_clause_within(&self, ty: &Ty, set: &[Ty]) -> bool {
+        let cx = self.ctx();
+        if self.is_recursive_member(ty) {
+            return self.descr(ty).has_constructors() && set.iter().any(|m| self.is_subtype(ty, m));
+        }
+        clauses(self.descr(ty)).iter().any(|c| set.iter().any(|m| c.is_subtype(cx, self.descr(m))))
+    }
+
+    /// Some constructor clause of `ty` lies inside none of `set`: leaves are free.
+    fn has_clause_outside(&self, ty: &Ty, set: &[Ty]) -> bool {
+        let cx = self.ctx();
+        if self.is_recursive_member(ty) {
+            return self.descr(ty).has_constructors() && !set.iter().any(|m| self.is_subtype(ty, m));
+        }
+        clauses(self.descr(ty)).iter().any(|c| !set.iter().any(|m| c.is_subtype(cx, self.descr(m))))
+    }
+
+    /// `child` split into the constructor clauses that lie inside `set`, and the rest: its leaves and the clauses that do not.
+    fn split_within(&mut self, child: Ty, set: &[Ty]) -> (Ty, Ty) {
+        if self.is_recursive_member(&child) {
+            let held = set.iter().any(|m| self.is_subtype(&child, m));
+            return if held { (child, self.none()) } else { (self.none(), child) };
+        }
+        let d = self.descr(&child).clone();
+        let cx = self.ctx();
+        let (mut inside, mut rest) = (Descr { brands: d.brands.clone(), ..Descr::none() }, d.clone());
+        macro_rules! split {
+            ($field:ident) => {
+                rest.$field = Vec::new();
+                for c in &d.$field {
+                    let mut one = Descr { brands: d.brands.clone(), ..Descr::none() };
+                    one.$field = vec![c.clone()];
+                    if set.iter().any(|m| one.is_subtype(cx, self.descr(m))) {
+                        inside.$field.push(c.clone());
+                    } else {
+                        rest.$field.push(c.clone());
+                    }
+                }
+            };
+        }
+        split!(tuples);
+        split!(lists);
+        split!(resources);
+        split!(maps);
+        (self.intern(inside), self.intern(rest))
+    }
+
     /// Some recursive member lies inside `ty` other than `ty` itself.
     pub(super) fn has_nested_member(&self, ty: &Ty) -> bool {
         let children = self.descr(ty).children().map(|(c, _)| c).collect();
@@ -471,16 +569,17 @@ impl Types {
                 return child;
             };
             match cut {
-                Cut::Fold(_, depth, olds) => {
-                    let inside =
-                        types.descr(&child).has_constructors() && olds.iter().any(|o| types.is_subtype(&child, o));
+                Cut::Fold(_, depth, members) => {
                     let ancestor = ancestors[*depth];
                     let var = types.type_var(equations.binders[ancestor]);
-                    if !inside {
+                    let (inside, rest) = types.split_within(child, members);
+                    let held = members.iter().fold(types.none(), |acc, m| types.union(acc, *m));
+                    let rest = types.difference(rest, held);
+                    if !types.descr(&child).has_constructors() || types.is_empty(&inside) {
                         return types.union(child, var);
                     }
-                    equations.joined[ancestor] = types.union(equations.joined[ancestor], child);
-                    var
+                    equations.joined[ancestor] = types.union(equations.joined[ancestor], inside);
+                    types.union(rest, var)
                 }
                 Cut::Reopen(members) => {
                     let me = equations.binders.len();

@@ -517,3 +517,43 @@ fn erasing_closure_identity_of_a_closure_that_captures_its_own_type_ends() {
         "erasing is idempotent on the recursive result"
     );
 }
+
+/// `U | {next, :g}` for a recursive `next`, with
+/// `U = :x | {:x | {{:x, :f}, :g}, :f | :g}`: the `:g` column of `U`'s tuple
+/// and the `{next, :g}` rectangle overlap, so carving them builds a
+/// coordinate that names `next`.
+fn the_swap_accumulator_body(t: &mut Types, next: Ty) -> Ty {
+    let (x, f, g) = (t.atom_lit("x"), t.atom_lit("f"), t.atom_lit("g"));
+    let xf = t.tuple(&[x, f]);
+    let inner = t.tuple(&[xf, g]);
+    let held = t.union(x, inner);
+    let fg = t.union(f, g);
+    let beside = t.tuple(&[held, fg]);
+    let base = t.union(x, beside);
+    let wrapped = t.tuple(&[next, g]);
+    t.union(base, wrapped)
+}
+
+#[test]
+fn two_equations_that_name_each_other_and_say_the_same_thing_are_one_type() {
+    let mut t = Types::new();
+    let pair = t.recursive(2, |t, me| {
+        vec![the_swap_accumulator_body(t, me[1]), the_swap_accumulator_body(t, me[0])]
+    });
+    let alone = t.recursive(1, |t, me| vec![the_swap_accumulator_body(t, me[0])])[0];
+    assert_eq!(pair[0], pair[1], "the two members are one meaning, so one id");
+    assert_eq!(
+        pair[0], alone,
+        "naming the other member or itself is one meaning, so one id"
+    );
+    let member = pair[0];
+    let named_by_outsiders: Vec<Ty> = reachable_outside(&t, member)
+        .into_iter()
+        .filter(|ty| !t.interner.recursion.is_member(*ty) && names(&t, *ty, member))
+        .collect();
+    assert!(
+        named_by_outsiders.is_empty(),
+        "only members of the member's cluster name it: {:?}",
+        named_by_outsiders.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
+    );
+}
