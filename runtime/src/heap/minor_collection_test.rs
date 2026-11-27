@@ -1287,25 +1287,91 @@ fn a_dead_destinations_hole_keeps_its_value_until_the_next_major_and_no_longer()
 }
 
 #[test]
-fn a_collection_leaves_a_destination_cell_shared_so_reuse_never_rewrites_it() {
+fn a_collection_leaves_a_destination_cell_unshared_and_a_rewrite_of_the_old_cell_copies_it() {
     let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
     let (cell, dest) = heap.alloc_open_list_cell(AnyValue::int(7));
     let mut roots = [cell, holding(&mut heap, dest)];
     heap.collect_stats(&mut roots);
     let (cell, dest) = (roots[0], held(roots[1]));
-    assert!(cell_of(cell.heap_object_word().unwrap()).aliased());
+    assert!(
+        !cell_of(cell.heap_object_word().unwrap()).aliased(),
+        "a collection does not share what it keeps"
+    );
 
     let rest = young_list(&mut heap, 1, 1);
     heap.fill_destination(dest, rest);
-    assert!(
-        cell_of(cell.heap_object_word().unwrap()).aliased(),
-        "filling keeps the shared mark"
-    );
+    assert!(!cell_of(cell.heap_object_word().unwrap()).aliased());
 
     let reused = heap
         .reuse_or_alloc_list_cons_raw_kind(cell, 9, ValueKind::INT, AnyValue::empty_list(), true)
         .unwrap();
-    assert_ne!(reused, cell, "an old destination is never rewritten in place");
+    assert_ne!(reused, cell, "an old destination is copied, not rewritten in place");
+    assert_eq!(heap.old_targets_copied(), 1);
     assert_eq!(heads(cell), [7, 1], "the destination cell still reads as it did");
     assert_eq!(heads(reused), [9]);
+}
+
+/// A shared cell is shared because a second holder may exist; a collection
+/// neither adds that fact nor loses it.
+#[test]
+fn a_collection_leaves_each_cells_shared_mark_as_it_found_it() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let own = list_of(&mut heap, 1, 3, EMPTY_LIST);
+    let published = list_of(&mut heap, 10, 3, EMPTY_LIST);
+    unsafe { ListCons::share_spine(list_addr_from_tagged(published).unwrap()) };
+    let mut roots = [root_of(own), root_of(published)];
+
+    heap.collect_stats(&mut roots);
+
+    let mut own_cells = roots[0];
+    let mut published_cells = roots[1];
+    for _ in 0..3 {
+        assert!(!cell_of(own_cells.heap_object_word().unwrap()).aliased());
+        assert!(cell_of(published_cells.heap_object_word().unwrap()).aliased());
+        own_cells = list_tail_ref(own_cells).unwrap();
+        published_cells = list_tail_ref(published_cells).unwrap();
+    }
+}
+
+/// The age table, and not a mark the collector wrote, is what keeps a write
+/// out of an old cell: the copy holds the new value, so the next minor
+/// collection finds it. Written in place, the old cell would point at a young
+/// list no minor collection looks for, and the list would be freed.
+#[test]
+fn a_rewrite_of_an_old_unshared_cell_copies_and_the_next_minor_collection_keeps_the_new_value() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut roots = [root_of(list_of(&mut heap, 1, 3, EMPTY_LIST))];
+    heap.collect_stats(&mut roots);
+    let old = roots[0];
+    assert!(!range().is_young(list_addr_from_tagged(old.heap_object_word().unwrap()).unwrap()));
+
+    let young_head = young_list(&mut heap, 40, 2);
+    let rewritten = heap
+        .reuse_or_alloc_list_cons_raw_kind(old, young_head.raw(), ValueKind::LIST, AnyValue::empty_list(), true)
+        .unwrap();
+
+    assert_ne!(rewritten, old, "the old cell is copied");
+    assert_eq!(heap.old_targets_copied(), 1);
+    assert_eq!(heads(old), [3, 2, 1], "the old cell is as it was");
+    let mut roots = [rewritten];
+    let minor = heap.collect_stats(&mut roots);
+    assert_eq!(minor.generation, Generation::Minor);
+    let head = list_head_ref(roots[0]).unwrap();
+    assert_eq!(heads(head), [41, 40], "the new head survived the minor collection");
+}
+
+#[test]
+fn a_young_unshared_cell_is_rewritten_in_place_after_a_collection() {
+    let mut heap = Heap::new(SIZE_TABLE[0], fresh_registry());
+    let mut roots = [root_of(list_of(&mut heap, 1, 2, EMPTY_LIST))];
+    heap.collect_stats(&mut roots);
+    let young = root_of(cons(&mut heap, 5, EMPTY_LIST));
+
+    let rewritten = heap
+        .reuse_or_alloc_list_cons_raw_kind(young, 6, ValueKind::INT, AnyValue::empty_list(), true)
+        .unwrap();
+
+    assert_eq!(rewritten, young, "a young unshared cell is a reuse hit");
+    assert_eq!(heads(rewritten), [6]);
+    assert_eq!(heap.old_targets_copied(), 0);
 }

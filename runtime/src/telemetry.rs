@@ -354,7 +354,7 @@ fn write_collection(out: &mut String, collection: Collection, stats: &GcStats, h
 fn write_process_exited(out: &mut String, process: &Process) {
     write!(
         out,
-        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"bytes_used\":{},\"binaries_shared\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"frame_copies\":{},\"halt_value\":{},\"failed\":{}}}",
+        "\"pid\":{},\"process\":{{\"opaque_type\":\"{}\",\"bytes_used\":{},\"binaries_shared\":{},\"raises_delivered\":{},\"reduction_yields\":{},\"parks\":{},\"dtors_dispatched\":{},\"old_targets_copied\":{},\"halt_value\":{},\"failed\":{}}}",
         process.pid,
         std::any::type_name::<Process>(),
         process.heap.bytes_used(),
@@ -363,7 +363,7 @@ fn write_process_exited(out: &mut String, process: &Process) {
         process.reduction_yields,
         process.parks,
         process.dtors_dispatched,
-        process.frame_copies,
+        process.heap.old_targets_copied(),
         process.halt_value,
         process.failed
     )

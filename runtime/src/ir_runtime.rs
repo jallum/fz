@@ -643,23 +643,22 @@ pub extern "C" fn fz_heap_room(process: *mut Process, size: usize) -> *mut u8 {
     (unsafe { &mut *process }).heap.room(size)
 }
 
-/// The body frame a write goes to: `frame` itself when it is young, else a copy
-/// of it at the heap tip. A collection keeps its survivors in old blocks, and a
-/// write into one that names a younger object is invisible to the next minor
-/// collection; the copy is young, and the frame it replaces is dead. Every
-/// slot and kind byte is copied, so the copy resumes where the original would
-/// have. Compiled code asks only when the frame lies outside the tip block;
-/// a frame parked alone in a young block of its own is answered as it is.
+/// The copy of a body frame a write goes to, at the heap tip. A collection
+/// keeps its survivors in old blocks, and a write into one that names a
+/// younger object is invisible to the next minor collection; the copy is young,
+/// and the frame it replaces is dead. Every slot and kind byte is copied, so
+/// the copy resumes where the original would have. Compiled code asks only for
+/// a frame it found old or read-only, and a literal frame is copied without
+/// being counted as an old target.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_frame_for_write(process: *mut Process, frame: u64) -> u64 {
     let frame_ref = any_value_ref_from_word(frame, "fz_frame_for_write frame");
     let src = frame_ref.closure_addr().expect("fz_frame_for_write frame");
     let process = unsafe { &mut *process };
-    if !frame_ref.is_literal() && crate::heap::arena::range().is_young(src) {
-        return frame;
-    }
     let count = unsafe { crate::any_value::closure_captured_count(src) };
-    process.frame_copies += 1;
+    if !frame_ref.is_literal() {
+        process.heap.count_old_target_copied();
+    }
     let bits = process.heap.alloc_continuation_slots(1, count);
     let dst = closure_addr_from_tagged(bits).expect("copied frame bits");
     unsafe { std::ptr::copy_nonoverlapping(src, dst, crate::any_value::closure_size_for_count(count)) };
@@ -2174,7 +2173,7 @@ fn copy_struct_counted(process: *mut Process, struct_ref_word: u64, fields: u32,
 }
 
 /// The struct an update of a struct of `fields` fields stores into: the base
-/// itself when `may_rewrite` is set and the base is not shared, otherwise
+/// itself when `may_rewrite` is set and the base is unshared and young, otherwise
 /// `fz_struct_copy`'s copy. The answer is the base exactly when it is
 /// rewritten. Compiled native code makes the same decision inline.
 #[unsafe(no_mangle)]
@@ -2187,14 +2186,15 @@ pub extern "C" fn fz_struct_reuse_or_copy(
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_reuse_or_copy")
         .struct_addr()
         .expect("fz_struct_reuse_or_copy");
-    if may_rewrite == 0 || unsafe { struct_is_shared(object) } {
-        return copy_struct_counted(process, struct_ref_word, fields, RuntimeReuseSite::StructReuse);
+    if may_rewrite != 0 && !unsafe { struct_is_shared(object) } {
+        let process = unsafe { &mut *process };
+        if process.heap.is_young(object) {
+            process.node.runtime_reuses.hit(RuntimeReuseSite::StructReuse);
+            return struct_ref_word;
+        }
+        process.heap.count_old_target_copied();
     }
-    let process = unsafe { &mut *process };
-    // A collection shares every struct it keeps, so an unshared one is young.
-    process.heap.assert_written_object_is_young(object);
-    process.node.runtime_reuses.hit(RuntimeReuseSite::StructReuse);
-    struct_ref_word
+    copy_struct_counted(process, struct_ref_word, fields, RuntimeReuseSite::StructReuse)
 }
 
 /// Store a value held as a reference into a struct under construction, at

@@ -523,12 +523,13 @@ bodies (01253, 01255) so a release of a shared frame fails loudly.
 
 A frame a collection kept lives in an old block, and a store into it that names a
 younger object would be invisible to the next minor collection. Every frame
-store and clear therefore first tests that the frame lies in the tip block,
-`[block_start, bump_top)`, and otherwise calls `fz_frame_for_write`, which
-answers the frame itself when it is young (a frame too large for the tip is
-parked alone in a young block) and a copy at the tip when it is old; the store
-goes to the answer, which the rest of the step uses. `Process::frame_copies`
-counts the copies and the `process_exited` event reports it. A clear overwrites
+store and clear therefore first tests the frame's literal bit and then the age
+table (`CodegenFn::frame_young_or_copy`, using `emit_is_young`), and calls
+`fz_frame_for_write` only for a frame that is literal or old; it only copies, to
+the tip, and the store goes to the copy, which the rest of the step uses. A young
+frame outside the tip (one too large for the tip is parked alone in a young block)
+is written where it is. `Heap::old_targets_copied` counts the copies of old frames
+and the `process_exited` event reports it as `old_targets_copied`. A clear overwrites
 a dead boxed slot with the nil atom so the frame does not keep the value
 reachable; a slot whose kind is scalar is left whole, because a live ref to a
 scalar names its own slot.

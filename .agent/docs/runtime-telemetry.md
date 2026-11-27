@@ -77,7 +77,7 @@ signature:    (&PidId, &Process)
 
 `ExitRecord` is the test-side projection: `{ pid, halt_value: i64,
 bytes_used: usize, raises_delivered: u64, reduction_yields: u64,
-failed: bool, dtors_dispatched: u64, frame_copies: u64 }`. `failed` is
+failed: bool, dtors_dispatched: u64, old_targets_copied: u64 }`. `failed` is
 `Process::ended_in_failure`: whether the process ended through an uncaught raise
 with a non-zero exit status (see [exceptions](exceptions.md)); an exit with a
 shutdown reason of status 0 ends a process without failing it. A failed
@@ -90,9 +90,13 @@ process parked on a receive (`sched_core::end_quantum` counts them), so
 It renders `binaries_shared` after `bytes_used`: the binaries the
 process marked shared (see [any-value](any-value.md), "Shared Lists, Structs
 And Binaries").
-`frame_copies` counts the
-shared body frames a store copied to the heap tip because a collection had kept
-them (see [scheduler-zero-arg-closures](scheduler-zero-arg-closures.md)). `ProcessExitCapture`
+`old_targets_copied` counts the
+writes in place that found their target in an old block and went to a copy: a
+list cell, a struct or a body frame a collection had kept
+(`Heap::old_targets_copied`; see [any-value](any-value.md), "Writes into kept
+objects", and [scheduler-zero-arg-closures](scheduler-zero-arg-closures.md)). It
+is counted on the cold path that takes the copy and allocates nothing of its own.
+`ProcessExitCapture`
 builds it during dispatch by reading the live process. `write_line` reads the
 same fields when it renders the event, nested under
 `"process":{"opaque_type":"fz_runtime::process::Process",...}` with `failed` as
@@ -260,7 +264,7 @@ site's kind is `list`, `struct` or `tuple`.
   `src/compiler2/native_codegen/site_table.rs`). The list-cell row
   (`native_codegen/list_reuse.rs`) is one site: a cell kept as it is and a cell
   rewritten in place count hits, and the new cell it places counts a miss. An
-  unshared struct an update stores into (`CodegenFn::rewrite_unshared_struct`)
+  unshared, young struct an update stores into (`CodegenFn::rewrite_unshared_struct`)
   counts a hit at its own site; the copy it makes instead is `fz_struct_copy`,
   which counts at its runtime site.
 - A **runtime site** is a runtime function that reuses or replaces, a

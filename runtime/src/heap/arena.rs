@@ -6,9 +6,9 @@
 //! byte per granule, and a granule reads young when its byte is `YOUNG`: its
 //! block an allocation is filling or has filled since the last collection,
 //! or a gift's block that no collection has seen. Every other granule (an old
-//! block's, an unused one's) reads zero, and so does an address outside the
-//! range. Whether an object is young is therefore a subtract, a bound check, a
-//! shift and a byte load from its address.
+//! block's, an unused one's) reads zero, or `OLD` in a debug build. Whether an
+//! object is young is therefore a shift and a byte load from its address, and
+//! one bit test of the byte.
 //!
 //! The range grows instead of capping. The first chunk is reserved at a high
 //! address (`RANGE_HINT`) with nothing mapped above it, and when the bump
@@ -45,7 +45,15 @@
 //!
 //! A debug build also records `OLD` under an old block, so that a check can
 //! tell a block from the absence of one (`in_block`); that byte is never read
-//! as youth. In a release build `OLD` is zero.
+//! as youth, because youth is bit 0 and `OLD` leaves it clear. In a release
+//! build `OLD` is zero.
+//!
+//! The table answers "kept" for every writer. A collection copies what it keeps
+//! into old blocks, and a minor collection never looks inside an old object, so
+//! a write that makes an old object point at a young one would go unseen. A
+//! writer that updates an object in place therefore asks the table first and
+//! copies an old object instead (`Reservation::is_young`; compiled code reads
+//! the same byte through `Reservation::age_bias`).
 //!
 //! Off-heap binaries, resources and static literals are the system
 //! allocator's and lie outside the range.
@@ -78,10 +86,12 @@ pub(crate) enum Age {
     Old,
 }
 
-/// The table byte under a young block's granules.
+/// The table byte under a young block's granules. Youth is bit 0 of the byte,
+/// so asking it is one bit test.
 const YOUNG: u8 = 1;
 
-/// The table byte under an old block's granules, in a debug build.
+/// The table byte under an old block's granules, in a debug build. Its bit 0
+/// is clear: an old block never reads young.
 #[cfg(debug_assertions)]
 const OLD: u8 = 2;
 
@@ -114,6 +124,12 @@ pub(crate) struct Reservation {
     /// table is reserved and grows with the range: `reserved >> GRANULE_SHIFT`
     /// bytes of it are mapped.
     table: *mut AtomicU8,
+    /// `table - (base >> GRANULE_SHIFT)`, wrapping: the address that, plus an
+    /// object's address shifted right by `GRANULE_SHIFT`, is the object's
+    /// table byte. The range's base and the table's start never move, so it is
+    /// constant for the process, and a reader finds a granule's byte with one
+    /// shift and one load.
+    biased: usize,
     /// The bytes added each time the range grows.
     chunk: usize,
     /// Bytes of the range, from `base`, that are reserved. Only grows.
@@ -175,6 +191,7 @@ impl Reservation {
         Ok(Reservation {
             base,
             table: table as *mut AtomicU8,
+            biased: table.wrapping_sub(base >> GRANULE_SHIFT),
             chunk,
             reserved: AtomicUsize::new(chunk),
             grow_lock: Mutex::new(()),
@@ -205,14 +222,33 @@ impl Reservation {
     }
 
     /// Whether `p` lies in a young block. The one question the collector, the
-    /// frame-write check and the debug asserts ask of age. `p` must lie in the
-    /// range: a heap object, never a literal (whose address word carries the
-    /// literal bit) and never the system allocator's; a debug build panics on
-    /// one, and a release build would read past the table. The caller's literal
-    /// bit is the bounds check.
+    /// writers that update an object in place and the debug asserts ask of
+    /// age. `p` must lie in the range: a heap object, never a literal (whose
+    /// address word carries the literal bit) and never the system allocator's;
+    /// a debug build panics on one, and a release build would read past the
+    /// table. The caller's literal bit is the bounds check.
     #[inline]
     pub(crate) fn is_young(&self, p: *const u8) -> bool {
-        self.table_byte(p) == YOUNG
+        debug_assert!(self.contains(p), "{p:p} is outside the heap range");
+        Self::young_at(self.biased, p)
+    }
+
+    /// Whether `p` lies in a young block, given the range's `age_bias`: one
+    /// shift, one byte load and one bit test. The test every writer in the
+    /// runtime makes, from the bias its heap holds, so it reaches no global;
+    /// compiled code emits the same three steps. The preconditions are
+    /// `is_young`'s.
+    #[inline(always)]
+    pub(crate) fn young_at(age_bias: usize, p: *const u8) -> bool {
+        let byte = unsafe { &*(age_bias.wrapping_add(p as usize >> GRANULE_SHIFT) as *const AtomicU8) };
+        byte.load(Ordering::Relaxed) & YOUNG != 0
+    }
+
+    /// The biased table address a heap hands to compiled code: its byte at
+    /// `(address >> GRANULE_SHIFT) + age_bias` has bit 0 set when the address
+    /// is young.
+    pub(crate) fn age_bias(&self) -> usize {
+        self.biased
     }
 
     /// Whether `p` lies in a block, young or old: for a debug check that the
@@ -225,8 +261,7 @@ impl Reservation {
     #[inline]
     fn table_byte(&self, p: *const u8) -> u8 {
         debug_assert!(self.contains(p), "{p:p} is outside the heap range");
-        let granule = (p as usize - self.base) >> GRANULE_SHIFT;
-        unsafe { (*self.table.add(granule)).load(Ordering::Relaxed) }
+        unsafe { (*(self.biased.wrapping_add(p as usize >> GRANULE_SHIFT) as *const AtomicU8)).load(Ordering::Relaxed) }
     }
 
     /// The table byte a block of age `age` reads: `YOUNG` for a young block,

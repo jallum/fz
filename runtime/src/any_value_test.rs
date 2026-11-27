@@ -338,22 +338,6 @@ fn list_link_keeps_alias_bit_in_high_metadata() {
 }
 
 #[test]
-fn a_shared_cell_is_never_rewritten() {
-    let mut heap = test_heap();
-    let old_tail = list_cell(&mut heap, 1, EMPTY_LIST);
-    let new_tail = list_cell(&mut heap, 2, EMPTY_LIST);
-    let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
-    cons.mark_aliased();
-
-    let new_link = ListLink::new(new_tail, ValueKind::FLOAT);
-    assert!(!cons.rewrite_if_unaliased(11, new_link));
-
-    assert_eq!(cons.head as i64, 7);
-    assert_eq!(cons.head_kind(), ValueKind::ATOM);
-    assert_eq!(cons.tail(), proper(old_tail));
-}
-
-#[test]
 fn a_rewritten_cell_takes_the_new_link_whole_and_loses_a_terminator_flag() {
     let mut heap = test_heap();
     let new_tail = list_cell(&mut heap, 2, EMPTY_LIST);
@@ -364,7 +348,7 @@ fn a_rewritten_cell_takes_the_new_link_whole_and_loses_a_terminator_flag() {
     );
     assert!(matches!(cons.tail(), ListTail::Terminator(_)));
 
-    assert!(cons.rewrite_if_unaliased(11, ListLink::new(new_tail, ValueKind::FLOAT)));
+    cons.rewrite(11, ListLink::new(new_tail, ValueKind::FLOAT));
 
     assert_eq!(cons.head as i64, 11);
     assert_eq!(cons.head_kind(), ValueKind::FLOAT);
