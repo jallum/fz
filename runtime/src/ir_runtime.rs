@@ -22,7 +22,7 @@
 //! `not_unsafe_ptr_arg_deref` lint is allowed module-wide instead of per-fn.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use crate::any_value::debug::{Limits, render_value, render_with_limits};
+use crate::any_value::debug::{InspectOptions, render_value, render_with_options};
 use crate::any_value::{
     AnyValue, AnyValueRef, FALSE_ATOM_ID, ListCons, NIL_ATOM_ID, SlotLayout, Stored, ValueKind,
     closure_addr_from_tagged, closure_arity, closure_capture_ref_word, closure_captured_count, closure_denotation,
@@ -1357,8 +1357,9 @@ pub extern "C" fn fz_inspect(process: *mut Process, word: u64, kind: u64) -> u64
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_inspect_with(process: *mut Process, word: u64, kind: u64, options_ref: u64) -> u64 {
     let value = Stored { word, kind }.value("fz_inspect_with value");
-    let limits = Limits::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
-    alloc_text(process, &render_with_limits(process, value, limits))
+    let options =
+        InspectOptions::from_options(process, any_value_from_ref_word(options_ref, "fz_inspect_with options"));
+    alloc_text(process, &render_with_options(process, value, options))
 }
 
 /// `:erlang.binary_part/3` once the part is known to lie inside the binary:

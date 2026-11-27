@@ -64,7 +64,7 @@ defmodule Kernel do
   @doc """
   Returns `value` as the text Elixir's `inspect/2` gives it.
 
-  Two options are built:
+  Three options are built:
 
     * `limit:` how many elements of a list, tuple, map or bitstring show
       before `...`. Each element costs one and whatever it prints inside
@@ -76,11 +76,19 @@ defmodule Kernel do
 
   Both take a non-negative integer or `:infinity`.
 
+    * `custom_options:` a keyword list of user-defined options, `[]` by
+      default. `sort_maps: true` sorts the pairs of every map by Erlang term
+      order, so a map prints one way whatever its internal order. A struct's
+      fields keep the order its `defstruct` declares.
+
       inspect([1, 2, 3], limit: 2)
       #=> "[1, 2, ...]"
 
       inspect("abcdef", printable_limit: 3)
       #=> "\"abc\" <> ..."
+
+      inspect(%{b: 1, a: 2}, custom_options: [sort_maps: true])
+      #=> "%{a: 2, b: 1}"
 
   Any other key, and a limit that is neither a count nor `:infinity`, raises
   `ArgumentError`, where Elixir ignores the key and fails only later on a bad
@@ -100,6 +108,12 @@ defmodule Kernel do
 
   defp checked_inspect_options([{:printable_limit, limit} | rest], opts) when is_integer(limit) and limit >= 0,
     do: checked_inspect_options(rest, opts)
+
+  defp checked_inspect_options([{:custom_options, custom} | rest], opts) when is_list(custom),
+    do: checked_inspect_options(rest, opts)
+
+  defp checked_inspect_options([{:custom_options, _} | _], _),
+    do: raise(%ArgumentError{message: "inspect/2 custom_options: must be a list"})
 
   defp checked_inspect_options([{:limit, _} | _], _),
     do: raise(%ArgumentError{message: "inspect/2 limit: must be a non-negative integer or :infinity"})

@@ -1,0 +1,30 @@
+#---
+# purpose: "inspect/2 and IO.inspect/2 take custom_options: [sort_maps: true], which sorts every map's pairs by Erlang term order wherever the map sits, and leaves a struct's fields in declaration order"
+# oracle: self
+# oracle.stamp: 12bb83cd866132c6
+#---
+defmodule Point do
+  defstruct [:z, :a]
+end
+
+defmodule Main do
+  def main() do
+    sorted = [custom_options: [sort_maps: true]]
+
+    IO.inspect(%{zebra: 1, apple: 2, mango: 3, banana: 4}, sorted)
+    IO.inspect(%{:b => 1, "a" => 2, 3 => 3, 2.5 => 4, [1] => 5, {1} => 6, nil => 7}, sorted)
+    IO.inspect(%{z: %{y: 1, b: 2}, a: %{q: 3, c: %{x: 1, d: 2}}}, sorted)
+    IO.inspect([%{b: 1, a: 2}, {%{d: 1, c: 2}, %{f: 1, e: 2}}], sorted)
+    IO.inspect(%Point{z: %{y: 1, b: 2}, a: 2}, sorted)
+    IO.inspect(%{3 => :c, 1 => :a, 2 => :b})
+    IO.inspect(%{3 => :c, 1 => :a, 2 => :b}, sorted)
+    IO.inspect(%{b: 1, a: 2}, custom_options: [other: 1, sort_maps: true])
+    IO.inspect(%{b: 1, a: 2}, custom_options: [sort_maps: true], limit: 1)
+    IO.puts(inspect(%{c: 1, b: 2, a: 3}, sorted))
+
+    keys = Enum.to_list(1..40)
+    IO.puts(inspect(Map.new(keys, fn k -> {String.to_atom("k" <> Integer.to_string(k)), k} end), sorted))
+  end
+end
+
+Main.main()
