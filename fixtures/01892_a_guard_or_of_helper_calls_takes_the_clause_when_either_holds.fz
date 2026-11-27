@@ -4,14 +4,13 @@
 # root: main/0
 # assert.metric.semantic.executables: 13
 # assert.metric.semantic.callsites: 21
-# oracle: 01892_a_guard_or_of_helper_calls_takes_the_clause_when_either_holds.oracle.exs
-# oracle.stamp: 70ade77c9a2c1776
+# oracle: self
+# oracle.stamp: 3d5a821c176beea7
 #---
 defmodule Main do
-  def number?(x), do: is_integer(x) or is_float(x)
-  def text?(x), do: is_binary(x) or is_atom(x)
-  def callable?(f) when is_function(f), do: true
-  def callable?(_), do: false
+  defguardp number?(x) when is_integer(x) or is_float(x)
+  defguardp text?(x) when is_binary(x) or is_atom(x)
+  defguardp callable?(f) when is_function(f)
 
   def pick(x) when number?(x) or text?(x), do: {:scalar, x}
   def pick(x) when callable?(x) or is_list(x), do: :later

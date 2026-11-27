@@ -41,4 +41,79 @@ defmodule Kernel.Utils do
     error in [ArgumentError] ->
       raise(ArgumentError, "invalid default value for struct field #{key}, " <> Exception.message(error))
   end
+
+  @doc """
+  Splits the argument of `defguard` and `defguardp` into the guard's name, its
+  argument variables and its body, with the syntax checks of Elixir's
+  `define_guard`.
+
+  ## Examples
+
+      Kernel.Utils.defguard_parts(quote(do: is_ws(x) when x == 32))
+      #=> {:is_ws, [x], x == 32}
+
+  """
+  @spec defguard_parts(any) :: {atom, [any], any}
+  def defguard_parts({:when, _, [call, right]}) do
+    case defguard_clauses(right) do
+      [body] -> defguard_name_and_args(call, body)
+      [_, _ | _] -> raise(ArgumentError, "invalid syntax in defguard #{Macro.to_string(call)}, only a single when clause is allowed")
+    end
+  end
+
+  def defguard_parts({name, _, _}) when is_atom(name) do
+    raise(ArgumentError, "defguard #{name} has no `when` body; write `defguard #{name}(args) when body`")
+  end
+
+  def defguard_parts(call), do: raise(ArgumentError, "invalid syntax in defguard #{Macro.to_string(call)}")
+
+  @spec defguard_clauses(any) :: [any]
+  defp defguard_clauses({:when, _, [left, right]}), do: [left | defguard_clauses(right)]
+  defp defguard_clauses(body), do: [body]
+
+  @spec defguard_name_and_args(any, any) :: {atom, [any], any}
+  defp defguard_name_and_args({name, _, args} = call, body) when is_atom(name) and is_list(args) do
+    Enum.each(args, fn arg -> defguard_variable(call, arg) end)
+    {name, args, body}
+  end
+
+  defp defguard_name_and_args({name, _, args}, body) when is_atom(name) and is_atom(args), do: {name, [], body}
+  defp defguard_name_and_args(call, _body), do: raise(ArgumentError, "invalid syntax in defguard #{Macro.to_string(call)}")
+
+  @spec defguard_variable(any, any) :: :ok
+  defp defguard_variable(_call, {ref, _meta, context}) when is_atom(ref) and is_atom(context), do: :ok
+  defp defguard_variable(_call, {:\\, _, [{ref, _, context}, _default]}) when is_atom(ref) and is_atom(context), do: :ok
+  defp defguard_variable(call, _other), do: raise(ArgumentError, "invalid syntax in defguard #{Macro.to_string(call)}")
+
+  @doc """
+  Returns the variables among `args` that `body` uses, in the order of `args`.
+  A default stands for its variable.
+
+  ## Examples
+
+      Kernel.Utils.defguard_used([quote(do: x), quote(do: y)], quote(do: x > 0))
+      #=> [x]
+
+  """
+  @spec defguard_used([any], any) :: [any]
+  def defguard_used(args, body) do
+    {_, mentioned} = Macro.postwalk(body, [], &defguard_mention/2)
+    args |> Enum.map(&defguard_bare/1) |> Enum.filter(fn {name, _, context} -> {name, context} in mentioned end)
+  end
+
+  @spec defguard_mention(any, [{atom, atom}]) :: {any, [{atom, atom}]}
+  defp defguard_mention({name, _, context} = node, mentioned) when is_atom(name) and is_atom(context), do: {node, [{name, context} | mentioned]}
+  defp defguard_mention(node, mentioned), do: {node, mentioned}
+
+  @spec defguard_bare(any) :: any
+  defp defguard_bare({:\\, _, [variable, _default]}), do: variable
+  defp defguard_bare(variable), do: variable
+
+  @doc """
+  The code a guard macro expands to: a call to `helper` in `module`, or a
+  local call when `module` is `nil`, given the arguments the guard's body uses.
+  """
+  @spec defguard_call(atom, atom, [any]) :: any
+  def defguard_call(nil, helper, used), do: {helper, [], used}
+  def defguard_call(module, helper, used), do: {{:., [], [module, helper]}, [], used}
 end

@@ -1,0 +1,12 @@
+#---
+# purpose: a defguardp whose body calls a function that is not allowed in a guard is refused when a guard uses it
+# expect: diagnostic
+#---
+defmodule Main do
+  defguardp loud(x) when IO.puts(x) == :ok
+
+  def f(x) when loud(x), do: :yes
+  def f(_), do: :no
+end
+
+def main(), do: dbg(Main.f("a"))

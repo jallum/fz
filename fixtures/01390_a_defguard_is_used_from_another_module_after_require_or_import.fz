@@ -1,0 +1,41 @@
+#---
+# purpose: "A public defguard is called from another module as Lib.name after require, or as name after import, in a guard and outside one, as in Elixir"
+# oracle: self
+# oracle.stamp: 86eb868c30eda1b5
+#---
+defmodule Lib do
+  defguard is_tiny(n) when is_integer(n) and n < 3
+  defguard is_pair_sum(a, b, sum) when is_integer(a) and is_integer(b) and a + b == sum
+end
+
+defmodule Required do
+  require Lib
+
+  def f(n) when Lib.is_tiny(n), do: :tiny
+  def f(_), do: :large
+
+  def g(n), do: Lib.is_tiny(n)
+  def h(a, b) when Lib.is_pair_sum(a, b, 10), do: :ten
+  def h(_, _), do: :other
+end
+
+defmodule Imported do
+  import Lib
+
+  def f(n) when is_tiny(n), do: :tiny
+  def f(_), do: :large
+
+  def g(n), do: is_tiny(n)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.map([1, 5, :x], &Required.f/1), label: "require, in a guard")
+    IO.inspect(Enum.map([1, 5, :x], &Required.g/1), label: "require, outside a guard")
+    IO.inspect([Required.h(4, 6), Required.h(1, 2)], label: "require, three arguments")
+    IO.inspect(Enum.map([1, 5, :x], &Imported.f/1), label: "import, in a guard")
+    IO.inspect(Enum.map([1, 5, :x], &Imported.g/1), label: "import, outside a guard")
+  end
+end
+
+Main.main()

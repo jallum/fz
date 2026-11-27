@@ -33,6 +33,8 @@ import Kernel, only: [
   apply: 3,
   dbg: 1,
   defexception: 1,
+  defguard: 1,
+  defguardp: 1,
   div: 2,
   exit: 1,
   floor: 1,

@@ -1,0 +1,34 @@
+#---
+# purpose: "A defguard body that raises fails the guard that calls it, so the next clause runs, and raises the same error as in Elixir when called outside a guard"
+# oracle: self
+# oracle.stamp: 4be3fb67e0e2c79f
+#---
+defmodule Guards do
+  defguardp head_positive(l) when hd(l) > 0
+  defguardp none_or_head_positive(l) when head_positive(l) or l == []
+
+  def f(l) when head_positive(l), do: :a
+  def f(_), do: :b
+
+  def g(l) when none_or_head_positive(l), do: :a
+  def g(_), do: :b
+
+  def outside(l), do: head_positive(l)
+end
+
+defmodule Main do
+  def main() do
+    IO.inspect(Enum.map([[1], [-1], [], 7, :x], &Guards.f/1), label: "raise fails the guard")
+    IO.inspect(Enum.map([[1], [-1], [], 7], &Guards.g/1), label: "raise under or fails the whole guard")
+
+    try do
+      Guards.outside([])
+    rescue
+      e ->
+        IO.inspect(e.__struct__, label: "outside a guard")
+        IO.puts(Exception.message(e))
+    end
+  end
+end
+
+Main.main()

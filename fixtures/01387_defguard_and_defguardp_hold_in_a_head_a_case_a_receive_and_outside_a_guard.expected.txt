@@ -1,0 +1,7 @@
+head: [:small_even, :small, :other, :other]
+case: [:even, :odd, :even, :odd]
+receive: [small_even: 4, small: 7, other: 12, other: :x]
+outside 4: {true, true, true}
+outside 7: {true, false, false}
+outside 12: {false, true, false}
+outside :x: {false, false, false}

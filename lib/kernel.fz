@@ -360,6 +360,49 @@ defmodule Kernel do
     end
   end
 
+  @doc """
+  Defines a macro `name` that expands to a call of a public function holding
+  the guard `body`, so the macro stands in a guard or outside one, as in
+  Elixir's `defguard`.
+
+  The macro must be required, and the call passes only the arguments `body`
+  uses: an argument `body` leaves unused is never evaluated.
+
+      defguard is_even(n) when is_integer(n) and rem(n, 2) == 0
+
+  """
+  defmacro defguard(guard) do
+    {name, args, body} = Kernel.Utils.defguard_parts(guard)
+    used = Kernel.Utils.defguard_used(args, body)
+    helper = String.to_atom("__defguard_#{name}__")
+    module = __CALLER__.module
+
+    quote do
+      defmacro unquote(name)(unquote_splicing(args)) do
+        Kernel.Utils.defguard_call(unquote(module), unquote(helper), [unquote_splicing(used)])
+      end
+
+      def unquote(helper)(unquote_splicing(used)), do: unquote(body)
+    end
+  end
+
+  @doc """
+  Same as `defguard/1` but defines a private macro and a private function.
+  """
+  defmacro defguardp(guard) do
+    {name, args, body} = Kernel.Utils.defguard_parts(guard)
+    used = Kernel.Utils.defguard_used(args, body)
+    helper = String.to_atom("__defguard_#{name}__")
+
+    quote do
+      defmacrop unquote(name)(unquote_splicing(args)) do
+        Kernel.Utils.defguard_call(nil, unquote(helper), [unquote_splicing(used)])
+      end
+
+      defp unquote(helper)(unquote_splicing(used)), do: unquote(body)
+    end
+  end
+
   @spec declares_message?(any) :: boolean
   defp declares_message?([]), do: false
   defp declares_message?([:message | _]), do: true

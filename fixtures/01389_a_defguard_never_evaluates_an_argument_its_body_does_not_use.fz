@@ -1,0 +1,24 @@
+#---
+# purpose: "Outside a guard, a defguard call evaluates each argument its body uses once and never evaluates one its body leaves unused, as in Elixir"
+# oracle: self
+# oracle.stamp: f3ae88fa4a6d2779
+#---
+defmodule Main do
+  defguardp positive(x, _label) when x > 0
+  defguardp both_small(x, y) when x < 10 and y < 10 and x < 10
+  defguardp second(_x, y) when y > 0
+
+  def noisy(v) do
+    IO.puts("evaluated " <> inspect(v))
+    v
+  end
+
+  def main() do
+    IO.inspect(positive(1, noisy(:never)), label: "unused argument")
+    IO.inspect(both_small(noisy(1), noisy(2)), label: "each used argument once")
+    IO.inspect(second(noisy(:first), noisy(5)), label: "only the second argument")
+    IO.inspect(both_small(noisy(1), 20), label: "false")
+  end
+end
+
+Main.main()

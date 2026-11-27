@@ -1,0 +1,3 @@
+# defguard/1 and defguardp/1 are two more Kernel macros the distiller derives; accepted by the user 2026-11-27
+derivations +2
+reads handed +12

@@ -1,0 +1,26 @@
+chain: {:ws, :other}
+ws: {:ws, "a"}
+ws: {:ws, "a"}
+ws: {:ws, "a"}
+ws: {:ws, "a"}
+ws: :no
+ws: :empty
+ws: :no
+class of 48: :zero
+class of 53: :one_to_nine
+class of 57: :one_to_nine
+class of 32: :ws
+class of 9: :ws
+class of 0: :escape
+class of 31: :escape
+class of 34: :escape
+class of 92: :escape
+class of 97: :plain
+class of 126: :plain
+class of 127: :plain
+class of 128: :other
+class of 255: :other
+empty: :empty
+eight plain: {:eight, "ij"}
+an escape among eight: :fewer
+fewer than eight: :fewer
