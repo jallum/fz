@@ -540,7 +540,7 @@ fn backend_entry_captures(
                 .filter(|physical| !ignored || physical.source == PhysicalLaneSource::Carrier)
                 .map(|physical| {
                     let ty = world.lane(physical.lane).ty;
-                    (ty, super::artifact::physical_lane_repr(world, physical.source, ty))
+                    (ty, super::super::artifact::AbiValueRepr::for_ty(world, ty))
                 })
                 .collect::<Vec<_>>();
             Ok(BackendEntryCapture {
@@ -672,7 +672,7 @@ fn package_backend_construction_wrappers(
                 .collect::<std::collections::BTreeSet<_>>()
                 == std::collections::BTreeSet::from([false])
             {
-                super::super::artifact::BackendCallableReturn::ValueRef
+                super::super::artifact::BackendCallableReturn::Stored
             } else if members
                 .iter()
                 .filter(|member| !member.target_return.diverges)

@@ -1821,8 +1821,9 @@ fn is_root_value_entry(world: &mut World, executable: &ExecutableKey) -> bool {
     executable.need == ExecutableNeed::Value && *executable == world.root_entry_executable(executable.activation.root)
 }
 
-/// What a call through the boxed apply seam hands back: one public word,
-/// whatever the caller does with it. The construction wrapper behind the seam
+/// What a call through the boxed apply seam hands back: one public value typed
+/// `any`, so one stored word and kind whatever the callee returns, however the
+/// caller uses it. The construction wrapper behind the seam
 /// serves every caller and cannot know that this one discards the result, so
 /// a discarded result still arrives and the caller makes room for it.
 fn public_callable_return_layout(world: &mut World, ty: Ty, demand: &RuntimeDemand) -> TransportLayout {
@@ -1832,7 +1833,12 @@ fn public_callable_return_layout(world: &mut World, ty: Ty, demand: &RuntimeDema
     } else {
         layout
     };
-    with_value_ref_carrier(world, ty, layout)
+    let mut layout = with_value_ref_carrier(world, ty, layout);
+    if layout.carrier.is_value_ref() {
+        let any = world.types_mut().any();
+        layout.carrier = TransportCarrier::ValueRef(world.intern_value_lane(any));
+    }
+    layout
 }
 
 pub(super) fn with_value_ref_carrier(world: &mut World, ty: Ty, mut layout: TransportLayout) -> TransportLayout {

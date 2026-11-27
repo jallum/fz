@@ -8705,9 +8705,9 @@ end
         member.target_return.layout.reprs.as_ref(),
         [AbiValueRepr::RawInt, AbiValueRepr::RawInt]
     );
-    // The host binds the boundary's wrapper, which hands back one boxed word
-    // whatever lanes its member returns, so the halt kind follows the wrapper.
-    assert_eq!(boundary.task_halt_repr, Some(AbiValueRepr::ValueRef));
+    // The host binds the boundary's wrapper, which hands back one stored word
+    // and kind whatever lanes its member returns, so the halt kind follows the wrapper.
+    assert_eq!(boundary.task_halt_repr, Some(AbiValueRepr::Stored));
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
     assert_eq!(compiled.run(compiler.telemetry(), program.entry), 0);
@@ -9573,9 +9573,16 @@ fn compiler2_native_a_guarded_clause_chain_is_lowered_linearly() {
 #[test]
 fn compiler2_native_raising_a_static_literal_asks_nothing_of_its_kind() {
     let clif = lowered_clif_of(&guarded_closure_clauses(1), "pd");
+    let panic_fn = clif
+        .lines()
+        .find_map(|line| {
+            let (alias, name) = line.strip_prefix("; ")?.split_once(" = ")?;
+            name.starts_with("fz_panic").then_some(alias)
+        })
+        .unwrap_or_else(|| panic!("the clause chain imports the panic entry:\n{clif}"));
     let call = clif
         .lines()
-        .find(|line| line.contains("call fn0("))
+        .find(|line| line.contains(&format!("call {panic_fn}(")))
         .unwrap_or_else(|| panic!("the clause chain ends in a raise:\n{clif}"));
     let kind = call
         .split(')')
@@ -15196,7 +15203,7 @@ end
     assert_eq!(member.target_return, executable.abi.return_layout);
     assert_eq!(
         wrapper.return_form,
-        BackendCallableReturn::ValueRef,
+        BackendCallableReturn::Stored,
         "the joined structured return must materialize through the wrapper's public value carrier",
     );
 }
@@ -22992,12 +22999,12 @@ fn compiler2_native_program_jit_adapts_callable_raw_returns_back_to_value_refs()
     assert_eq!(
         dbg.lines().as_slice(),
         ["false", "false", "true", ":no", "2", "2", "2"],
-        "callable-entry adapters should box raw predicate/reducer returns back onto the ValueRef callable seam",
+        "callable-entry adapters should hand raw predicate/reducer returns back onto the Stored callable seam",
     );
 }
 
 #[test]
-fn compiler2_connected_callable_returns_share_one_public_value_ref_contract() {
+fn compiler2_connected_callable_returns_share_one_public_stored_contract() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     let native = NativeProgramCapture::new();
@@ -23052,7 +23059,7 @@ end
     assert!(
         returning_boundaries
             .iter()
-            .all(|boundary| boundary.return_form == BackendCallableReturn::ValueRef)
+            .all(|boundary| boundary.return_form == BackendCallableReturn::Stored)
     );
     assert!(returning_boundaries.iter().all(|boundary| {
         program.bodies.iter().any(|body| {
@@ -23060,7 +23067,7 @@ end
                 == (NativeBodyOrigin::CallableWrapper {
                     identity: boundary.id.as_u32(),
                 })
-                && body.return_reprs == [AbiValueRepr::ValueRef]
+                && body.return_reprs == [AbiValueRepr::Stored]
         })
     }));
 
@@ -23079,7 +23086,7 @@ end
     assert!(indirect_return_continuations.len() >= 2);
     assert!(indirect_return_continuations.iter().all(|body| {
         matches!(body.entry_abi, NativeEntryAbi::Continuation { extra_params: 1 })
-            && body.param_reprs.last() == Some(&AbiValueRepr::ValueRef)
+            && body.param_reprs.first() == Some(&AbiValueRepr::Stored)
     }));
 
     let compiled = jit_compile_native_program(&mut compiler, &program);
@@ -23088,7 +23095,7 @@ end
 }
 
 #[test]
-fn compiler2_published_captured_closure_keeps_its_public_return_contract() {
+fn compiler2_published_captured_closure_returns_its_result_as_a_stored_word() {
     let tel = ConfiguredTelemetry::new();
     let dbg = DbgCapture::new();
     let native = NativeProgramCapture::new();
@@ -23120,7 +23127,7 @@ end
         panic!("the published captured closure should own one boundary")
     };
     assert_eq!(boundary.captures.len(), 1);
-    assert_eq!(boundary.return_form, BackendCallableReturn::ValueRef);
+    assert_eq!(boundary.return_form, BackendCallableReturn::Stored);
     let [member] = boundary.members.as_ref() else {
         panic!("the captured closure boundary should have one member")
     };
@@ -23147,7 +23154,7 @@ end
         continuation.entry_abi,
         NativeEntryAbi::Continuation { extra_params: 1 }
     ));
-    assert_eq!(continuation.param_reprs.first(), Some(&AbiValueRepr::ValueRef));
+    assert_eq!(continuation.param_reprs.first(), Some(&AbiValueRepr::Stored));
 
     compiler
         .run_root_interp(root)

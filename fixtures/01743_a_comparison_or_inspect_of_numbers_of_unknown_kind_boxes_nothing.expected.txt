@@ -3,4 +3,4 @@
 [{{false, true, false, true, 1}, :different, :different}, {{false, true, false, true, 1}, :different, :different}, {{true, false, true, false, 0}, :equal, :equal}, {{false, true, false, true, 1}, :different, :different}]
 [{{true, false, false, true, 0}, :equal, :equal}, {{false, true, false, true, 1}, :different, :different}, {{false, true, false, true, -1}, :different, :different}, {{true, false, true, false, 0}, :equal, :equal}]
 [{1, 1}, {3, 3}, {2, 2}, {3, 3}]
-18
+0

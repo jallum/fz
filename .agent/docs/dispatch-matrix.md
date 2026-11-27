@@ -618,8 +618,8 @@ Under-admission is the one direction a runtime test may never err in.
 ADMISSION on this axis has two parts, and it is the one place the axes differ in
 kind. A capture type is the ANNOTATION the mint stamped, not a fact re-read off
 the value: the layout a capture was STORED in belongs to the construction, so a
-wrapper closed over `int | float` stores a boxed word, and a body whose capture
-lane is a raw int must not receive a closure that holds a float even though the
+wrapper closed over `int | float` stores the capture's word and its kind byte,
+and a body whose capture lane is a raw int must not receive a closure that holds a float even though the
 two tests overlap. `CallableShapes::listing` answers one of three things for
 each construction:
 

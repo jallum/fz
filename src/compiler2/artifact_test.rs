@@ -247,7 +247,7 @@ fn compiler2_native_program_contract_keeps_codegen_facts_on_body_records() {
             captures: Box::default(),
             capture_reprs: Box::default(),
             call_arity: 1,
-            return_form: BackendCallableReturn::ValueRef,
+            return_form: BackendCallableReturn::Stored,
             task_halt_repr: None,
             members: Box::new([NativeConstructionMember {
                 boundary: BoundaryId::for_test(0),
@@ -435,7 +435,7 @@ fn compiler2_native_program_contract_maps_old_native_inputs_to_local_facts() {
             captures: Box::default(),
             capture_reprs: Box::default(),
             call_arity: 1,
-            return_form: BackendCallableReturn::ValueRef,
+            return_form: BackendCallableReturn::Stored,
             task_halt_repr: None,
             members: Box::new([NativeConstructionMember {
                 boundary: BoundaryId::for_test(0),

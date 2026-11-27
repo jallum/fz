@@ -117,7 +117,7 @@ fn a_seam_call_that_never_returns_demands_nothing_of_the_apply_seam() {
 /// wrapper handing back one boxed word agree on width and disagree on
 /// everything else; the caller prints the pointer.
 #[test]
-fn one_raw_lane_does_not_satisfy_a_wrapper_that_hands_back_a_boxed_word() {
+fn one_raw_lane_does_not_satisfy_a_wrapper_that_hands_back_a_stored_word() {
     let mut world = World::new();
     let key = caller(&mut world, "caller");
     let nothing = world.intern_shape(ShapeDescr::Nothing);
@@ -139,7 +139,7 @@ fn one_raw_lane_does_not_satisfy_a_wrapper_that_hands_back_a_boxed_word() {
         vec![AbiValueRepr::RawInt],
     );
     let requirements = BoxedApplyRequirement::for_body(&executable.body, &executable.abi);
-    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
+    let returning = wrapper(&key, 1, BackendCallableReturn::Stored);
 
     let tel = ConfiguredTelemetry::new();
     let mut contracts = BoxedContracts::default();
@@ -148,7 +148,7 @@ fn one_raw_lane_does_not_satisfy_a_wrapper_that_hands_back_a_boxed_word() {
 
     assert!(
         contracts.validate(&tel, RootId::for_test(0)).is_err(),
-        "a raw-integer destination cannot accept the seam's boxed word"
+        "a raw-integer destination cannot accept the seam's stored word"
     );
 }
 
@@ -162,10 +162,10 @@ fn replacement_and_withdrawal_preserve_mismatch_rejection_and_agreement() {
     }];
     let one = [BoxedApplyRequirement {
         arity: 1,
-        delivered: Box::new([AbiValueRepr::ValueRef]),
+        delivered: Box::new([AbiValueRepr::Stored]),
     }];
     let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
-    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
+    let returning = wrapper(&key, 1, BackendCallableReturn::Stored);
     let divergent = wrapper(&key, 1, BackendCallableReturn::Diverges);
     let tel = ConfiguredTelemetry::new();
     let mut contracts = BoxedContracts::default();
@@ -218,11 +218,11 @@ fn matching_first_lane_does_not_hide_another_conflicting_caller_or_wrapper() {
         },
         BoxedApplyRequirement {
             arity: 1,
-            delivered: Box::new([AbiValueRepr::ValueRef]),
+            delivered: Box::new([AbiValueRepr::Stored]),
         },
     ];
     let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
-    let returning = wrapper(&other, 1, BackendCallableReturn::ValueRef);
+    let returning = wrapper(&other, 1, BackendCallableReturn::Stored);
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &requirements, world.types());
     contracts.replace_wrapper(None, Some(&absent), world.types());
@@ -233,7 +233,7 @@ fn matching_first_lane_does_not_hide_another_conflicting_caller_or_wrapper() {
             .expect("second caller lane differs")
             .delivered
             .as_ref(),
-        [AbiValueRepr::ValueRef]
+        [AbiValueRepr::Stored]
     );
     contracts.replace_caller(&key, &requirements, &requirements[..1], world.types());
     assert!(contracts.mismatches.is_empty());
@@ -245,7 +245,7 @@ fn matching_first_lane_does_not_hide_another_conflicting_caller_or_wrapper() {
             .expect("second wrapper lane differs")
             .published
             .as_ref(),
-        [AbiValueRepr::ValueRef]
+        [AbiValueRepr::Stored]
     );
     contracts.replace_wrapper(Some(&returning), None, world.types());
     assert!(contracts.mismatches.is_empty());
@@ -257,7 +257,7 @@ fn wrapper_arity_replacement_checks_only_callers_of_its_current_arity() {
     let key = caller(&mut world, "caller");
     let one = [BoxedApplyRequirement {
         arity: 1,
-        delivered: Box::new([AbiValueRepr::ValueRef]),
+        delivered: Box::new([AbiValueRepr::Stored]),
     }];
     let binary = wrapper(&key, 2, BackendCallableReturn::Absent);
     let unary = wrapper(&key, 1, BackendCallableReturn::Absent);
@@ -288,17 +288,17 @@ fn equal_contributions_do_no_work_and_changes_retain_unrelated_arity_allocations
     let other = caller(&mut world, "other");
     let one = [BoxedApplyRequirement {
         arity: 1,
-        delivered: Box::new([AbiValueRepr::ValueRef]),
+        delivered: Box::new([AbiValueRepr::Stored]),
     }];
     let two = [BoxedApplyRequirement {
         arity: 2,
-        delivered: Box::new([AbiValueRepr::ValueRef]),
+        delivered: Box::new([AbiValueRepr::Stored]),
     }];
     let changed = [BoxedApplyRequirement {
         arity: 1,
         delivered: Box::default(),
     }];
-    let returning = wrapper(&key, 1, BackendCallableReturn::ValueRef);
+    let returning = wrapper(&key, 1, BackendCallableReturn::Stored);
     let mut contracts = BoxedContracts::default();
     contracts.replace_caller(&key, &[], &one, world.types());
     contracts.replace_caller(&other, &[], &two, world.types());
@@ -338,7 +338,7 @@ fn withdrawing_one_owner_keeps_other_owners_and_their_mismatch() {
     let other = caller(&mut world, "other");
     let one = [BoxedApplyRequirement {
         arity: 1,
-        delivered: Box::new([AbiValueRepr::ValueRef]),
+        delivered: Box::new([AbiValueRepr::Stored]),
     }];
     let absent = wrapper(&key, 1, BackendCallableReturn::Absent);
     let other_absent = wrapper(&other, 1, BackendCallableReturn::Absent);

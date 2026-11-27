@@ -49,7 +49,7 @@ fn generic_extern_effects_do_not_depend_on_privileged_symbol_spellings() {
 }
 
 #[test]
-fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {
+fn a_carrier_lane_takes_the_form_its_type_gives() {
     let mut world = World::new();
     let int = world.types_mut().int();
     let lane = world.intern_lane(super::super::super::transport::LaneDescr {
@@ -67,7 +67,10 @@ fn carrier_provenance_forces_value_ref_for_a_raw_capable_lane() {
     );
 
     assert_eq!(structural, vec![(int, AbiValueRepr::RawInt)]);
-    assert_eq!(carrier, vec![(int, AbiValueRepr::ValueRef)]);
+    assert_eq!(
+        carrier, structural,
+        "a carrier lane follows its type like a structural lane"
+    );
 }
 
 #[test]
