@@ -3307,15 +3307,7 @@ impl World {
             .filter(|function| !definition_time::is_evaluator_name(self.function_ref(*function).name()));
         let diagnostic = match named_macro {
             Some(function) => {
-                let function_ref = self.function_ref(function);
-                let macro_module = self
-                    .module_name(function_ref.module)
-                    .expect("a macro's module has a name");
-                diagnostic.with_note(format!(
-                    "expanding macro: `{macro_module}.{}/{}`",
-                    function_ref.name(),
-                    function_ref.arity
-                ))
+                diagnostic.with_note(format!("expanding macro: `{}`", self.function_ref(function).label()))
             }
             None => diagnostic,
         };

@@ -1,0 +1,19 @@
+#---
+# purpose: "a macro defined at the top level owns no module; when its body calls the module that invokes it, the diagnostic names the call and the macro by its bare name"
+# expect: diagnostic
+#---
+defmacro make() do
+  n = M.seven()
+  quote do
+    def f(), do: unquote(n)
+  end
+end
+
+defmodule M do
+  def seven(), do: 7
+  make()
+end
+
+def main() do
+  dbg(M.f())
+end
