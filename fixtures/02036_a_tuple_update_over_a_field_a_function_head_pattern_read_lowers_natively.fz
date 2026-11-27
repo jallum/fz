@@ -1,0 +1,34 @@
+#---
+# purpose: a tuple, map or list rebuilt from a value a head pattern read in a called function lowers and runs the same on all three paths
+# oracle: self
+# oracle.stamp: 4906f7e4ad81a1b8
+#---
+#
+# Each `bump`-shaped function reads one field through a helper whose head
+# pattern projects it, then feeds the answer into an update of the whole
+# value. The helper's return travels in a lane typed as any; the value the
+# update consumes is known to be a tuple, a map or a list.
+defmodule Main do
+  def x_of({:point, x, _}), do: x
+  def bump(r), do: :erlang.setelement(2, r, x_of(r) + 1)
+  def bump_put(r), do: put_elem(r, 1, x_of(r) + 1)
+  def name_of(%{name: n}), do: n
+  def rename(m), do: Map.put(m, :name, name_of(m) <> "!")
+  def upd(%{n: n} = m), do: %{m | n: n + 1}
+  def head_of([h | _]), do: h
+  def swap_head(l), do: [head_of(l) + 1 | tl(l)]
+  def pair({a, b}), do: {b, a}
+  def twice(t), do: :erlang.setelement(1, pair(t), :done)
+  def first_of({a, _}), do: a
+  def keep(t), do: :erlang.setelement(2, t, first_of(t))
+  def main() do
+    IO.inspect(bump({:point, 1, 0}))
+    IO.inspect(bump_put({:point, 1, 0}))
+    IO.inspect(rename(%{name: "a"}))
+    IO.inspect(upd(%{n: 1}))
+    IO.inspect(swap_head([1, 2, 3]))
+    IO.inspect(twice({1, 2}))
+    IO.inspect(keep({:a, :b}))
+  end
+end
+Main.main()
