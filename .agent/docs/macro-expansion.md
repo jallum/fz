@@ -237,6 +237,12 @@ the same way. The env is a `%Macro.Env{}` (below). (`decode_expr` decodes a raw
 map value as a map literal, so the spliced env map decodes as source.) Neither
 is bound in the namespace.
 
+`__CALLER__` and `__STACKTRACE__` are special forms that read the enclosing
+scope, not hygienic variables (`ast::is_scope_special_form`). `decode_expr`
+reads either one as the user's variable, whatever context the quote that wrote
+it carries. So a macro that emits a macro through a quote, as
+`Record.defrecordp` does, has the emitted macro read its own `__CALLER__`.
+
 A module attribute is a splice too, bound as `"@name"` when the module sets it
 (modules.md, "A module attribute"). The read `@name` is not a `__` variable,
 so the expander recognizes its `{:@, _, [{name, _, nil}]}` shape and splices

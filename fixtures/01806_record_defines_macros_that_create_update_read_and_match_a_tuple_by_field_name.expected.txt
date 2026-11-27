@@ -1,0 +1,23 @@
+{:point, 0, 0}
+{:point, 3, 0}
+{:point, 4, 5}
+0
+2
+{:point, 9, 0}
+{:point, 2, 7}
+[x: 2, y: 3]
+true
+false
+11
+{:matched, 6}
+{10, 20}
+{Custom, "n"}
+"n"
+{:hidden, :undefined, 8}
+8
+{:hidden, :k, 8}
+2
+9
+[key: :undefined, size: 8]
+{:point, :record, :other, :other}
+{true, false, true, false}

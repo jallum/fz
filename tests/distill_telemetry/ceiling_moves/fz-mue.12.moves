@@ -1,0 +1,3 @@
+# :lists.keysort/2, which Record's duplicate-field warning calls, is one more def in a loaded module (fz-sc8.275 removes that cost); accepted by the user 2026-11-27
+derivations +1
+reads handed +4

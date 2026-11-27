@@ -1056,3 +1056,24 @@ fn a_receive_with_only_an_after_clause_decodes_to_no_message_clauses_and_an_afte
     assert!(clauses.is_empty(), "no message clause was written");
     assert!(after.is_some(), "the after clause is kept");
 }
+
+#[test]
+fn a_macros_caller_and_a_handlers_stacktrace_read_the_enclosing_scope_whatever_quote_wrote_them() {
+    use crate::ast::{AtomName, VarContext};
+    for name in [crate::ast::CALLER, crate::ast::STACKTRACE] {
+        let written = Var {
+            name: name.to_string(),
+            context: VarContext {
+                context: Some(AtomName::from("Elixir.Record")),
+                counter: None,
+            },
+        };
+        let read = decoded_var(|builder| {
+            builder
+                .variable(&written, &QuotedSourceMetadata::default())
+                .expect("write")
+        })
+        .expect("read back");
+        assert_eq!(read, Var::user(name), "{name} is no quote's hygienic variable");
+    }
+}

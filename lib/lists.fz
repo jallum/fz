@@ -189,4 +189,18 @@ defmodule :lists do
   end
 
   defp mapfoldl_1(_f, [], map_acc, fold_acc), do: {reverse(map_acc), fold_acc}
+
+  @doc """
+  Returns the tuples of `tuples` sorted by their `index`th element, counting
+  from 1. The sort is stable: tuples with equal keys keep their order.
+
+  ## Examples
+
+      :lists.keysort(1, [b: 2, a: 1, b: 0])
+      #=> [a: 1, b: 2, b: 0]
+
+  """
+  @spec keysort(pos_integer, [tuple]) :: [tuple]
+  def keysort(index, tuples) when is_integer(index) and index > 0 and is_list(tuples),
+    do: Enum.sort_by(tuples, &elem(&1, index - 1))
 end

@@ -170,6 +170,17 @@ pub struct TypeExprBody(pub Vec<Token>);
 /// quote included, it reads the binding of the clause that encloses it.
 pub const STACKTRACE: &str = "__STACKTRACE__";
 
+/// The name a macro reads its caller's env by. It is a special form, not a
+/// hygienic variable: a macro that emits a macro, through a quote, reads the
+/// `__CALLER__` of the macro it emitted.
+pub const CALLER: &str = "__CALLER__";
+
+/// Whether `name` is a special form that reads the enclosing scope, so that
+/// no quote's context separates the writer from the reader.
+pub fn is_scope_special_form(name: &str) -> bool {
+    name == STACKTRACE || name == CALLER
+}
+
 /// A variable's full identity: its spelling, and where that spelling was
 /// written. Two `Var`s with the same `name` but a different `context` never
 /// resolve to the same binding — that is what makes macro expansion
