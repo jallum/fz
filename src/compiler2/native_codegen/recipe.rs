@@ -64,6 +64,7 @@
 //! kind it has no instructions for; the call is then emitted as if the table
 //! had no row.
 
+use super::atom_compare::emit_atom_compare;
 use super::binary_compare::{BinaryCompare, emit_binary_compare};
 use super::binary_slice::emit_binary_slice;
 use super::inline_object::{Placed, emit_closure, emit_struct};
@@ -86,12 +87,12 @@ use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_bitstring_bit_extent, fz_bitstring_byte_extent, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any,
     fz_bs_slice_ref, fz_list_cons_any, fz_list_cons_stored, fz_list_reuse_or_cons_parts, fz_op_abs_f, fz_op_add_ii,
-    fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii, fz_op_bsr_ii, fz_op_bxor_ii, fz_op_eq_bb, fz_op_eq_ff,
-    fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii,
-    fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f,
-    fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii, fz_op_sub_ii,
-    fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_int,
-    fz_value_eq_raw_const,
+    fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii, fz_op_bsr_ii, fz_op_bxor_ii, fz_op_eq, fz_op_eq_bb,
+    fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii,
+    fz_op_identical, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff,
+    fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii,
+    fz_op_not_identical, fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref,
+    fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_int, fz_value_cmp_ref, fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -120,6 +121,10 @@ enum Emit {
     /// An in-place answer that may call the runtime function on a cold path,
     /// so it needs the body that declares the import.
     BinaryCompare(BinaryCompare),
+    /// An in-place answer from two atoms' name prefixes that may call the
+    /// runtime function on a cold path, so it needs the body that declares the
+    /// import.
+    AtomCompare,
 }
 
 /// One row: the runtime function's symbol, its parameter count, and the
@@ -250,6 +255,23 @@ macro_rules! binary_compare {
             },
             arity: 3,
             emit: Emit::BinaryCompare($which),
+        }
+    };
+}
+
+/// An atom ordering row: the runtime function orders two atoms by name, and
+/// the row answers `$which` of them from their name prefixes, calling it only
+/// when the prefixes tie. The row takes the process first, as the `fz` extern
+/// does.
+macro_rules! atom_compare {
+    ($item:ident) => {
+        Recipe {
+            symbol: {
+                let _: extern "C" fn(_, _, _, _, _) -> _ = $item;
+                stringify!($item)
+            },
+            arity: 5,
+            emit: Emit::AtomCompare,
         }
     };
 }
@@ -418,6 +440,22 @@ pub(crate) const RECIPES: &[Recipe] = &[
     int_compare!(fz_op_neq_ii, IntCC::NotEqual),
     int_compare!(fz_op_identical_ii, IntCC::Equal),
     int_compare!(fz_op_not_identical_ii, IntCC::NotEqual),
+    // Two atoms are the same atom exactly when their ids are equal, so a
+    // comparison whose operands are both known atoms is an `icmp` of their
+    // stored words; any other pair is the runtime function's.
+    recipe!(fz_op_eq(_process, left, left_kind, right, right_kind), |b| {
+        both_atoms(b, left_kind, right_kind).then(|| Emitted::Condition(b.ins().icmp(IntCC::Equal, left, right)))
+    }),
+    recipe!(fz_op_identical(_process, left, left_kind, right, right_kind), |b| {
+        both_atoms(b, left_kind, right_kind).then(|| Emitted::Condition(b.ins().icmp(IntCC::Equal, left, right)))
+    }),
+    recipe!(fz_op_neq(_process, left, left_kind, right, right_kind), |b| {
+        both_atoms(b, left_kind, right_kind).then(|| Emitted::Condition(b.ins().icmp(IntCC::NotEqual, left, right)))
+    }),
+    recipe!(fz_op_not_identical(_process, left, left_kind, right, right_kind), |b| {
+        both_atoms(b, left_kind, right_kind).then(|| Emitted::Condition(b.ins().icmp(IntCC::NotEqual, left, right)))
+    }),
+    atom_compare!(fz_value_cmp_ref),
     // Float comparison. `NotEqual` is Cranelift's unordered-or-not-equal and
     // the rest are ordered, which is how Rust's `!=`, `<`, `<=`, `>`, `>=` and
     // `==` treat a NaN.
@@ -492,6 +530,9 @@ pub(crate) fn emit_inline(b: &mut FunctionBuilder<'_>, symbol: &str, args: &[ir:
         Emit::BinaryCompare(_) => {
             panic!("`{symbol}` may call the runtime on a cold path; ask for it through `emit_in_body`")
         }
+        // The symbol is also called from sites that have no body to host the
+        // cold call: they get the runtime function.
+        Emit::AtomCompare => None,
         Emit::Cell(_) | Emit::Reuse(_) | Emit::Struct | Emit::Closure | Emit::Box(_) | Emit::Slice => {
             panic!(
                 "`{symbol}` places an object; ask for it through `emit_cell`, `emit_reuse`, `emit_box`, `emit_slice` or `emit_object`"
@@ -510,6 +551,7 @@ pub(crate) fn emit_in_body<M: cranelift_module::Module>(
 ) -> Option<Emitted> {
     match recipe_for(symbol)?.emit {
         Emit::BinaryCompare(which) => Some(Emitted::Condition(emit_binary_compare(body, which, args))),
+        Emit::AtomCompare => emit_atom_compare(body, args),
         _ => emit_inline(body.b, symbol, args),
     }
 }
@@ -533,7 +575,7 @@ pub(crate) fn emit_cell<M: cranelift_module::Module>(
     );
     match row.emit {
         Emit::Cell(lane) => emit_list_cell(body, lane, args),
-        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::AtomCompare => {
             panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
         }
         Emit::Reuse(_) => panic!("`{symbol}` reuses or places a list cell; ask for it through `emit_reuse`"),
@@ -566,7 +608,7 @@ pub(crate) fn emit_reuse<M: cranelift_module::Module>(
         Emit::Reuse(lane) => emit_list_reuse(body, lane, args, |body, value| {
             constant_of(body.b, value).unwrap_or_else(|| panic!("`{symbol}` needs its kind and permission constant"))
         }),
-        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::AtomCompare => {
             panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
         }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
@@ -596,7 +638,7 @@ pub(crate) fn emit_box<M: cranelift_module::Module>(
     );
     match row.emit {
         Emit::Box(lane) => emit_scalar_box(body, lane, args),
-        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::AtomCompare => {
             panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
         }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
@@ -627,7 +669,7 @@ pub(crate) fn emit_slice<M: cranelift_module::Module>(
     );
     match row.emit {
         Emit::Slice => emit_binary_slice(body, args),
-        Emit::InPlace(_) | Emit::BinaryCompare(_) => {
+        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::AtomCompare => {
             panic!("`{symbol}` answers in place; ask for it through `emit_in_body`")
         }
         Emit::Cell(_) => panic!("`{symbol}` places a list cell; ask for it through `emit_cell`"),
@@ -672,7 +714,13 @@ pub(crate) fn emit_object<M: cranelift_module::Module>(
             );
             emit_closure(body, HeapAllocKind::Closure, header, count, args[5])
         }
-        Emit::InPlace(_) | Emit::BinaryCompare(_) | Emit::Cell(_) | Emit::Reuse(_) | Emit::Box(_) | Emit::Slice => {
+        Emit::InPlace(_)
+        | Emit::BinaryCompare(_)
+        | Emit::AtomCompare
+        | Emit::Cell(_)
+        | Emit::Reuse(_)
+        | Emit::Box(_)
+        | Emit::Slice => {
             panic!("`{symbol}` does not place a struct or closure")
         }
     }
@@ -752,6 +800,13 @@ fn same_kind_then(
 }
 
 /// The integer `value` was made from, when an `iconst` made it.
+/// Whether both kind words are the constant kind of an atom, so the stored
+/// words beside them are atom ids.
+pub(super) fn both_atoms(b: &FunctionBuilder<'_>, left_kind: ir::Value, right_kind: ir::Value) -> bool {
+    let atom = i64::from(ValueKind::ATOM.tag());
+    constant_of(b, left_kind) == Some(atom) && constant_of(b, right_kind) == Some(atom)
+}
+
 pub(super) fn constant_of(b: &FunctionBuilder<'_>, value: ir::Value) -> Option<i64> {
     let ValueDef::Result(inst, _) = b.func.dfg.value_def(value) else {
         return None;

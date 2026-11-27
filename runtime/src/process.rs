@@ -117,6 +117,9 @@ pub struct Process {
     /// The node's word that holds where the atom key hashes begin, which
     /// compiled code reads to hash an atom key without a call.
     pub atom_key_hashes: *const *const u64,
+    /// The node's word that holds where the atom name prefixes begin, which
+    /// compiled code reads to order two atoms without a call.
+    pub atom_name_prefixes: *const *const u64,
     // Scheduler-level fields. Populated when a Process is
     // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
@@ -336,6 +339,11 @@ pub struct AtomTable {
     /// reads an atom's key hash through this word (`Process::atom_key_hashes`),
     /// which stays where it is for the life of the node.
     key_hashes_at: *const u64,
+    /// Where `name_prefixes` begins, kept current as it grows. Compiled code
+    /// reads an atom's name prefix through this word
+    /// (`Process::atom_name_prefixes`), which stays where it is for the life
+    /// of the node.
+    name_prefixes_at: *const u64,
 }
 
 /// The first eight bytes of a name as one big-endian word, a shorter name
@@ -409,6 +417,7 @@ impl AtomTable {
             name_prefixes: Vec::with_capacity(names.len()),
             by_name: HashMap::with_capacity(names.len()),
             key_hashes_at: std::ptr::null(),
+            name_prefixes_at: std::ptr::null(),
         };
         for name in names {
             table.append(name);
@@ -439,6 +448,7 @@ impl AtomTable {
         self.key_hashes.push(atom_key_hash(&name));
         self.key_hashes_at = self.key_hashes.as_ptr();
         self.name_prefixes.push(name_prefix(&name));
+        self.name_prefixes_at = self.name_prefixes.as_ptr();
         self.by_id.push(name.clone());
         self.by_name.insert(name, id);
         id
@@ -759,6 +769,12 @@ impl Node {
         unsafe { &raw const (*self.atoms.as_ptr()).key_hashes_at }
     }
 
+    /// The word that holds where the atom name prefixes begin. It stays where
+    /// it is while the node lives, as the prefixes move when the table grows.
+    fn atom_name_prefixes_at(&self) -> *const *const u64 {
+        unsafe { &raw const (*self.atoms.as_ptr()).name_prefixes_at }
+    }
+
     /// Every atom's name in id order, shared with the table.
     pub fn atom_names(&self) -> Vec<AtomName> {
         self.atoms.borrow().by_id.clone()
@@ -861,6 +877,7 @@ impl Process {
             failed: false,
             exit_status: 0,
             atom_key_hashes: node.atom_key_hashes_at(),
+            atom_name_prefixes: node.atom_name_prefixes_at(),
             node,
             pid,
             state: ProcessState::New,

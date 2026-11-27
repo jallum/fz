@@ -1,0 +1,321 @@
+{:a, :a, :same, :same, true}
+{:a, :a, [true, true, true, false, true, false]}
+{:a, :a, :same, {:le, :a}, :receive_same}
+{:a, :ab, :other, :other, true}
+{:a, :ab, [true, false, false, true, false, true]}
+{:a, :ab, :before, {:le, :a}, :receive_before}
+{:a, :"a\0", :other, :other, true}
+{:a, :"a\0", [true, false, false, true, false, true]}
+{:a, :"a\0", :before, {:le, :a}, :receive_before}
+{:a, :eight888, :other, :other, true}
+{:a, :eight888, [true, false, false, true, false, true]}
+{:a, :eight888, :before, {:le, :a}, :receive_before}
+{:a, :eight888a, :other, :other, true}
+{:a, :eight888a, [true, false, false, true, false, true]}
+{:a, :eight888a, :before, {:le, :a}, :receive_before}
+{:a, :eight888b, :other, :other, true}
+{:a, :eight888b, [true, false, false, true, false, true]}
+{:a, :eight888b, :before, {:le, :a}, :receive_before}
+{:a, :zebra, :other, :other, true}
+{:a, :zebra, [true, false, false, true, false, true]}
+{:a, :zebra, :before, {:le, :a}, :receive_before}
+{:a, :é, :other, :other, true}
+{:a, :é, [true, false, false, true, false, true]}
+{:a, :é, :before, {:le, :a}, :receive_before}
+{:a, nil, :other, :other, true}
+{:a, nil, [true, false, false, true, false, true]}
+{:a, nil, :before, {:le, :a}, :receive_before}
+{:a, true, :other, :other, true}
+{:a, true, [true, false, false, true, false, true]}
+{:a, true, :before, {:le, :a}, :receive_before}
+{:ab, :a, :other, :other, true}
+{:ab, :a, [false, true, false, true, false, true]}
+{:ab, :a, :after, {:ge, :a}, :receive_after}
+{:ab, :ab, :same, :same, true}
+{:ab, :ab, [true, true, true, false, true, false]}
+{:ab, :ab, :same, {:le, :ab}, :receive_same}
+{:ab, :"a\0", :other, :other, true}
+{:ab, :"a\0", [false, true, false, true, false, true]}
+{:ab, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{:ab, :eight888, :other, :other, true}
+{:ab, :eight888, [true, false, false, true, false, true]}
+{:ab, :eight888, :before, {:le, :ab}, :receive_before}
+{:ab, :eight888a, :other, :other, true}
+{:ab, :eight888a, [true, false, false, true, false, true]}
+{:ab, :eight888a, :before, {:le, :ab}, :receive_before}
+{:ab, :eight888b, :other, :other, true}
+{:ab, :eight888b, [true, false, false, true, false, true]}
+{:ab, :eight888b, :before, {:le, :ab}, :receive_before}
+{:ab, :zebra, :other, :other, true}
+{:ab, :zebra, [true, false, false, true, false, true]}
+{:ab, :zebra, :before, {:le, :ab}, :receive_before}
+{:ab, :é, :other, :other, true}
+{:ab, :é, [true, false, false, true, false, true]}
+{:ab, :é, :before, {:le, :ab}, :receive_before}
+{:ab, nil, :other, :other, true}
+{:ab, nil, [true, false, false, true, false, true]}
+{:ab, nil, :before, {:le, :ab}, :receive_before}
+{:ab, true, :other, :other, true}
+{:ab, true, [true, false, false, true, false, true]}
+{:ab, true, :before, {:le, :ab}, :receive_before}
+{:"a\0", :a, :other, :other, true}
+{:"a\0", :a, [false, true, false, true, false, true]}
+{:"a\0", :a, :after, {:ge, :a}, :receive_after}
+{:"a\0", :ab, :other, :other, true}
+{:"a\0", :ab, [true, false, false, true, false, true]}
+{:"a\0", :ab, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", :"a\0", :same, :same, true}
+{:"a\0", :"a\0", [true, true, true, false, true, false]}
+{:"a\0", :"a\0", :same, {:le, :"a\0"}, :receive_same}
+{:"a\0", :eight888, :other, :other, true}
+{:"a\0", :eight888, [true, false, false, true, false, true]}
+{:"a\0", :eight888, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", :eight888a, :other, :other, true}
+{:"a\0", :eight888a, [true, false, false, true, false, true]}
+{:"a\0", :eight888a, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", :eight888b, :other, :other, true}
+{:"a\0", :eight888b, [true, false, false, true, false, true]}
+{:"a\0", :eight888b, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", :zebra, :other, :other, true}
+{:"a\0", :zebra, [true, false, false, true, false, true]}
+{:"a\0", :zebra, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", :é, :other, :other, true}
+{:"a\0", :é, [true, false, false, true, false, true]}
+{:"a\0", :é, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", nil, :other, :other, true}
+{:"a\0", nil, [true, false, false, true, false, true]}
+{:"a\0", nil, :before, {:le, :"a\0"}, :receive_before}
+{:"a\0", true, :other, :other, true}
+{:"a\0", true, [true, false, false, true, false, true]}
+{:"a\0", true, :before, {:le, :"a\0"}, :receive_before}
+{:eight888, :a, :other, :other, true}
+{:eight888, :a, [false, true, false, true, false, true]}
+{:eight888, :a, :after, {:ge, :a}, :receive_after}
+{:eight888, :ab, :other, :other, true}
+{:eight888, :ab, [false, true, false, true, false, true]}
+{:eight888, :ab, :after, {:ge, :ab}, :receive_after}
+{:eight888, :"a\0", :other, :other, true}
+{:eight888, :"a\0", [false, true, false, true, false, true]}
+{:eight888, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{:eight888, :eight888, :same, :same, true}
+{:eight888, :eight888, [true, true, true, false, true, false]}
+{:eight888, :eight888, :same, {:le, :eight888}, :receive_same}
+{:eight888, :eight888a, :other, :other, true}
+{:eight888, :eight888a, [true, false, false, true, false, true]}
+{:eight888, :eight888a, :before, {:le, :eight888}, :receive_before}
+{:eight888, :eight888b, :other, :other, true}
+{:eight888, :eight888b, [true, false, false, true, false, true]}
+{:eight888, :eight888b, :before, {:le, :eight888}, :receive_before}
+{:eight888, :zebra, :other, :other, true}
+{:eight888, :zebra, [true, false, false, true, false, true]}
+{:eight888, :zebra, :before, {:le, :eight888}, :receive_before}
+{:eight888, :é, :other, :other, true}
+{:eight888, :é, [true, false, false, true, false, true]}
+{:eight888, :é, :before, {:le, :eight888}, :receive_before}
+{:eight888, nil, :other, :other, true}
+{:eight888, nil, [true, false, false, true, false, true]}
+{:eight888, nil, :before, {:le, :eight888}, :receive_before}
+{:eight888, true, :other, :other, true}
+{:eight888, true, [true, false, false, true, false, true]}
+{:eight888, true, :before, {:le, :eight888}, :receive_before}
+{:eight888a, :a, :other, :other, true}
+{:eight888a, :a, [false, true, false, true, false, true]}
+{:eight888a, :a, :after, {:ge, :a}, :receive_after}
+{:eight888a, :ab, :other, :other, true}
+{:eight888a, :ab, [false, true, false, true, false, true]}
+{:eight888a, :ab, :after, {:ge, :ab}, :receive_after}
+{:eight888a, :"a\0", :other, :other, true}
+{:eight888a, :"a\0", [false, true, false, true, false, true]}
+{:eight888a, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{:eight888a, :eight888, :other, :other, true}
+{:eight888a, :eight888, [false, true, false, true, false, true]}
+{:eight888a, :eight888, :after, {:ge, :eight888}, :receive_after}
+{:eight888a, :eight888a, :same, :same, true}
+{:eight888a, :eight888a, [true, true, true, false, true, false]}
+{:eight888a, :eight888a, :same, {:le, :eight888a}, :receive_same}
+{:eight888a, :eight888b, :other, :other, true}
+{:eight888a, :eight888b, [true, false, false, true, false, true]}
+{:eight888a, :eight888b, :before, {:le, :eight888a}, :receive_before}
+{:eight888a, :zebra, :other, :other, true}
+{:eight888a, :zebra, [true, false, false, true, false, true]}
+{:eight888a, :zebra, :before, {:le, :eight888a}, :receive_before}
+{:eight888a, :é, :other, :other, true}
+{:eight888a, :é, [true, false, false, true, false, true]}
+{:eight888a, :é, :before, {:le, :eight888a}, :receive_before}
+{:eight888a, nil, :other, :other, true}
+{:eight888a, nil, [true, false, false, true, false, true]}
+{:eight888a, nil, :before, {:le, :eight888a}, :receive_before}
+{:eight888a, true, :other, :other, true}
+{:eight888a, true, [true, false, false, true, false, true]}
+{:eight888a, true, :before, {:le, :eight888a}, :receive_before}
+{:eight888b, :a, :other, :other, true}
+{:eight888b, :a, [false, true, false, true, false, true]}
+{:eight888b, :a, :after, {:ge, :a}, :receive_after}
+{:eight888b, :ab, :other, :other, true}
+{:eight888b, :ab, [false, true, false, true, false, true]}
+{:eight888b, :ab, :after, {:ge, :ab}, :receive_after}
+{:eight888b, :"a\0", :other, :other, true}
+{:eight888b, :"a\0", [false, true, false, true, false, true]}
+{:eight888b, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{:eight888b, :eight888, :other, :other, true}
+{:eight888b, :eight888, [false, true, false, true, false, true]}
+{:eight888b, :eight888, :after, {:ge, :eight888}, :receive_after}
+{:eight888b, :eight888a, :other, :other, true}
+{:eight888b, :eight888a, [false, true, false, true, false, true]}
+{:eight888b, :eight888a, :after, {:ge, :eight888a}, :receive_after}
+{:eight888b, :eight888b, :same, :same, true}
+{:eight888b, :eight888b, [true, true, true, false, true, false]}
+{:eight888b, :eight888b, :same, {:le, :eight888b}, :receive_same}
+{:eight888b, :zebra, :other, :other, true}
+{:eight888b, :zebra, [true, false, false, true, false, true]}
+{:eight888b, :zebra, :before, {:le, :eight888b}, :receive_before}
+{:eight888b, :é, :other, :other, true}
+{:eight888b, :é, [true, false, false, true, false, true]}
+{:eight888b, :é, :before, {:le, :eight888b}, :receive_before}
+{:eight888b, nil, :other, :other, true}
+{:eight888b, nil, [true, false, false, true, false, true]}
+{:eight888b, nil, :before, {:le, :eight888b}, :receive_before}
+{:eight888b, true, :other, :other, true}
+{:eight888b, true, [true, false, false, true, false, true]}
+{:eight888b, true, :before, {:le, :eight888b}, :receive_before}
+{:zebra, :a, :other, :other, true}
+{:zebra, :a, [false, true, false, true, false, true]}
+{:zebra, :a, :after, {:ge, :a}, :receive_after}
+{:zebra, :ab, :other, :other, true}
+{:zebra, :ab, [false, true, false, true, false, true]}
+{:zebra, :ab, :after, {:ge, :ab}, :receive_after}
+{:zebra, :"a\0", :other, :other, true}
+{:zebra, :"a\0", [false, true, false, true, false, true]}
+{:zebra, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{:zebra, :eight888, :other, :other, true}
+{:zebra, :eight888, [false, true, false, true, false, true]}
+{:zebra, :eight888, :after, {:ge, :eight888}, :receive_after}
+{:zebra, :eight888a, :other, :other, true}
+{:zebra, :eight888a, [false, true, false, true, false, true]}
+{:zebra, :eight888a, :after, {:ge, :eight888a}, :receive_after}
+{:zebra, :eight888b, :other, :other, true}
+{:zebra, :eight888b, [false, true, false, true, false, true]}
+{:zebra, :eight888b, :after, {:ge, :eight888b}, :receive_after}
+{:zebra, :zebra, :same, :same, true}
+{:zebra, :zebra, [true, true, true, false, true, false]}
+{:zebra, :zebra, :same, {:le, :zebra}, :receive_same}
+{:zebra, :é, :other, :other, true}
+{:zebra, :é, [true, false, false, true, false, true]}
+{:zebra, :é, :before, {:le, :zebra}, :receive_before}
+{:zebra, nil, :other, :other, true}
+{:zebra, nil, [false, true, false, true, false, true]}
+{:zebra, nil, :after, {:ge, nil}, :receive_after}
+{:zebra, true, :other, :other, true}
+{:zebra, true, [false, true, false, true, false, true]}
+{:zebra, true, :after, {:ge, true}, :receive_after}
+{:é, :a, :other, :other, true}
+{:é, :a, [false, true, false, true, false, true]}
+{:é, :a, :after, {:ge, :a}, :receive_after}
+{:é, :ab, :other, :other, true}
+{:é, :ab, [false, true, false, true, false, true]}
+{:é, :ab, :after, {:ge, :ab}, :receive_after}
+{:é, :"a\0", :other, :other, true}
+{:é, :"a\0", [false, true, false, true, false, true]}
+{:é, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{:é, :eight888, :other, :other, true}
+{:é, :eight888, [false, true, false, true, false, true]}
+{:é, :eight888, :after, {:ge, :eight888}, :receive_after}
+{:é, :eight888a, :other, :other, true}
+{:é, :eight888a, [false, true, false, true, false, true]}
+{:é, :eight888a, :after, {:ge, :eight888a}, :receive_after}
+{:é, :eight888b, :other, :other, true}
+{:é, :eight888b, [false, true, false, true, false, true]}
+{:é, :eight888b, :after, {:ge, :eight888b}, :receive_after}
+{:é, :zebra, :other, :other, true}
+{:é, :zebra, [false, true, false, true, false, true]}
+{:é, :zebra, :after, {:ge, :zebra}, :receive_after}
+{:é, :é, :same, :same, true}
+{:é, :é, [true, true, true, false, true, false]}
+{:é, :é, :same, {:le, :é}, :receive_same}
+{:é, nil, :other, :other, true}
+{:é, nil, [false, true, false, true, false, true]}
+{:é, nil, :after, {:ge, nil}, :receive_after}
+{:é, true, :other, :other, true}
+{:é, true, [false, true, false, true, false, true]}
+{:é, true, :after, {:ge, true}, :receive_after}
+{nil, :a, :other, :other, true}
+{nil, :a, [false, true, false, true, false, true]}
+{nil, :a, :after, {:ge, :a}, :receive_after}
+{nil, :ab, :other, :other, true}
+{nil, :ab, [false, true, false, true, false, true]}
+{nil, :ab, :after, {:ge, :ab}, :receive_after}
+{nil, :"a\0", :other, :other, true}
+{nil, :"a\0", [false, true, false, true, false, true]}
+{nil, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{nil, :eight888, :other, :other, true}
+{nil, :eight888, [false, true, false, true, false, true]}
+{nil, :eight888, :after, {:ge, :eight888}, :receive_after}
+{nil, :eight888a, :other, :other, true}
+{nil, :eight888a, [false, true, false, true, false, true]}
+{nil, :eight888a, :after, {:ge, :eight888a}, :receive_after}
+{nil, :eight888b, :other, :other, true}
+{nil, :eight888b, [false, true, false, true, false, true]}
+{nil, :eight888b, :after, {:ge, :eight888b}, :receive_after}
+{nil, :zebra, :other, :other, true}
+{nil, :zebra, [true, false, false, true, false, true]}
+{nil, :zebra, :before, {:le, nil}, :receive_before}
+{nil, :é, :other, :other, true}
+{nil, :é, [true, false, false, true, false, true]}
+{nil, :é, :before, {:le, nil}, :receive_before}
+{nil, nil, :same, :same, true}
+{nil, nil, [true, true, true, false, true, false]}
+{nil, nil, :same, {:le, nil}, :receive_same}
+{nil, true, :other, :other, true}
+{nil, true, [true, false, false, true, false, true]}
+{nil, true, :before, {:le, nil}, :receive_before}
+{true, :a, :other, :other, true}
+{true, :a, [false, true, false, true, false, true]}
+{true, :a, :after, {:ge, :a}, :receive_after}
+{true, :ab, :other, :other, true}
+{true, :ab, [false, true, false, true, false, true]}
+{true, :ab, :after, {:ge, :ab}, :receive_after}
+{true, :"a\0", :other, :other, true}
+{true, :"a\0", [false, true, false, true, false, true]}
+{true, :"a\0", :after, {:ge, :"a\0"}, :receive_after}
+{true, :eight888, :other, :other, true}
+{true, :eight888, [false, true, false, true, false, true]}
+{true, :eight888, :after, {:ge, :eight888}, :receive_after}
+{true, :eight888a, :other, :other, true}
+{true, :eight888a, [false, true, false, true, false, true]}
+{true, :eight888a, :after, {:ge, :eight888a}, :receive_after}
+{true, :eight888b, :other, :other, true}
+{true, :eight888b, [false, true, false, true, false, true]}
+{true, :eight888b, :after, {:ge, :eight888b}, :receive_after}
+{true, :zebra, :other, :other, true}
+{true, :zebra, [true, false, false, true, false, true]}
+{true, :zebra, :before, {:le, true}, :receive_before}
+{true, :é, :other, :other, true}
+{true, :é, [true, false, false, true, false, true]}
+{true, :é, :before, {:le, true}, :receive_before}
+{true, nil, :other, :other, true}
+{true, nil, [false, true, false, true, false, true]}
+{true, nil, :after, {:ge, nil}, :receive_after}
+{true, true, :same, :same, true}
+{true, true, [true, true, true, false, true, false]}
+{true, true, :same, {:le, true}, :receive_same}
+[:a, :"a\0", :ab, :eight888, :eight888a, :eight888b, nil, true, :zebra, :é]
+{:a, :é}
+[:a, :"a\0", :ab, :eight888, :eight888a, :eight888b, nil, true, :zebra, :é]
+{:a, 9}
+{:ab, 7}
+{:"a\0", 8}
+{:eight888, 6}
+{:eight888a, 5}
+{:eight888b, 4}
+{:zebra, 1}
+{:é, 0}
+{nil, 3}
+{true, 2}
+[:a, :"a\0", :ab, :eight888, :eight888a, :eight888b, nil, true, :zebra, :é]
+[:é, :zebra, true, nil, :eight888b, :eight888a, :eight888, :ab, :"a\0", :a]
+[true, false, false, false, false, false, false, false, false, false]
+[false, true, true, true, true, true, true, true, true, true]
+[true, true, true, true, true, true, true, true, false, true]
+[false, false, false, false, false, false, false, false, false, true]
+[true, true, true, true, true, false, false, false, false, false]
+[false, false, false, false, false, false, false, false, false, false]
