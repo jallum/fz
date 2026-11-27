@@ -98,7 +98,7 @@ defmodule :maps do
   """
   @spec iterator(any) :: any
   def iterator(map) when is_map(map), do: [0 | map]
-  def iterator(map), do: raise(%BadMapError{term: map})
+  def iterator(map), do: __raise__(%BadMapError{term: map}, {:badmap, map})
 
   @doc """
   Returns the next entry of an iterator and the iterator after it, as
@@ -152,7 +152,7 @@ defmodule :maps do
     try do
       fold_1(fun, init, try_next(iterator, error_tag), error_tag)
     catch
-      :error, ^error_tag -> raise(%BadMapError{term: iterator})
+      :error, ^error_tag -> __raise__(%BadMapError{term: iterator}, {:badmap, iterator})
     end
   end
 
