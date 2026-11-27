@@ -50,12 +50,16 @@ jobs:
       - name: Test workspace
         if: github.event_name == 'pull_request'
         # No `--all-features`: the `poison_dead_frames` feature swaps the
-        # continuation pop for poison, which changes the heap pins of every
-        # other test. Only its own test runs with it, in the next step.
+        # continuation pop for poison, and `x1_ignore_pin` drops the pin that
+        # keeps a frame a ref capture names; each changes the heap pins of every
+        # other test. Only its own test runs with it, in the steps that follow.
         run: cargo test --workspace
       - name: Test dead continuation frames under poison
         if: github.event_name == 'pull_request'
         run: cargo test --features poison_dead_frames --test poison_dead_frames
+      - name: Test continuation frames released without the ref-capture pin
+        if: github.event_name == 'pull_request'
+        run: cargo test --features x1_ignore_pin --test x1_ignore_pin
       - name: Oracle check when the pinned Elixir or OTP changes
         if: github.event_name == 'pull_request'
         run: |

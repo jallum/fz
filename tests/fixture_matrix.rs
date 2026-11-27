@@ -4589,10 +4589,6 @@ fn a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_p
             (2, "park", 192),
             (1, "park", 144),
             (1, "yield", 288_128),
-            (1, "yield", 192_160),
-            (1, "yield", 48),
-            (1, "yield", 48),
-            (1, "yield", 48),
         ],
         "run: the parent's collected yields and each park that follows a ball taken"
     );

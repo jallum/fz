@@ -72,14 +72,20 @@ pub(crate) fn emit_list_retention_or_alloc<M: Module>(
             &[process, source_ref, head_ref, tail_word, tail_kind, rewrite],
         ));
     }
-    let (head_raw, head_kind) = match value_raw_kind_parts(body, head_value) {
-        Some((raw, kind)) => (raw, body.b.ins().iconst(types::I64, i64::from(kind.tag()))),
-        None if !tail.is_list() => {
-            let head_ref = body.value_as_any_ref(head_value);
-            let [raw, kind] = super::list_cell::stored_parts_of_ref(body.b, head_ref);
-            (raw, kind)
+    let [head_raw, head_kind] = if let CodegenValue::Stored { .. } = head_value {
+        if tail.is_list() {
+            return None;
         }
-        None => return None,
+        stored_parts(body, head_value)
+    } else {
+        match value_raw_kind_parts(body, head_value) {
+            Some((raw, kind)) => [raw, body.b.ins().iconst(types::I64, i64::from(kind.tag()))],
+            None if !tail.is_list() => {
+                let head_ref = body.value_as_any_ref(head_value);
+                super::list_cell::stored_parts_of_ref(body.b, head_ref)
+            }
+            None => return None,
+        }
     };
     let args = [process, source_ref, head_raw, head_kind, tail_word, tail_kind, rewrite];
     if tail.is_list() {
@@ -132,6 +138,9 @@ pub(crate) fn value_raw_kind_parts<M: Module>(
 /// value whose kind codegen knows gives its word and a constant kind; any
 /// other is read through its reference.
 pub(crate) fn stored_parts<M: Module>(body: &mut CodegenFn<'_, '_, M>, value: CodegenValue) -> [ir::Value; 2] {
+    if let CodegenValue::Stored { word, kind } = value {
+        return [word, kind];
+    }
     if let Some((word, kind)) = value_raw_kind_parts(body, value) {
         return [word, body.b.ins().iconst(types::I64, i64::from(kind.tag()))];
     }

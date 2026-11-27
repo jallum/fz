@@ -618,3 +618,48 @@ fn a_position_is_found_by_key_and_positions_keep_collection_order() {
         vec![position(0), position(1), position(2)]
     );
 }
+
+/// A value that can be a number alongside another kind travels as a stored
+/// word and its kind; a type that no number inhabits travels as one boxed
+/// word; a pure integer, float or atom keeps its raw lane.
+#[test]
+fn a_type_that_admits_a_number_beside_another_kind_is_stored() {
+    let mut world = super::World::new();
+    let (int, float, atom, nil, any) = {
+        let types = world.types_mut();
+        (types.int(), types.float(), types.atom(), types.nil(), types.any())
+    };
+    let (int_or_atom, int_or_nil, float_or_int) = {
+        let types = world.types_mut();
+        (types.union(int, atom), types.union(int, nil), types.union(float, int))
+    };
+    for (name, ty) in [
+        ("int|atom", int_or_atom),
+        ("int|nil", int_or_nil),
+        ("float|int", float_or_int),
+        ("any", any),
+    ] {
+        assert_eq!(AbiValueRepr::for_ty(&mut world, ty), AbiValueRepr::Stored, "{name}");
+    }
+    let (tuple, list) = {
+        let types = world.types_mut();
+        let tuple = types.tuple(&[int]);
+        (tuple, types.list(int))
+    };
+    for (name, ty) in [("a tuple of an int", tuple), ("a list of ints", list)] {
+        assert_eq!(AbiValueRepr::for_ty(&mut world, ty), AbiValueRepr::ValueRef, "{name}");
+    }
+    let tuple_or_list = world.types_mut().union(tuple, list);
+    assert_eq!(
+        AbiValueRepr::for_ty(&mut world, tuple_or_list),
+        AbiValueRepr::ValueRef,
+        "a union of two boxed types admits no number"
+    );
+    for (name, ty, repr) in [
+        ("int", int, AbiValueRepr::RawInt),
+        ("float", float, AbiValueRepr::RawF64),
+        ("atom", atom, AbiValueRepr::RawAtom),
+    ] {
+        assert_eq!(AbiValueRepr::for_ty(&mut world, ty), repr, "{name}");
+    }
+}

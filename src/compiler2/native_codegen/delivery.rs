@@ -18,10 +18,11 @@ pub(crate) fn arg_reprs_from_compiler2(reprs: &[AbiValueRepr]) -> Vec<ArgRepr> {
     reprs.iter().copied().map(arg_repr_from_compiler2).collect()
 }
 
-/// The repr of the one word a root body hands the halt continuation.
+/// The repr of the one value a root body hands the halt continuation.
 ///
-/// The halt continuation is declared `(value, self)`, so a root can only
-/// deliver a single word. The transport layer makes the root's return a
+/// The halt continuation is declared per repr (`(value, self)`, or
+/// `(word, kind, self)` for a stored value), so a root delivers a single
+/// lane. The transport layer makes the root's return a
 /// one-word boundary, which leaves nothing for this to guess: a body whose
 /// return is any other number of lanes was not planned as a root. A root that
 /// never returns delivers nothing, so the kind it names is never reached.

@@ -349,9 +349,11 @@ object itself. Asking `emit_inline` for one panics; a call site asks
 `emit_cell(body, symbol, args)`, which registers the allocation site in the
 body's `SiteScope` (`CodegenFn::scope`, given when the body is made: the
 function's display name for a compiled function, the shim's name for a shim).
-The four list-cell
-rows, `fz_list_cons_int`, `fz_list_cons_float`, `fz_list_cons_atom` and
-`fz_list_cons_any`, place the 16-byte cell through `emit_place` (the one inline
+The two list-cell
+rows, `fz_list_cons_stored` (a head held as its stored word and kind; an int,
+float or atom the call site holds unboxed is one whose kind is a constant, so
+it needs no sharing and no read of the kind) and `fz_list_cons_any` (a head
+held as one ref word), place the 16-byte cell through `emit_place` (the one inline
 bump, see [scheduler zero-arg closures](scheduler-zero-arg-closures.md)) and
 write its two words in `native_codegen/list_cell.rs`: the head's payload, and
 the link word, the tail's address with the head's kind in the bits a ref word
@@ -450,7 +452,7 @@ captures, each halt kind and the internal denotation; the test compares the
 words the row writes (the header, and for a closure the code address) with the
 same tip, statistics and object count.
 
-The bodies codegen emits itself — the four halt-cont bodies, `fz_entry_thunk`,
+The bodies codegen emits itself — the five halt-cont bodies, `fz_entry_thunk`,
 `fz_main_trampoline`, `fz_drain_dtor_entry` — are not Rust functions, so their
 signatures are written out where they are declared, `Local`, as `LocalBodies` in
 `native_codegen/driver.rs`. A body fz code enters is `Tail`; a body the host

@@ -1572,12 +1572,18 @@ pub enum AbiValueRepr {
     RawInt,
     RawF64,
     RawAtom,
+    /// The word a container stores for the value, beside its kind: two
+    /// words. A value whose type admits a number alongside another kind
+    /// travels this way, so no number is boxed to cross a call.
+    Stored,
 }
 
 impl AbiValueRepr {
-    /// The physical form a value of this type travels in. Only a scalar has a
-    /// raw form; everything else -- a callable, a tuple, a list, a map -- is
-    /// one boxed word. This is the single rule every lane repr is read from.
+    /// The physical form a value of this type travels in. A type that is one
+    /// scalar kind has a raw form; a type that admits a number beside another
+    /// kind is its stored word and kind; everything else -- a callable, a
+    /// tuple, a list, a map -- is one boxed word. This is the single rule
+    /// every lane repr is read from.
     ///
     /// The empty type is a subtype of every scalar, so subtyping alone would
     /// hand it a raw lane. No value of it ever exists, so it names no scalar
@@ -1596,9 +1602,21 @@ impl AbiValueRepr {
         let atom = world.types_mut().atom();
         if world.types().is_subtype(&ty, &atom) {
             Self::RawAtom
+        } else if Self::admits_number(world, ty) {
+            Self::Stored
         } else {
             Self::ValueRef
         }
+    }
+
+    /// Whether some value of `ty` is an integer or a float.
+    fn admits_number(world: &mut super::world::World, ty: Ty) -> bool {
+        let (int, float) = {
+            let types = world.types_mut();
+            (types.int(), types.float())
+        };
+        let types = world.types();
+        !types.is_value_disjoint(&ty, &int) || !types.is_value_disjoint(&ty, &float)
     }
 }
 

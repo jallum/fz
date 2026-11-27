@@ -9,7 +9,9 @@ use cranelift_frontend::FunctionBuilder;
 /// How a fz arg/return rides the Cranelift ABI for a native fn.
 /// `ValueRef` is one `AnyValueRef` word: the kind in its high bits, the
 /// address or payload below. `RawInt` is an unshifted int payload as i64;
-/// `RawF64` is a raw f64; `RawAtom` is an atom-id payload as i64.
+/// `RawF64` is a raw f64; `RawAtom` is an atom-id payload as i64. `Stored` is
+/// two i64 words: the word a container stores for the value and the value's
+/// kind, read when the value is used.
 ///
 /// Per-spec param/return/block reprs are copied from compiler2's native
 /// handoff. Codegen chooses Cranelift ABI types from those facts; it does not
@@ -22,6 +24,7 @@ pub(crate) enum ArgRepr {
     RawInt,
     RawF64,
     RawAtom,
+    Stored,
     /// Raw i1 from a comparison or TypeTest whose var is in `if_only_conds`
     /// — the tagged form is never materialised unless tagged_get is called,
     /// which emits bool_to_fz lazily at the use site.
@@ -40,16 +43,19 @@ impl ArgRepr {
     pub(crate) fn abi_arity(&self) -> usize {
         match self {
             ArgRepr::ValueRef | ArgRepr::RawInt | ArgRepr::RawF64 | ArgRepr::RawAtom | ArgRepr::Condition => 1,
+            ArgRepr::Stored => 2,
         }
     }
 
-    /// Halt continuation kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom.
+    /// Halt continuation kind. 0=ValueRef, 1=RawInt, 2=RawF64, 3=RawAtom,
+    /// 4=Stored.
     pub(crate) fn halt_kind(&self) -> u32 {
         match self {
             ArgRepr::ValueRef => 0,
             ArgRepr::RawInt => 1,
             ArgRepr::RawF64 => 2,
             ArgRepr::RawAtom => 3,
+            ArgRepr::Stored => 4,
             ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
         }
     }
@@ -116,6 +122,7 @@ pub(crate) fn arg_repr_from_compiler2(repr: crate::compiler2::AbiValueRepr) -> A
         crate::compiler2::AbiValueRepr::RawInt => ArgRepr::RawInt,
         crate::compiler2::AbiValueRepr::RawF64 => ArgRepr::RawF64,
         crate::compiler2::AbiValueRepr::RawAtom => ArgRepr::RawAtom,
+        crate::compiler2::AbiValueRepr::Stored => ArgRepr::Stored,
     }
 }
 
@@ -140,14 +147,9 @@ impl MidFlightArgShape {
         }
     }
 
-    pub(crate) fn capture_from_args(
-        &self,
-        _b: &mut FunctionBuilder<'_>,
-        args: &[ir::Value],
-        value_index: usize,
-    ) -> CodegenValue {
+    pub(crate) fn capture_from_args(&self, args: &[ir::Value], value_index: usize) -> CodegenValue {
         match self {
-            MidFlightArgShape::Value(repr) => CodegenValue::from_abi_value(args[value_index], *repr),
+            MidFlightArgShape::Value(repr) => CodegenValue::from_abi_values(&args[value_index..], *repr),
             MidFlightArgShape::HeapRef => CodegenValue::AnyRef(args[value_index]),
         }
     }
@@ -169,6 +171,10 @@ impl MidFlightArgShape {
                 out.push(body.value_raw_atom(value));
             }
             MidFlightArgShape::Value(ArgRepr::ValueRef) => out.push(value.value()),
+            MidFlightArgShape::Value(ArgRepr::Stored) => {
+                let [word, kind] = body.value_stored_words(value);
+                out.extend([word, kind]);
+            }
             MidFlightArgShape::Value(ArgRepr::Condition) => {
                 unreachable!("condition mid-flight arg")
             }
@@ -178,31 +184,23 @@ impl MidFlightArgShape {
 }
 
 pub(crate) fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
-    sig.params.push(AbiParam::new(repr.cl_type()));
+    for _ in 0..repr.abi_arity() {
+        sig.params.push(AbiParam::new(repr.cl_type()));
+    }
 }
 
 pub(crate) fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
-    b.append_block_param(block, repr.cl_type());
-}
-
-pub(crate) fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> ir::Value {
-    let value = params[*cursor];
-    *cursor += repr.abi_arity();
-    value
-}
-
-pub(crate) fn take_param_binding(
-    b: &mut FunctionBuilder<'_>,
-    params: &[ir::Value],
-    cursor: &mut usize,
-    repr: ArgRepr,
-) -> CodegenValue {
-    if repr == ArgRepr::ValueRef {
-        let _ = b;
-        CodegenValue::any_ref(take_repr_param(params, cursor, repr))
-    } else {
-        CodegenValue::from_abi_value(take_repr_param(params, cursor, repr), repr)
+    for _ in 0..repr.abi_arity() {
+        b.append_block_param(block, repr.cl_type());
     }
+}
+
+/// The binding the next parameters of `params` spell in `repr`, advancing the
+/// cursor past every word of it.
+pub(crate) fn take_param_binding(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> CodegenValue {
+    let binding = CodegenValue::from_abi_values(&params[*cursor..], repr);
+    *cursor += repr.abi_arity();
+    binding
 }
 
 /// Per-fn Cranelift Signature: the typed args plus the trailing continuation

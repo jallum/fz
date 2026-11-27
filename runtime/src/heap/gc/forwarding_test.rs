@@ -1,10 +1,10 @@
 use super::*;
 use crate::any_value::{
-    AnyValue, AnyValueRef, ClosureDenotationId, EMPTY_LIST_BITS, MapDestinationKind, StructName, bitstring_bit_len,
-    bitstring_bytes_ptr, bitstring_header_word, closure_capture_set, closure_capture_value, closure_denotation,
-    closure_header_word, heap_object_word, list_addr_from_tagged, map_collision_header_word, map_count,
-    map_destination_header_word, map_header_word, map_trie_header_word, struct_addr_from_tagged, struct_header_word,
-    struct_schema_id,
+    AnyValue, AnyValueRef, CLOSURE_FLAGS_CAPTURED_MASK, ClosureDenotationId, EMPTY_LIST_BITS, MapDestinationKind,
+    StructName, bitstring_bit_len, bitstring_bytes_ptr, bitstring_header_word, closure_capture_set,
+    closure_capture_value, closure_denotation, closure_header_word, heap_object_word, list_addr_from_tagged,
+    map_collision_header_word, map_count, map_destination_header_word, map_header_word, map_trie_header_word,
+    struct_addr_from_tagged, struct_header_word, struct_schema_id,
 };
 use crate::bits::{SharedBinHandle, alloc_buffer_view};
 use crate::heap::SHARED_BIN_THRESHOLD_BYTES;
@@ -144,7 +144,7 @@ fn live_headers_of_every_kind_have_a_clear_low_nibble() {
     for (denotation, captured, halt, arity) in [
         (0, 0, 0, 0),
         (1, 1, 1, 1),
-        (u32::MAX >> 1, 0x3FFF, 3, 4095),
+        (u32::MAX >> 1, CLOSURE_FLAGS_CAPTURED_MASK, 7, 4095),
         (73, 8, 0, 8),
     ] {
         let word = closure_header_word(ClosureDenotationId::user(denotation), captured, halt, arity);

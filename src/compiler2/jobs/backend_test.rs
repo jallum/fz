@@ -1,10 +1,9 @@
 use super::*;
-use crate::compiler2::AbiValueRepr;
-use crate::compiler2::FunctionId;
 use crate::compiler2::artifact::BackendValueLayout;
 use crate::compiler2::identity::ExecutableNeed;
 use crate::compiler2::pull::TransportCarrier;
 use crate::compiler2::transport::{ActivationSymbol, ExecutableSymbol, LaneId, ShapeDescr};
+use crate::compiler2::{AbiValueRepr, FunctionId};
 use std::collections::BTreeMap;
 
 #[test]

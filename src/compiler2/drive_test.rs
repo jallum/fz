@@ -9420,7 +9420,7 @@ fn compiler2_native_is_binary_of_an_unknown_value_tests_one_kind_mask() {
          \x20 def tag(x) when is_binary(x), do: 1\n\
          \x20 def tag(_), do: 0\n\
          end\n\
-         def main(), do: P.tag(P.pick([\"ab\", 7]))\n";
+         def main(), do: P.tag(P.pick([\"ab\", :x]))\n";
     let clif = lowered_clif_of(source, "tag");
     let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
     let kind_reads = clif
@@ -9432,6 +9432,40 @@ fn compiler2_native_is_binary_of_an_unknown_value_tests_one_kind_mask() {
         .fold(0, |mask, kind| mask | 1 << kind.tag());
     let mask_word = format!("iconst.i64 {mask}");
     assert_eq!(kind_reads, 1, "the kind is read once:\n{clif}");
+    assert!(
+        clif.lines()
+            .filter(|line| line.trim_start().starts_with("brif "))
+            .all(|line| !line.contains('(')),
+        "the kind mask and the whole-bytes test branch to admit or reject; no flag is joined and re-tested:\n{clif}"
+    );
+    assert!(
+        clif.contains(&mask_word),
+        "the kinds a binary is held in are one mask, {mask_word}:\n{clif}"
+    );
+}
+
+/// A value that may be a number travels with its kind in a register, so
+/// `is_binary` of one reads no kind from a header: the kind it arrived with is
+/// tested against the same one mask, and both tests branch to admit or reject.
+#[test]
+fn compiler2_native_is_binary_of_a_stored_value_tests_the_kind_it_travels_with() {
+    let source = "defmodule P do\n\
+         \x20 def pick([h | _]), do: h\n\
+         \x20 def tag(x) when is_binary(x), do: 1\n\
+         \x20 def tag(_), do: 0\n\
+         end\n\
+         def main(), do: P.tag(P.pick([\"ab\", 7]))\n";
+    let clif = lowered_clif_of(source, "tag");
+    let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
+    let kind_reads = clif
+        .lines()
+        .filter(|line| line.contains(" = ushr ") && line.ends_with(&kind_shift))
+        .count();
+    let mask: u64 = fz_runtime::any_value::ValueKind::BINARY_REPRS
+        .iter()
+        .fold(0, |mask, kind| mask | 1 << kind.tag());
+    let mask_word = format!("iconst.i64 {mask}");
+    assert_eq!(kind_reads, 0, "the kind arrives in a register and is not read:\n{clif}");
     assert!(
         clif.lines()
             .filter(|line| line.trim_start().starts_with("brif "))
@@ -9468,7 +9502,7 @@ fn compiler2_native_map_update_reads_the_kind_only_of_an_unproven_base() {
          \x20 def pick([h | _]), do: h\n\
          \x20 def upd(v), do: %{v | a: 1}\n\
          end\n\
-         def main(), do: P.upd(P.pick([%{a: 0}, 7]))\n",
+         def main(), do: P.upd(P.pick([%{a: 0}, :x]))\n",
         "upd",
     );
     let lines: Vec<&str> = unproven.lines().collect();
@@ -10118,8 +10152,8 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
     let (_, dbg_exec) = backend_executable(&program, dbg_id);
     assert_eq!(
         dbg_exec.abi.param_reprs,
-        vec![AbiValueRepr::ValueRef],
-        "Kernel.dbg/1 should still require its input as one runtime lane even when callers ignore the returned value",
+        vec![AbiValueRepr::Stored],
+        "Kernel.dbg/1 should still require its input as one runtime lane (a stored word and its kind) even when callers ignore the returned value",
     );
     assert!(
         dbg_exec
@@ -10187,7 +10221,7 @@ fn compiler2_backend_program_keeps_dbg_resumed_heap_stats_as_runtime_lanes() {
         resume_entry
             .captures
             .iter()
-            .any(|capture| capture.value == field_base && capture.layout.reprs.as_ref() == [AbiValueRepr::ValueRef]),
+            .any(|capture| capture.value == field_base && capture.layout.reprs.as_ref() == [AbiValueRepr::Stored]),
         "the continuation after dbg(stats) must preserve captured stats as a whole runtime value before atom-key projection: {:?}",
         resume_entry
     );
@@ -12252,7 +12286,7 @@ fn a_static_closure_lives_in_read_only_memory() {
     );
 }
 
-/// The four halt continuations are program-wide read-only data too.
+/// The five halt continuations are program-wide read-only data too.
 #[test]
 fn the_halt_continuations_live_in_read_only_memory() {
     let tel = ConfiguredTelemetry::new();
@@ -12277,6 +12311,7 @@ fn the_halt_continuations_live_in_read_only_memory() {
         "fz_halt_cont_i64",
         "fz_halt_cont_f64",
         "fz_halt_cont_atom",
+        "fz_halt_cont_stored",
     ] {
         let address = compiled
             .data_address(name)

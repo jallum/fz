@@ -85,13 +85,13 @@ use fz_runtime::any_value::{
 use fz_runtime::heap::{Heap, HeapAllocKind};
 use fz_runtime::ir_runtime::{
     fz_bitstring_bit_extent, fz_bitstring_byte_extent, fz_box_float_for_any, fz_box_int_for_any, fz_box_opaque_for_any,
-    fz_bs_slice_ref, fz_list_cons_any, fz_list_cons_atom, fz_list_cons_float, fz_list_cons_int,
-    fz_list_reuse_or_cons_parts, fz_op_abs_f, fz_op_add_ii, fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii,
-    fz_op_bsr_ii, fz_op_bxor_ii, fz_op_eq_bb, fz_op_eq_ff, fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii,
-    fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii, fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb,
-    fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f, fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii,
-    fz_op_not_identical_ii, fz_op_sub_ii, fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of,
-    fz_unbox_atom, fz_unbox_int, fz_value_eq_raw_const,
+    fz_bs_slice_ref, fz_list_cons_any, fz_list_cons_stored, fz_list_reuse_or_cons_parts, fz_op_abs_f, fz_op_add_ii,
+    fz_op_band_ii, fz_op_bnot_i, fz_op_bor_ii, fz_op_bsl_ii, fz_op_bsr_ii, fz_op_bxor_ii, fz_op_eq_bb, fz_op_eq_ff,
+    fz_op_eq_ii, fz_op_gt_bb, fz_op_gt_ff, fz_op_gt_ii, fz_op_gte_bb, fz_op_gte_ff, fz_op_gte_ii, fz_op_identical_ii,
+    fz_op_lt_bb, fz_op_lt_ff, fz_op_lt_ii, fz_op_lte_bb, fz_op_lte_ff, fz_op_lte_ii, fz_op_mul_ii, fz_op_neg_f,
+    fz_op_neg_i, fz_op_neq_bb, fz_op_neq_ff, fz_op_neq_ii, fz_op_not_identical_ii, fz_op_sub_ii,
+    fz_struct_is_named_ref, fz_struct_schema_id_ref, fz_truthy_ref, fz_type_of, fz_unbox_atom, fz_unbox_int,
+    fz_value_eq_raw_const,
 };
 
 /// What a recipe computed, in one of the three shapes.
@@ -431,9 +431,14 @@ pub(crate) const RECIPES: &[Recipe] = &[
     recipe!(fz_op_neg_f(operand), |b| Some(Emitted::Value(b.ins().fneg(operand)))),
     recipe!(fz_op_abs_f(operand), |b| Some(Emitted::Value(b.ins().fabs(operand)))),
     // List cells.
-    list_cell!(fz_list_cons_int(process, head, tail, tail_kind), HeadLane::Int),
-    list_cell!(fz_list_cons_float(process, head, tail, tail_kind), HeadLane::Float),
-    list_cell!(fz_list_cons_atom(process, head, tail, tail_kind), HeadLane::Atom),
+    Recipe {
+        symbol: {
+            let _: unsafe extern "C" fn(_, _, _, _, _) -> _ = fz_list_cons_stored;
+            stringify!(fz_list_cons_stored)
+        },
+        arity: HeadLane::Stored.arity(),
+        emit: Emit::Cell(HeadLane::Stored),
+    },
     list_cell!(fz_list_cons_any(process, head, tail, tail_kind), HeadLane::Ref),
     // List cells rebuilt from the cell they replace.
     Recipe {

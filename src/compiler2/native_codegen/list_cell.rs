@@ -16,8 +16,10 @@
 //! The rows of the recipe table that name `fz_list_cons_*` are emitted here,
 //! one per way the head reaches the cell:
 //!
-//! - an int, a float or an atom is a scalar the call site already holds
-//!   unboxed. The cell's kind is a constant and nothing needs sharing.
+//! - a head held as its stored word and kind. An int, a float or an atom the
+//!   call site holds unboxed is such a head whose kind is a constant: the
+//!   cell's kind is then a constant and nothing needs sharing. Any other kind
+//!   is shared as its ref would be, and is read from the register that holds it.
 //! - a ref word is decoded as `AnyValue::from_ref` decodes it: a boxed scalar
 //!   (int, float, reference) is read from its box, any other word is its
 //!   payload. The kind is the word's own. A list or struct head is shared by
@@ -45,9 +47,9 @@ use fz_runtime::ir_runtime::fz_list_tail_ref;
 /// How a cell's head reaches it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HeadLane {
-    Int,
-    Float,
-    Atom,
+    /// The head's stored word and its kind.
+    Stored,
+    /// The head's ref word.
     Ref,
 }
 
@@ -58,6 +60,17 @@ pub(crate) enum ListShape {
     Proper,
     /// The list may end in a value that is not a list.
     MayEndInAValue,
+}
+
+impl HeadLane {
+    /// The arguments a row of this lane takes: the process, the head as the
+    /// lane carries it, and the tail's word and kind.
+    pub(super) const fn arity(self) -> usize {
+        match self {
+            Self::Stored => 5,
+            Self::Ref => 4,
+        }
+    }
 }
 
 /// A cell is one 16-byte object.
@@ -75,35 +88,51 @@ pub(super) enum HeadKind {
     Read(ir::Value),
 }
 
-/// Place a cell whose head is `args[1]` and whose tail is the list at the
-/// address `args[2]`, and answer its ref word. `args[3]` is the tail's kind,
-/// a constant `LIST`. `args[0]` is the process, which `emit_place` reads from
-/// the pinned register.
+/// Place a cell whose head `args` carry as `lane` says, over the list at the
+/// tail address, and answer its ref word. The tail's kind is a constant `LIST`.
+/// The process, which `emit_place` reads from the pinned register, comes first.
 pub(super) fn emit_list_cell<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, M>,
     lane: HeadLane,
     args: &[ir::Value],
 ) -> ir::Value {
-    let &[_process, head, tail_address, tail_kind] = args else {
-        panic!(
-            "a list cell row takes a process, a head and a tail word and kind, got {} arguments",
-            args.len()
-        );
-    };
-    assert_tail_is_list(body, tail_kind);
-    let head = match lane {
-        HeadLane::Int => Head::known(head, ValueKind::INT),
-        HeadLane::Float => {
-            let bits = body.b.ins().bitcast(types::I64, MemFlagsData::new(), head);
-            Head::known(bits, ValueKind::FLOAT)
+    assert_eq!(
+        args.len(),
+        lane.arity(),
+        "a {lane:?} list cell row takes {} arguments, got {}",
+        lane.arity(),
+        args.len()
+    );
+    let (head, tail_address) = match (lane, args) {
+        (HeadLane::Stored, &[_process, word, kind, tail_address, tail_kind]) => {
+            assert_tail_is_list(body, tail_kind);
+            (stored_head(body, word, kind), tail_address)
         }
-        HeadLane::Atom => Head::known(head, ValueKind::ATOM),
-        HeadLane::Ref => {
-            body.share(CodegenValue::AnyRef(head));
-            decode(body, head)
+        (HeadLane::Ref, &[_process, head_ref, tail_address, tail_kind]) => {
+            assert_tail_is_list(body, tail_kind);
+            body.share(CodegenValue::AnyRef(head_ref));
+            (decode(body, head_ref), tail_address)
         }
+        _ => unreachable!("the arity was checked"),
     };
     place_cell(body, &head, tail_address)
+}
+
+/// The head a stored word and kind name, as a cell stores it. A scalar of a
+/// constant kind needs no sharing and no read of the kind; any other head is
+/// shared as the ref it spells would be.
+fn stored_head<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, M>, word: ir::Value, kind: ir::Value) -> Head {
+    let constant = constant_of(body.b, kind).and_then(|tag| ValueKind::new(u8::try_from(tag).ok()?));
+    match constant {
+        Some(kind) if kind.is_scalar() => Head::known(word, kind),
+        _ => {
+            body.share(CodegenValue::Stored { word, kind });
+            Head {
+                raw: word,
+                kind: HeadKind::Read(kind),
+            }
+        }
+    }
 }
 
 /// An inline row links a list. A tail of another kind is the runtime's to

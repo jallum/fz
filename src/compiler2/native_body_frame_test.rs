@@ -144,7 +144,7 @@ fn compiler2_a_short_body_keeps_a_frame_per_continuation() {
 
 /// A body holding two hundred closures and then calling each used to store
 /// every closure again at every call: the frame's slots grew with the square of
-/// the closures (17,206 here) and past the closure header's 14-bit count. A
+/// the closures (17,206 here) and past the closure header's 13-bit count. A
 /// value has one slot however many names the body gives it, so the frame holds
 /// two slots per closure (the closure and its capture) and the calls run in it,
 /// collecting while it is live.

@@ -243,8 +243,8 @@ end
         .collect::<Vec<_>>();
     assert_eq!(
         joins,
-        vec![&[AbiValueRepr::ValueRef][..]],
-        "the join has one payload position, boxed because an atom and an int both arrive there"
+        vec![&[AbiValueRepr::Stored][..]],
+        "the join has one payload position, a stored word and kind because an atom and an int both arrive there"
     );
 }
 
