@@ -304,7 +304,7 @@ impl IrInterpRuntime {
         let Some(receiver) = self.process_ptr(pid) else {
             return Ok(());
         };
-        let delivery = unsafe { &*receiver }.delivery.lock();
+        let delivery = unsafe { &*receiver }.delivery.borrow_mut();
         if self.backend_parked.get(&pid).and_then(|park| park.after_timer) != Some(timer) {
             return Ok(());
         }
@@ -348,7 +348,7 @@ impl IrInterpRuntime {
             return Ok(());
         }
         let receiver = self.process_ptr(*receiver_pid).expect("receiver checked above");
-        let mut delivery = unsafe { &*receiver }.delivery.lock();
+        let mut delivery = unsafe { &*receiver }.delivery.borrow_mut();
         let probe = match self.backend_parked.remove(receiver_pid) {
             Some(mut park) => {
                 let outcome = self.probe_parked_receive(
@@ -375,7 +375,7 @@ impl IrInterpRuntime {
     }
 
     /// Match `msg` against the receive `park` records, on the sender, with
-    /// the receiver's delivery lock held by the caller. A hit gifts the winning
+    /// the receiver's delivery borrow held by the caller. A hit gifts the winning
     /// clause's roots and cancels the after-timer; a miss, or a receive another sender
     /// already matched, gifts the message.
     #[allow(clippy::too_many_arguments)]
@@ -446,7 +446,7 @@ impl IrInterpRuntime {
             .process_ptr(pid)
             .expect("backend pid in run queue with no process entry");
         let task = unsafe { &mut *receiver };
-        let mut delivery = task.delivery.lock();
+        let mut delivery = task.delivery.borrow_mut();
         let Some((clause_idx, roots)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
             return Ok(());
         };

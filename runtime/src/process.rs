@@ -24,7 +24,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::any_value::{AnyValue, AnyValueRef};
-use crate::delivery::DeliveryLock;
+use crate::delivery::DeliveryCell;
 use crate::exec_ctx::ExecCtx;
 use crate::handler_stack::HandlerStack;
 use crate::heap::{Collected, GcStats, Heap, RootForwarder, Roots, SIZE_TABLE, SchemaRegistry};
@@ -87,9 +87,9 @@ pub struct Collection {
 /// valid for the duration of each call.
 pub struct Process {
     /// The park record and the queue of gifts other processes made for this
-    /// one, reachable only through the lock. Declared before `heap` so a
+    /// one, reachable only through its borrow. Declared before `heap` so a
     /// process dropped with gifts still queued returns their storage first.
-    pub delivery: DeliveryLock,
+    pub delivery: DeliveryCell,
     pub heap: Heap,
     /// Execution-context dispatch table for this task: scheduler services and
     /// output context, reached explicitly by BIFs instead of through
@@ -214,7 +214,7 @@ pub type PidId = u32;
 /// them, emptied, so the next process on it grows none of them again.
 #[derive(Default)]
 struct ShellBuffers {
-    delivery: DeliveryLock,
+    delivery: DeliveryCell,
     mailbox: Mailbox,
     handlers: HandlerStack,
 }
@@ -1002,7 +1002,7 @@ impl Process {
     /// in gift segments outside the heap. Each holds its forwarded value on
     /// return, and the statistics are in `gc_stats`.
     ///
-    /// The delivery lock is held throughout, so a sender cannot probe the
+    /// The delivery borrow is held throughout, so a sender cannot probe the
     /// park record while its closures and pinned values move. Gifts waiting in
     /// the in-queue are not roots (see `Heap::collect`).
     pub fn collect(&mut self, transient: &mut (impl Roots + ?Sized)) -> Collected<'_> {
@@ -1010,7 +1010,7 @@ impl Process {
             self.raised.is_none(),
             "a collection ran between a raise and its handler: the raised value is not a root"
         );
-        let mut delivery = self.delivery.lock();
+        let mut delivery = self.delivery.borrow_mut();
         let mut roots = ProcessRoots {
             runnable: &mut self.runnable,
             park_frame: delivery.park_mut().map(|park| &mut park.frame),

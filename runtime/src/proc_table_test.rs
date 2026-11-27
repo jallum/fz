@@ -157,7 +157,7 @@ fn a_spawn_reuses_the_shell_of_an_exited_process() {
     assert_eq!((process.halt_value, process.parks), (0, 0));
     assert_eq!(process.handlers.depth(), 0, "no handler of the last life survives");
     assert!(process.mailbox.is_empty());
-    assert_eq!(process.delivery.lock().queued_gifts().count(), 0);
+    assert_eq!(process.delivery.borrow().queued_gifts().count(), 0);
 }
 
 /// Intent: an exit gives every block of the process back to the pool while the

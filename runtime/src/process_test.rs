@@ -124,7 +124,7 @@ fn park_on(process: &mut Process, capture: AnyValueRef, pinned: AnyValueRef) {
         empty_slots: 0,
     };
     let frame = frame_of(&mut process.heap, &[capture, pinned]);
-    process.delivery.lock().install_park(ParkRecord {
+    process.delivery.borrow_mut().install_park(ParkRecord {
         site: leaked_site(pinned_head_matcher, None, 1, &[clause]),
         frame,
         after_deadline_ms: None,
@@ -154,7 +154,7 @@ fn collect_forwards_every_root_a_parked_process_holds() {
     let mut transient = [int_list(&mut process.heap, 6)];
     let runnable = closure_capturing(&mut process, runnable_capture);
     park_on(&mut process, body_capture, pinned);
-    let frame = process.delivery.lock().park().expect("parked").frame;
+    let frame = process.delivery.borrow().park().expect("parked").frame;
     process.set_runnable_closure(runnable);
     let (segment, mailbox_message) = crate::sched::gift_copy_one(&mut process.heap, Stored::of_ref(mailbox_message));
     process.mailbox.push(mailbox_message, segment);
@@ -168,7 +168,7 @@ fn collect_forwards_every_root_a_parked_process_holds() {
 
     let stats = process.collect_stats(&mut transient);
 
-    let delivery = process.delivery.lock();
+    let delivery = process.delivery.borrow_mut();
     let park = delivery.park().expect("still parked");
     assert_ne!(park.frame, before.1, "frame moved");
     assert_ne!(process.runnable_closure(), Some(before.2), "runnable closure moved");

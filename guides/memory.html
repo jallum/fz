@@ -856,7 +856,7 @@ Transient values — whatever the caller holds across the call.
 not roots. Their blocks join the heap only when they are grafted (a match by
 <code>drain_in_queue</code>, a message by the receive that takes it), and every
 reference in a gift points into its own segment. <code>Process::collect</code> holds the
-delivery lock for the whole pass, so a sender cannot probe the park record
+delivery borrow for the whole pass, so a sender cannot probe the park record
 while it moves.</p>
 
 <p>The interpreter keeps a parked receive's environment and continuations in its

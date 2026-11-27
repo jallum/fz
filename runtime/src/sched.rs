@@ -7,7 +7,7 @@
 //! run queue and timers live in `sched_core`.
 //!
 //! Each helper takes the process and mutates its selective-receive state
-//! under its delivery lock (`delivery.rs`); timer cancellation goes through
+//! under its delivery borrow (`delivery.rs`); timer cancellation goes through
 //! `scheduler_hooks::dispatch_timer_cancel`, which dispatches to
 //! whichever wheel the caller installed.
 //!
@@ -161,7 +161,7 @@ fn open_gift(heap: &mut Heap, values: &[Stored]) -> Option<HeapView> {
 /// on the sender's heap. One answer to "does this send wake a waiting
 /// receive?" for every execution path.
 ///
-/// The receiver's delivery lock is held from reading the park to queueing the
+/// The receiver's delivery borrow is held from reading the park to queueing the
 /// gift, so one sender decides the receive and any other sender, or the
 /// after-timer, finds it decided. A receiver with a park has already searched
 /// its mailbox, so only `msg` is tested against its matcher, and the matcher
@@ -177,7 +177,7 @@ fn open_gift(heap: &mut Heap, values: &[Stored]) -> Option<HeapView> {
 /// A receiver whose receive is already matched by an earlier sender is not
 /// probed again; that message is a miss.
 pub fn probe_sender(sender: &mut Process, receiver: &Process, msg: Stored) -> SendProbe {
-    let mut delivery = receiver.delivery.lock();
+    let mut delivery = receiver.delivery.borrow_mut();
     let sender_ptr: *mut Process = sender;
     let mut roots = Roots::new();
     let before = sender.reductions_remaining;
@@ -211,7 +211,7 @@ pub fn probe_sender(sender: &mut Process, receiver: &Process, msg: Stored) -> Se
 }
 
 /// A miss: gift `msg` whole for the receiver's mailbox. The caller holds the
-/// receiver's delivery lock and does not wake the receiver.
+/// receiver's delivery borrow and does not wake the receiver.
 pub fn gift_message(sender: &mut Process, delivery: &mut Delivery, receiver: PidId, msg: Stored) -> SendProbe {
     let (segment, copied) = gift_copy_one(&mut sender.heap, msg);
     queue_gift(
@@ -225,7 +225,7 @@ pub fn gift_message(sender: &mut Process, delivery: &mut Delivery, receiver: Pid
 }
 
 /// A hit: gift the roots clause `clause_idx` reads its arguments from,
-/// charging `reductions` to the probe. The caller holds the receiver's delivery lock, has cancelled
+/// charging `reductions` to the probe. The caller holds the receiver's delivery borrow, has cancelled
 /// the receive's after-timer and goes on to wake the receiver.
 pub fn gift_match(
     sender: &mut Process,
@@ -267,7 +267,7 @@ fn queue_gift(
 /// with its gift segment and waits outside the heap until a receive takes it.
 /// The match for the parked receive, if a sender queued one, is grafted into
 /// the task's heap and returned for the caller to deliver. The caller holds
-/// the task's delivery lock and passes the task's heap and mailbox. Runs at
+/// the task's delivery borrow and passes the task's heap and mailbox. Runs at
 /// the start of a dispatch, before any of the task's code or a collection
 /// touches the heap, so the task never sees a reference into storage it does
 /// not own.
@@ -290,10 +290,10 @@ pub fn drain_in_queue(delivery: &mut Delivery, heap: &mut Heap, mailbox: &mut Ma
 /// the receive: the park record is taken and the winning clause's outcome
 /// closure, built over the arguments its projector reads out of the gifted
 /// roots, becomes the task's runnable.
-/// The delivery lock is held from the first entry taken to the park taken.
+/// The delivery borrow is held from the first entry taken to the park taken.
 /// The compiled paths (JIT and AOT) call this as the first act of a dispatch.
 pub fn deliver_in_queue(task: &mut Process) {
-    let mut delivery = task.delivery.lock();
+    let mut delivery = task.delivery.borrow_mut();
     let Some((clause_idx, roots)) = drain_in_queue(&mut delivery, &mut task.heap, &mut task.mailbox) else {
         return;
     };
@@ -314,7 +314,7 @@ pub fn deliver_in_queue(task: &mut Process) {
 /// message after every message other senders queued earlier.
 pub fn self_send(task: &mut Process, msg: Stored) {
     assert!(
-        task.delivery.lock().park().is_none(),
+        task.delivery.borrow().park().is_none(),
         "a running process has no parked receive"
     );
     let (segment, copy) = gift_copy_one(&mut task.heap, msg);
@@ -340,15 +340,15 @@ pub enum ReceiveStep {
 /// - Miss otherwise: record `park`, arm the after-timer for a positive
 ///   `after`, and Block. The mailbox is left intact (save-queue rule).
 ///
-/// The delivery lock is held across the walk and the install. A send that
+/// The delivery borrow is held across the walk and the install. A send that
 /// arrived after the walk passed a message but before the park existed would
-/// find no park to probe and be probed by nobody; under the lock it waits
-/// for the install and is then probed against the park. A process with a park
+/// find no park to probe and be probed by nobody; under the borrow it runs only
+/// after the install and is probed against the park. A process with a park
 /// has therefore always searched its whole mailbox, so a sender only has to
 /// test its own message.
 pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
     let task_ptr: *mut Process = task;
-    let mut delivery = task.delivery.lock();
+    let mut delivery = task.delivery.borrow_mut();
     let mut roots = Roots::new();
     let hit = task
         .mailbox
@@ -379,14 +379,14 @@ pub fn reach_receive(task: &mut Process, mut park: ParkRecord) -> ReceiveStep {
 /// After-timer fire. Called by the scheduler's timer drain for each
 /// expired entry. If `task` is still parked on a `ReceiveMatched` with
 /// that exact `id`, stash the after-cont as the runnable zero-arg closure.
-/// The park is taken under the delivery lock, so the timer and a sender's hit
+/// The park is taken under the delivery borrow, so the timer and a sender's hit
 /// cannot both decide the same receive.
 ///
 /// Returns `true` when the after entry fired and the caller makes the task
 /// runnable through its scheduling core; `false` for stale entries whose
 /// task is no longer parked on this timer (matcher hit got there first, etc.).
 pub fn fire_after_timer(task: &mut Process, id: TimerId) -> bool {
-    let mut delivery = task.delivery.lock();
+    let mut delivery = task.delivery.borrow_mut();
     if delivery.park().is_none_or(|park| park.after_timer_id != Some(id)) {
         return false;
     }

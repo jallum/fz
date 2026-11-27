@@ -120,7 +120,7 @@ fn aot_send_gifts_the_message_and_the_receiver_grafts_it_at_its_next_dispatch() 
 
     let receiver = sched.tasks.get_mut(receiver_pid).expect("receiver");
     assert_eq!(
-        receiver.delivery.lock().queued_gifts().count(),
+        receiver.delivery.borrow().queued_gifts().count(),
         1,
         "the gift waits for the receiver's dispatch"
     );
@@ -176,7 +176,7 @@ fn aot_send_to_exited_or_unknown_pid_does_not_copy_or_schedule() {
     let successor = sched.tasks.get(successor_pid).unwrap();
     assert_eq!(successor.heap.node.alloc_stats(), before_heap);
     assert!(successor.mailbox.is_empty());
-    assert_eq!(successor.delivery.lock().queued_gifts().count(), 0);
+    assert_eq!(successor.delivery.borrow().queued_gifts().count(), 0);
     assert_eq!(sched.core.queued(), &before_queue);
 }
 
@@ -202,7 +202,7 @@ fn timer_drain_wakes_after_cont() {
     let timer_id = timer_schedule_hook::<AotScheduler>()(sched_handle(&mut sched), p.pid, 1);
     let after_code: usize = 0xCAFE_BABE;
     let frame = frame_of(&mut p.heap, &[]);
-    p.delivery.lock().install_park(ParkRecord {
+    p.delivery.borrow_mut().install_park(ParkRecord {
         site: leaked_site(never_match, Some((after_code, 0)), 0, &[]),
         frame,
         after_deadline_ms: Some(1),
@@ -217,7 +217,7 @@ fn timer_drain_wakes_after_cont() {
 
     let task = sched.tasks.get(pid).unwrap();
     assert_eq!(task.state, ProcessState::Ready);
-    assert!(task.delivery.lock().park().is_none());
+    assert!(task.delivery.borrow().park().is_none());
     assert_eq!(task.runnable_closure().map(code_of), Some(after_code));
     assert_eq!(next_runnable(&mut sched), None, "nothing else runs or waits");
 }
@@ -343,7 +343,7 @@ fn one_life(
     child.handlers.push_interpreter();
     child.handlers.pop();
     let frame = frame_of(&mut child.heap, &[]);
-    child.delivery.lock().install_park(ParkRecord {
+    child.delivery.borrow_mut().install_park(ParkRecord {
         site,
         frame,
         after_deadline_ms: None,
@@ -369,10 +369,14 @@ fn one_life(
 /// for the closure a spawn copies and once for the message a send copies.
 const DEBUG_VIEW_RANGES: usize = if cfg!(debug_assertions) { 2 } else { 0 };
 
+/// The allocation calls of the first life, before any exited shell exists to
+/// reuse. The delivery cell is inline in the shell and is not among them.
+const FIRST_LIFE_ALLOCATIONS: usize = 6;
+
 /// Intent: after the first process has grown the buffers a process needs, a
 /// spawn, park, send, wake and exit allocates only what no shell owns (the
 /// debug heap views above): the exited process's shell, with its gift queue,
-/// mailbox, handler stack and lock, serves the next. Allocation calls are
+/// mailbox and handler stack, serves the next. Allocation calls are
 /// counted on this thread over the whole cycle, through the scheduler's own
 /// hooks.
 #[test]
@@ -400,8 +404,9 @@ fn a_spawn_park_send_wake_exit_cycle_allocates_nothing_but_debug_views_after_the
         .map(|_| crate::alloc_probe::allocations_during(|| one_life(&mut sched, parent, site, closure, msg)).1)
         .collect();
 
-    assert!(
-        first > DEBUG_VIEW_RANGES,
+    assert_eq!(
+        first,
+        FIRST_LIFE_ALLOCATIONS + DEBUG_VIEW_RANGES,
         "the first life builds the shell and grows its buffers"
     );
     assert_eq!(
