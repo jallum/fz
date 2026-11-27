@@ -1,0 +1,10 @@
+String.pad_leading with a non-binary pad
+{:error, %ArgumentError{message: "expected a string padding element, got: 1"}}
+ArgumentError: expected a string padding element, got: 1
+unquote of invalid AST
+{:error, %ArgumentError{message: "tried to unquote invalid AST: {1, 2, 3, 4}\nDid you forget to escape term using Macro.escape/1?"}}
+ArgumentError: tried to unquote invalid AST: {1, 2, 3, 4}
+Did you forget to escape term using Macro.escape/1?
+:string.take over invalid UTF-8
+{:error, {:badarg, <<255>>}}
+ArgumentError: argument error: <<255>>

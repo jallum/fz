@@ -1,0 +1,18 @@
+Tuple.to_list of an atom
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a tuple
+
+String.to_atom of an integer
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: not a binary
+
+String.to_atom of invalid UTF-8
+{:error, :badarg}
+ArgumentError: errors were found at the given arguments:
+
+  * 1st argument: invalid UTF8 encoding
+

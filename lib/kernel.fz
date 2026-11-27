@@ -895,7 +895,7 @@ defmodule Kernel do
   """
   def [] ++ right, do: right
   def [head | tail] ++ right, do: [head | tail ++ right]
-  def _left ++ _right, do: raise(%ArgumentError{message: "argument error"})
+  def _left ++ _right, do: __raise__(%ArgumentError{message: "argument error"}, :badarg)
 
   @doc """
   Removes from `left` the first occurrence of each element of `right`; this is
@@ -938,7 +938,7 @@ defmodule Kernel do
   # reports.
   @spec __construction_failed__(list) :: no_return()
   def __construction_failed__(segments),
-    do: raise(%ArgumentError{message: fz_construction_failure_message(segments)})
+    do: __raise__(%ArgumentError{message: fz_construction_failure_message(segments)}, :badarg)
 
   extern "fz" defp fz_construction_failure_message(list) :: binary
 

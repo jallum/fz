@@ -1,0 +1,42 @@
+#---
+# purpose: "`:unicode.characters_to_binary/1` of what is not chardata and `System.halt/1` of a negative status fail with `:badarg` for `catch` and Elixir's message for `rescue`, while `System.halt/1` of a non-integer is still a `:function_clause`, on all three paths"
+# oracle: self
+# oracle.stamp: a849abcff5c4b0cc
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      inspect(fun.())
+    catch
+      kind, reason -> inspect({kind, reason})
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      inspect(fun.())
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.puts(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show(":unicode.characters_to_binary of an integer", fn -> :unicode.characters_to_binary(v(1)) end)
+    show(":unicode.characters_to_binary of a list holding an atom", fn -> :unicode.characters_to_binary(v([:a])) end)
+    show(":unicode.characters_to_binary of an improper list", fn -> :unicode.characters_to_binary(v([0xD800 | 1])) end)
+    show("System.halt of a negative status", fn -> System.halt(v(-1)) end)
+    show("System.halt of an atom", fn -> System.halt(v(:a)) end)
+  end
+end
+
+Main.main()

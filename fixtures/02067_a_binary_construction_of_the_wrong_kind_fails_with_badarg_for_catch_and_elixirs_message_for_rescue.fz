@@ -1,0 +1,41 @@
+#---
+# purpose: "A binary construction whose field is of the wrong kind fails with `:badarg` for `catch` and the segment message Elixir gives for `rescue`, on all three paths"
+# oracle: self
+# oracle.stamp: 4991ec903bc82408
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      inspect(fun.())
+    catch
+      kind, reason -> inspect({kind, reason})
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      inspect(fun.())
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.puts(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("a binary segment given an atom", fn -> <<v(:a)::binary>> end)
+    show("an integer segment given an atom", fn -> <<v(:a)>> end)
+    show("an integer segment given a float", fn -> <<v(1.5)::integer>> end)
+    show("an integer segment given a binary", fn -> <<v("s")::integer>> end)
+  end
+end
+
+Main.main()

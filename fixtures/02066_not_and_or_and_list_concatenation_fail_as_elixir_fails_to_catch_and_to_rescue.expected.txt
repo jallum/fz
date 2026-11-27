@@ -1,0 +1,18 @@
+:erlang.not of an integer
+{:error, :badarg}
+ArgumentError: argument error
+:erlang.and with a bad left
+{:error, :badarg}
+ArgumentError: argument error
+:erlang.and with a bad right
+{:error, :badarg}
+ArgumentError: argument error
+:erlang.or with a bad left
+{:error, :badarg}
+ArgumentError: argument error
+++ with an atom on the left
+{:error, :badarg}
+ArgumentError: argument error
+++ with an improper list on the left
+{:error, :badarg}
+ArgumentError: argument error

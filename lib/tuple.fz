@@ -21,8 +21,7 @@ defmodule Tuple do
 
   """
   @spec to_list(any) :: list
-  def to_list(tuple) when is_tuple(tuple), do: to_list_from(tuple, tuple_size(tuple) - 1, [])
-  def to_list(_), do: raise(%ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not a tuple\n"})
+  def to_list(tuple) when is_tuple(tuple), raises: ArgumentError, reason: :badarg, do: to_list_from(tuple, tuple_size(tuple) - 1, [])
 
   @spec to_list_from(tuple, integer, list) :: list
   defp to_list_from(_tuple, -1, acc), do: acc

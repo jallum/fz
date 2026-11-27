@@ -38,7 +38,7 @@ defmodule :unicode do
     if chardata?(data) do
       convert(subject(data), [], "", "")
     else
-      raise %ArgumentError{message: "errors were found at the given arguments:\n\n  * 1st argument: not valid character data (an iodata term)\n"}
+      Kernel.__badarg__("not valid character data (an iodata term)")
     end
   end
 

@@ -1046,15 +1046,8 @@ defmodule String do
 
   """
   @spec to_atom(binary) :: atom
-  def to_atom(s) when is_binary(s) do
-    if valid?(s), do: fz_binary_to_atom(s), else: to_atom_refused("invalid UTF8 encoding")
-  end
-
-  def to_atom(_s), do: to_atom_refused("not a binary")
-
-  @spec to_atom_refused(binary) :: no_return()
-  defp to_atom_refused(reason),
-    do: raise(ArgumentError, "errors were found at the given arguments:\n\n  * 1st argument: " <> reason <> "\n")
+  def to_atom(s) when is_binary(s), raises: ArgumentError, reason: :badarg,
+    do: if(valid?(s), do: fz_binary_to_atom(s), else: Kernel.__badarg__("invalid UTF8 encoding"))
 
   extern "fz" defp fz_binary_to_atom(binary) :: atom
 

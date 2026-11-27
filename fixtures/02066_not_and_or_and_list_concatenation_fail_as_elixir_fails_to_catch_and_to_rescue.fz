@@ -1,0 +1,43 @@
+#---
+# purpose: "`:erlang.not/1`, `:erlang.and/2`, `:erlang.or/2` of a non-boolean and `++` of a left side that is not a proper list fail with `:badarg` for `catch` and Elixir's plain `argument error` for `rescue`, on all three paths"
+# oracle: self
+# oracle.stamp: 9a540d7fd8f23e6a
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      inspect(fun.())
+    catch
+      kind, reason -> inspect({kind, reason})
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      inspect(fun.())
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.puts(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show(":erlang.not of an integer", fn -> :erlang.not(v(1)) end)
+    show(":erlang.and with a bad left", fn -> :erlang.and(v(1), true) end)
+    show(":erlang.and with a bad right", fn -> :erlang.and(true, v(1)) end)
+    show(":erlang.or with a bad left", fn -> :erlang.or(v(1), true) end)
+    show("++ with an atom on the left", fn -> v(:a) ++ [3] end)
+    show("++ with an improper list on the left", fn -> v([1 | 2]) ++ [3] end)
+  end
+end
+
+Main.main()

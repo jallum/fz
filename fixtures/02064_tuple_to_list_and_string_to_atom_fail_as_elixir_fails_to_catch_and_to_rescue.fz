@@ -1,0 +1,40 @@
+#---
+# purpose: "`Tuple.to_list/1` of a non-tuple and `String.to_atom/1` of a non-binary or of bytes that are not UTF-8 fail with `:badarg` for `catch` and Elixir's message for `rescue`, on all three paths"
+# oracle: self
+# oracle.stamp: 173a5c3b14cf5f13
+#---
+defmodule Main do
+  # `x`, typed as one of the kinds of value a call may be given, so the call
+  # is made and fails at run time rather than being refused when compiled.
+  def v(x), do: Enum.at([x, 1, 1.5, "s", <<1::3>>, [1], {1}, %{}, self(), :utf8, :latin1, :a, 36], 0)
+
+  def caught(fun) do
+    try do
+      inspect(fun.())
+    catch
+      kind, reason -> inspect({kind, reason})
+    end
+  end
+
+  def rescued(fun) do
+    try do
+      inspect(fun.())
+    rescue
+      e -> inspect(e.__struct__) <> ": " <> Exception.message(e)
+    end
+  end
+
+  def show(label, fun) do
+    IO.puts(label)
+    IO.puts(caught(fun))
+    IO.puts(rescued(fun))
+  end
+
+  def main() do
+    show("Tuple.to_list of an atom", fn -> Tuple.to_list(v(:a)) end)
+    show("String.to_atom of an integer", fn -> String.to_atom(v(1)) end)
+    show("String.to_atom of invalid UTF-8", fn -> String.to_atom(v(<<255>>)) end)
+  end
+end
+
+Main.main()

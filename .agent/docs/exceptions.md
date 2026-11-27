@@ -464,6 +464,23 @@ is true of no other test.
 A failure that is no test of the head, such as `binary_to_integer("zz")`
 (`not a textual representation of an integer`), raises through the same
 mechanism with `Kernel.__badarg__(wording)`, which blames the 1st argument.
+`String.to_atom/1` (`invalid UTF8 encoding`), `:unicode.characters_to_binary/1`
+(`not valid character data (an iodata term)`) and `System.halt/1` of a negative
+status (`invalid status`) are worded this way, since no test of their head
+carries the wording.
+
+A BIF whose Elixir message is the bare `argument error`, as `:erlang.not/1`,
+`and/2`, `or/2` and `++/2` give, writes
+`__raise__(%ArgumentError{message: "argument error"}, :badarg)`: a declared
+failure would derive the longer message. A failure the compiler raises, as a
+binary construction of the wrong kind
+(`Kernel.__construction_failed__/1`), carries `:badarg` the same way.
+
+Not every `ArgumentError` is a BIF's: one that Elixir raises as a struct (for
+example `String.pad_leading/3` given a non-binary pad, `raise 1`, `unquote` of
+invalid AST) is written with `raise` and reaches `catch` as the struct. The
+`:string` functions that fail with `error({:badarg, binary})` as OTP does keep
+that reason. Fixture `02068` shows both.
 
 ## The rescue head
 
