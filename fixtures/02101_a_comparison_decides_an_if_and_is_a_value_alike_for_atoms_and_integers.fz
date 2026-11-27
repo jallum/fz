@@ -1,0 +1,55 @@
+#---
+# purpose: "== != === and !== on two atoms or two integers give one answer whether an if branches on it, an inlined call returns it, or it is kept as a value, as in Elixir"
+# oracle: self
+# oracle.stamp: 4f993f265989ca60
+#---
+defmodule Main do
+  def opaque(value), do: Enum.at([value], 0)
+
+  def branch_eq(a, b), do: if(a == b, do: :then, else: :else)
+  def branch_neq(a, b), do: if(a != b, do: :then, else: :else)
+  def branch_identical(a, b), do: if(a === b, do: :then, else: :else)
+  def branch_not_identical(a, b), do: if(a !== b, do: :then, else: :else)
+
+  def returned_eq(a, b), do: a == b
+  def returned_neq(a, b), do: a != b
+  def returned_identical(a, b), do: a === b
+  def returned_not_identical(a, b), do: a !== b
+
+  def relayed_eq(a, b), do: returned_eq(a, b)
+  def branch_on_relayed(a, b), do: if(relayed_eq(a, b), do: :then, else: :else)
+
+  def branch_and_keep(a, b) do
+    same = a == b
+    if same, do: {:then, same}, else: {:else, same}
+  end
+
+  def branch_on_either(a, b, c) do
+    same = if(a == b, do: true, else: c == a)
+    if same, do: :then, else: :else
+  end
+
+  def answers(a, b) do
+    a = opaque(a)
+    b = opaque(b)
+
+    [
+      {branch_eq(a, b), branch_neq(a, b), branch_identical(a, b), branch_not_identical(a, b)},
+      {returned_eq(a, b), returned_neq(a, b), returned_identical(a, b), returned_not_identical(a, b)},
+      {relayed_eq(a, b), branch_on_relayed(a, b), branch_and_keep(a, b), branch_on_either(a, b, :other)},
+      [a == b, a != b, a === b, a !== b]
+    ]
+  end
+
+  def main() do
+    Enum.each(answers(:red, :red), &IO.inspect/1)
+    Enum.each(answers(:red, :blue), &IO.inspect/1)
+    Enum.each(answers(nil, false), &IO.inspect/1)
+    Enum.each(answers(true, true), &IO.inspect/1)
+    Enum.each(answers(3, 3), &IO.inspect/1)
+    Enum.each(answers(3, 4), &IO.inspect/1)
+    Enum.each(answers(-1, -1), &IO.inspect/1)
+  end
+end
+
+Main.main()

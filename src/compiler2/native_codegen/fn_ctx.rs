@@ -1184,6 +1184,7 @@ impl<'a, 'fb, M: Module> CodegenFn<'a, 'fb, M> {
         match to {
             ArgRepr::ValueRef => out.push(self.value_as_any_ref(binding)),
             ArgRepr::Stored => out.extend(self.value_stored_words(binding)),
+            ArgRepr::Condition => out.push(self.value_truthy(binding)),
             _ => out.push(self.coerce_binding_to(binding, to)),
         }
     }

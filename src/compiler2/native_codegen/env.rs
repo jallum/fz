@@ -104,9 +104,12 @@ pub(crate) struct StaticStructRef {
 /// - `runtime_funcs`: FuncRef per runtime helper per function, keyed by linker name.
 /// - `used_vars`: all var IDs that appear as operands anywhere in the function;
 ///   unit-return extern results whose dest ID is absent skip the nil iconst.
-/// - `if_only_conds`: var IDs used exclusively as Term::If conditions; their
-///   boolean prims emit ArgRepr::Condition (raw i1) instead of bool_to_fz, so
-///   the tagged form is never materialised and brif consumes the i1 directly.
+/// - `if_only_conds`: var IDs whose only readers are branches: a Term::If
+///   condition, or an argument of a Term::Goto to a single-predecessor block
+///   whose parameter is itself such a var. Their boolean prims emit
+///   ArgRepr::Condition (raw i8) instead of bool_to_fz, and those block
+///   parameters are Conditions, so the tagged form is never materialised and
+///   brif consumes the i8 directly.
 #[derive(Default)]
 pub(crate) struct CodegenCache {
     /// A continuation's own descriptor, which is the body frame it runs in
