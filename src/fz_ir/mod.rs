@@ -558,16 +558,6 @@ pub enum UnOp {
     Not,
 }
 
-/// Where an unpublished map destination starts.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DestMapSeed {
-    /// Empty, with room for this many entries: a map literal.
-    Capacity(usize),
-    /// A copy of this map, whose puts may only replace its keys:
-    /// `%{base | k: v}`.
-    Update(Var),
-}
-
 /// One field a struct update replaces: the slot the field has in the struct
 /// layout, the key it has in the entries layout, and the new value.
 #[derive(Debug, Clone, PartialEq)]
@@ -634,24 +624,30 @@ pub enum Prim {
     /// Allocate a closure: callable code identity plus the captured
     /// environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
-    /// Allocate an unpublished map destination, from `seed`. A destination
+    /// A map literal: each `(key, value)` of `entries` becomes an entry of one
+    /// published map. `in_key_order` says the entries are already in the
+    /// runtime's key order with no key repeated, so nothing is sorted;
+    /// otherwise the runtime sorts them and keeps the last of a repeated key.
+    MakeMap {
+        entries: Vec<(Var, Var)>,
+        in_key_order: bool,
+    },
+    /// Allocate an unpublished map destination holding a copy of `base`,
+    /// whose puts may only replace its keys: `%{base | k: v}`. A destination
     /// is threaded: each put takes one and answers the one the next put or
     /// the freeze takes, so nothing else can hold it.
-    DestMapBegin(DestMapSeed),
-    /// Set one key/value pair in an unpublished map destination and answer
-    /// the destination to continue with. An update that names a key its base
-    /// lacks has none, and its freeze answers the miss.
+    DestMapBeginUpdate(Var),
+    /// Replace one key's value in an unpublished map destination and answer
+    /// the destination to continue with. A key the base lacks leaves none,
+    /// and the freeze answers the miss.
     DestMapPut {
         map: Var,
         key: Var,
         value: Var,
     },
-    /// Publish a map destination as the immutable map: a literal's entries
-    /// are sorted and deduplicated, an update's are already in place.
+    /// Publish an update's destination as the immutable map, or the miss when
+    /// a put named a key its base lacks.
     DestMapFreeze(Var),
-    /// Publish a map destination whose entries were put in key order with no
-    /// key repeated. Nothing is sorted or moved.
-    DestMapPublish(Var),
     /// `base`, which the types say is a `module` struct of `arity` fields,
     /// with each of `stores` replacing a field. In the struct layout each
     /// value is stored in its slot, of `base` itself when `rewrite` permits
@@ -847,17 +843,21 @@ impl Prim {
                     used.insert(*v);
                 }
             }
-            Prim::DestMapBegin(seed) => {
-                if let DestMapSeed::Update(base) = seed {
-                    used.insert(*base);
+            Prim::MakeMap { entries, .. } => {
+                for (key, value) in entries {
+                    used.insert(*key);
+                    used.insert(*value);
                 }
+            }
+            Prim::DestMapBeginUpdate(base) => {
+                used.insert(*base);
             }
             Prim::DestMapPut { map, key, value } => {
                 used.insert(*map);
                 used.insert(*key);
                 used.insert(*value);
             }
-            Prim::DestMapFreeze(map) | Prim::DestMapPublish(map) => {
+            Prim::DestMapFreeze(map) => {
                 used.insert(*map);
             }
             Prim::StructWith { base, stores, .. } => {
@@ -1696,11 +1696,19 @@ impl fmt::Display for Prim {
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
-            Prim::DestMapBegin(DestMapSeed::Capacity(capacity)) => write!(f, "dest_map_begin(capacity={})", capacity),
-            Prim::DestMapBegin(DestMapSeed::Update(base)) => write!(f, "dest_map_begin(update={})", base),
+            Prim::MakeMap { entries, in_key_order } => {
+                write!(f, "make_map(")?;
+                for (index, (key, value)) in entries.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} => {}", key, value)?;
+                }
+                write!(f, "{})", if *in_key_order { "; in key order" } else { "" })
+            }
+            Prim::DestMapBeginUpdate(base) => write!(f, "dest_map_begin_update({})", base),
             Prim::DestMapPut { map, key, value } => write!(f, "dest_map_put({}, key={}, value={})", map, key, value),
             Prim::DestMapFreeze(map) => write!(f, "dest_map_freeze({})", map),
-            Prim::DestMapPublish(map) => write!(f, "dest_map_publish({})", map),
             Prim::StructWith { base, stores, .. } => {
                 write!(f, "struct_with({}", base)?;
                 for store in stores {

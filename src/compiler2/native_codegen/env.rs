@@ -6,7 +6,7 @@ use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{BlockId, ExternId, FnId, Module, Var};
 use cranelift_codegen::ir::{self};
 use cranelift_module::{DataId, FuncId};
-use fz_runtime::any_value::AnyValue;
+use fz_runtime::any_value::{AnyValue, ValueKind};
 use std::cell::RefCell;
 
 /// The two functions one back-edge key owns.
@@ -78,17 +78,20 @@ impl CodegenEnv<'_> {
     }
 }
 
+/// A read-only object the program emitted, and the kind of value it is.
+#[derive(Clone, Copy)]
+pub(crate) struct StaticObject {
+    pub(super) data_id: DataId,
+    pub(super) kind: ValueKind,
+}
+
+/// What a read-only aggregate holds in one slot: an immediate, or the address
+/// of another read-only object. A heap reference is neither, so no aggregate
+/// can hold one.
 #[derive(Clone, Copy)]
 pub(crate) enum StaticLiteralField {
     Scalar(AnyValue),
-    Struct(DataId),
-    /// A short bitstring literal's read-only object.
-    Bitstring(DataId),
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct StaticStructRef {
-    pub(super) data_id: DataId,
+    Object(StaticObject),
 }
 
 /// Per-function mutable state threaded through `lower_prim` and
@@ -96,7 +99,7 @@ pub(crate) struct StaticStructRef {
 ///
 /// - `const_cache`: per-block constant deduplication (avoids redundant iconst).
 /// - `raw_int_consts`: raw i64 value for RawInt vars (drives box-int const fold).
-/// - `static_scalar_consts` / `static_struct_refs`: compile-time literal facts
+/// - `static_scalar_consts` / `static_objects`: compile-time literal facts
 ///   for immutable aggregate literals whose storage may be emitted as static
 ///   data instead of heap construction.
 /// - `extern_calls` / `extern_addrs`: FuncRef per extern per function, one for
@@ -123,14 +126,12 @@ pub(crate) struct CodegenCache {
     /// Canonical scalar values for source constants keyed by Var ID. These
     /// facts are compile-time data only; dynamic `Known` values are excluded.
     pub(super) static_scalar_consts: HashMap<u32, AnyValue>,
-    /// Read-only static struct symbols produced for fully literal aggregate
-    /// vars. A later literal aggregate can embed them by data relocation.
-    pub(super) static_struct_refs: HashMap<u32, StaticStructRef>,
-    /// The read-only object of each short bitstring literal var, which a
-    /// literal aggregate can embed by data relocation.
-    pub(super) static_bitstring_refs: HashMap<u32, DataId>,
-    /// Per-function counter for unique static struct data symbols.
-    pub(super) static_struct_count: usize,
+    /// The read-only object of each var that is a struct, tuple, map or short
+    /// bitstring literal, which a literal aggregate can embed by data
+    /// relocation.
+    pub(super) static_objects: HashMap<u32, StaticObject>,
+    /// Per-function counter for unique static object data symbols.
+    pub(super) static_object_count: usize,
     /// FuncRef each extern is called through, deduplicated per function.
     pub(super) extern_calls: HashMap<ExternId, ir::FuncRef>,
     /// FuncRef each extern's address is taken through, deduplicated per

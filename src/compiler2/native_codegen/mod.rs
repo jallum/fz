@@ -28,6 +28,7 @@ mod function;
 mod inline_object;
 mod list_cell;
 mod list_reuse;
+mod map_literal;
 mod place;
 mod prim;
 mod raises;

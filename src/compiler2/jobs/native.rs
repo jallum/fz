@@ -28,10 +28,10 @@ use crate::dispatch_matrix::pattern::{
 };
 use crate::dispatch_matrix::{ComparisonValue, DispatchNode, GraphNodeId, ListRegion, Region, SubjectId};
 use crate::fz_ir::{
-    BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DestMapSeed,
-    DirectCallTarget, ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy,
-    FieldSizeIr, FnBuilder, FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore,
-    Term, UnOp as IrUnOp, Var,
+    BinOp as IrBinOp, BitMatchField, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, Cont, DirectCallTarget,
+    ExternAbi, ExternArg, ExternDecl, ExternId, ExternMarshalSite, ExternReturn, ExternTy, FieldSizeIr, FnBuilder,
+    FnCategory, FnId, ModuleAtoms, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause, SlotStore, Term, UnOp as IrUnOp,
+    Var,
 };
 use crate::ground_value::GroundValue;
 use crate::runtime_type_predicate::{CallableShape, RuntimeTypePredicate, TuplePositions};
@@ -1459,16 +1459,18 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entries,
                     in_key_order,
                 } => {
-                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(entries.len())));
-                    for (key, item) in entries {
-                        let key = self.env_runtime_var(ctx, executable, env, *key);
-                        let value = self.env_runtime_var(ctx, executable, env, *item);
-                        map = ctx.emit_map_put(map, key, value);
-                    }
-                    let (var, _) = ctx.emit_let(if *in_key_order {
-                        Prim::DestMapPublish(map)
-                    } else {
-                        Prim::DestMapFreeze(map)
+                    let entries = entries
+                        .iter()
+                        .map(|(key, item)| {
+                            (
+                                self.env_runtime_var(ctx, executable, env, *key),
+                                self.env_runtime_var(ctx, executable, env, *item),
+                            )
+                        })
+                        .collect();
+                    let (var, _) = ctx.emit_let(Prim::MakeMap {
+                        entries,
+                        in_key_order: *in_key_order,
                     });
                     self.bind_runtime_value(ctx, executable, env, *value, var);
                 }
@@ -1479,7 +1481,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                     entries,
                 } => {
                     let base = self.env_runtime_var(ctx, executable, env, *base);
-                    let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Update(base)));
+                    let (mut map, _) = ctx.emit_let(Prim::DestMapBeginUpdate(base));
                     for (key, item) in entries {
                         let key = self.env_runtime_var(ctx, executable, env, *key);
                         let value = self.env_runtime_var(ctx, executable, env, *item);
@@ -3547,14 +3549,13 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
             LiteralTerm::Map(entries) => {
                 let in_key_order = LiteralTerm::entries_in_key_order(entries);
                 let written = in_key_order.clone().unwrap_or_else(|| entries.iter().collect());
-                let (mut map, _) = ctx.emit_let(Prim::DestMapBegin(DestMapSeed::Capacity(written.len())));
-                for (key, value) in written {
-                    let (key, value) = (self.literal_var(ctx, key), self.literal_var(ctx, value));
-                    map = ctx.emit_map_put(map, key, value);
-                }
-                match in_key_order {
-                    Some(_) => Prim::DestMapPublish(map),
-                    None => Prim::DestMapFreeze(map),
+                let entries = written
+                    .into_iter()
+                    .map(|(key, value)| (self.literal_var(ctx, key), self.literal_var(ctx, value)))
+                    .collect();
+                Prim::MakeMap {
+                    entries,
+                    in_key_order: in_key_order.is_some(),
                 }
             }
         };

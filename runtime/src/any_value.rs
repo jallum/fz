@@ -2170,20 +2170,26 @@ pub mod debug {
             }
         }
 
-        /// A list or map the renderer walks: a non-null address that is not a
-        /// literal. No program ships a list or a map as read-only data, so the
-        /// literal bit is clear on every one.
-        fn is_proc_heap_container(&self, bits: u64, addr_of: fn(u64) -> Option<*mut u8>) -> bool {
-            addr_of(bits).is_some_and(|p| {
+        /// A list the renderer walks: a non-null address that is not a
+        /// literal. No program ships a list as read-only data, so the literal
+        /// bit is clear on every one.
+        fn is_proc_heap_list(&self, bits: u64) -> bool {
+            list_addr_from_tagged(bits).is_some_and(|p| {
                 !p.is_null() && !self.proc.is_null() && !super::AnyValueRefPacking::current().is_literal(bits)
             })
         }
 
+        /// A map the renderer walks: a non-null address, on the heap or in
+        /// read-only program data.
+        fn is_walkable_map(&self, bits: u64) -> bool {
+            map_addr_from_tagged(bits).is_some_and(|p| !p.is_null() && !self.proc.is_null())
+        }
+
         fn bits(&mut self, bits: u64) -> String {
-            if self.is_proc_heap_container(bits, list_addr_from_tagged) {
+            if self.is_proc_heap_list(bits) {
                 return self.list(bits);
             }
-            if self.is_proc_heap_container(bits, map_addr_from_tagged) {
+            if self.is_walkable_map(bits) {
                 return self.map(bits);
             }
             if closure_addr_from_tagged(bits).is_some() {
