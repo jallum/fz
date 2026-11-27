@@ -4,12 +4,15 @@
 //! for a core is charged as if it were working. The limit here is on the CPU
 //! the child and its descendants spend (user plus system), read while they
 //! run. A hung child spends no CPU, so a wall-clock ceiling beside the CPU
-//! limit still stops it.
+//! limit still stops it. That ceiling is a fixed hang backstop, independent of
+//! the CPU limit: a child that runs always reaches a small CPU limit before the
+//! wall, however long the machine keeps it off the CPU.
 
 use std::time::Duration;
 
-/// How many times the CPU limit the wall-clock ceiling allows.
-const CEILING_FACTOR: u32 = 10;
+/// The wall-clock ceiling that ends a child spending no CPU. It is long enough
+/// that a running child, however starved, reaches its CPU limit first.
+const HANG_BACKSTOP: Duration = Duration::from_secs(200);
 
 /// How often a running child's CPU is read.
 pub(super) const SAMPLE_INTERVAL: Duration = Duration::from_millis(200);
@@ -25,9 +28,9 @@ impl ChildLimit {
         Self { cpu, wall_ceiling }
     }
 
-    /// A CPU limit with the standard wall-clock ceiling.
+    /// A CPU limit with the hang backstop as its wall-clock ceiling.
     pub(super) fn of_cpu(cpu: Duration) -> Self {
-        Self::new(cpu, cpu * CEILING_FACTOR)
+        Self::new(cpu, HANG_BACKSTOP)
     }
 
     pub(super) fn wall_ceiling(&self) -> Duration {

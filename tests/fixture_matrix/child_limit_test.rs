@@ -141,6 +141,27 @@ pub(super) fn a_failure_names_both_the_cpu_and_the_wall_time() {
     assert_eq!(limit.exceeded(waiting), None, "waiting under the ceiling is free");
 }
 
+pub(super) fn a_cpu_limits_wall_ceiling_does_not_shrink_with_the_budget() {
+    let small = ChildLimit::of_cpu(Duration::from_secs(1));
+    assert_eq!(
+        small.wall_ceiling(),
+        ChildLimit::of_cpu(DEFAULT_FIXTURE_CPU_LIMIT).wall_ceiling(),
+        "the wall ceiling backstops a hang whatever the budget is"
+    );
+
+    // A child that is running but kept off the CPU for far longer than its
+    // budget has spent almost no CPU; waiting is not a verdict.
+    let starved = child_limit::Charge {
+        cpu: Duration::from_millis(100),
+        wall: Duration::from_secs(11),
+    };
+    assert_eq!(
+        small.exceeded(starved),
+        None,
+        "a starved child that is still running is not over a limit"
+    );
+}
+
 /// Linux reads a group's CPU from `/proc/<pid>/stat`; the line is parsed the
 /// same way on every platform so its reading is exercised everywhere.
 pub(super) fn a_proc_stat_line_is_charged_to_its_group_by_the_fields_after_the_command_name() {

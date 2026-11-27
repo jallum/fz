@@ -77,7 +77,7 @@ only the keys below:
   source path to `fz2 run|interp`, to the built binary, and to the `elixir`
   oracle, so `System.argv()` is checked against Elixir on every path. A
   `kind: test` fixture takes none.
-- `timeout.<path>_secs:` — per-path CPU-limit override (the wall ceiling is 10x).
+- `timeout.<path>_secs:` — per-path CPU-limit override (the wall ceiling stays the fixed hang backstop).
 
 Every `fixtures/*.fz` file's stem matches `NNNNN_name` and its number is
 unique across `fixtures/` and `fixtures2/`, checked by the static trial
@@ -255,7 +255,8 @@ machine load is not charged for the wait, so the limit measures the program, not
 the machine. It is deliberately generous: it detects nontermination, not
 compiler performance. Performance regressions require deterministic work
 counters from telemetry. A hung child spends no CPU, so every limit also has a
-wall-clock ceiling of 10x its CPU limit (200s by default). Every failure names
+wall-clock ceiling, a fixed 200s hang backstop independent of its CPU limit,
+so a child that runs always meets its CPU limit first. Every failure names
 both numbers: `<label> exceeded 20s of CPU (wall 31.2s)` or `<label> exceeded the
 200s wall ceiling (CPU 0.3s)`. A descendant that leaves the process group
 (`setsid`) is not charged. `run`/`interp` have two phases: a setup limit starts at
@@ -307,7 +308,7 @@ capturing stderr never waits for inherited writers.
 20s CPU limit at spawn. A successful build's binary then gets its own execution
 limit, also starting at spawn; an Elixir oracle does likewise. A
 `timeout.<path>_secs` entry replaces the 20s execution CPU limit for that path
-(its wall ceiling follows at 10x); the setup and compilation limits stay at the
+(its wall ceiling stays the 200s hang backstop); the setup and compilation limits stay at the
 central 20s policy. Output is captured
 in anonymous temporary regular files, so output collection does not wait for
 inherited descriptors to close. On expiry or a lifecycle error, the runner

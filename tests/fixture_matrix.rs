@@ -362,6 +362,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             child_limit_test::a_child_that_hangs_hits_the_wall_ceiling,
         ),
         (
+            "a_cpu_limits_wall_ceiling_does_not_shrink_with_the_budget",
+            child_limit_test::a_cpu_limits_wall_ceiling_does_not_shrink_with_the_budget,
+        ),
+        (
             "a_failure_names_both_the_cpu_and_the_wall_time",
             child_limit_test::a_failure_names_both_the_cpu_and_the_wall_time,
         ),
@@ -1782,17 +1786,17 @@ fn fixture_command_rejects_missing_readiness() {
     let error = guarded_fixture_command(
         Command::new("sh")
             .env("FZ_SETUP_HANG_PID_PATH", &pid_path)
-            .args(["-c", "printf %s $$ > \"$FZ_SETUP_HANG_PID_PATH\"; sleep 2"]),
+            .args(["-c", "printf %s $$ > \"$FZ_SETUP_HANG_PID_PATH\"; sleep 600"]),
         "setup-hung fixture",
         ExecutionBoundary::Announced,
-        ChildLimit::new(Duration::from_secs(1), Duration::from_secs(1)),
+        ChildLimit::new(DEFAULT_FIXTURE_CPU_LIMIT, Duration::from_secs(1)),
         default_child_limit(),
         ReadyWriterAction::Inherit,
     )
     .expect_err("a live command that never signals readiness must hit the setup guard");
-    assert_eq!(
-        error,
-        "setup-hung fixture did not signal execution ready within the 1s wall ceiling (CPU 0.0s); stderr: "
+    assert!(
+        error.starts_with("setup-hung fixture did not signal execution ready within the 1s wall ceiling (CPU "),
+        "{error}"
     );
     assert_reaped(read_pid(&pid_path));
     let _ = fs::remove_file(pid_path);
@@ -2093,20 +2097,22 @@ fn kind_test_timeouts_kill_the_outer_command_and_its_hung_root() {
 
 fn build_output_owner_cleans_timeout_and_error_paths() {
     let path = temp_build_output_path("owner_timeout");
+    let pid_path = temp_build_output_path("owner_timeout_pid");
     let timeout = with_fz2_build_outputs(path.clone(), |out_path| {
         seed_fz2_build_outputs(out_path);
-        fixture_command_output(
-            Command::new("sh").args(["-c", "sleep 2"]),
+        fixture_command_output_with_ready_writer_action(
+            Command::new("sh")
+                .env("FZ_OWNER_HANG_PID_PATH", &pid_path)
+                .args(["-c", "printf %s $$ > \"$FZ_OWNER_HANG_PID_PATH\"; sleep 600"]),
             "timed-out build probe",
             ExecutionBoundary::Spawn,
-            Duration::from_millis(20),
+            ChildLimit::new(DEFAULT_FIXTURE_CPU_LIMIT, Duration::from_millis(200)),
+            ReadyWriterAction::Inherit,
         )
     });
-    assert!(
-        timeout
-            .unwrap_err()
-            .contains("exceeded the 200ms wall ceiling (CPU 0.0s)")
-    );
+    assert!(timeout.unwrap_err().contains("exceeded the 200ms wall ceiling (CPU "));
+    assert_reaped(read_pid(&pid_path));
+    let _ = fs::remove_file(pid_path);
     assert_fz2_build_outputs_absent(&path);
 
     let path = temp_build_output_path("owner_error");
@@ -3322,18 +3328,24 @@ fn fixture_invocations_own_their_working_directory() {
     }
 
     let dir_file = temp_build_output_path("scratch_dir_name");
+    let pid_path = temp_build_output_path("scratch_dir_pid");
     let error = fixture_command_output_with_ready_writer_action(
-        Command::new("sh").env("FZ_SCRATCH_DIR_PATH", &dir_file).args([
+        Command::new("sh")
+            .env("FZ_SCRATCH_DIR_PATH", &dir_file)
+            .env("FZ_SCRATCH_PID_PATH", &pid_path)
+            .args([
             "-c",
-            "pwd > \"$FZ_SCRATCH_DIR_PATH\"; printf . > /dev/fd/$FZ_EXEC_READY_FD; sleep 2",
+            "pwd > \"$FZ_SCRATCH_DIR_PATH\"; printf %s $$ > \"$FZ_SCRATCH_PID_PATH\"; printf . > /dev/fd/$FZ_EXEC_READY_FD; sleep 600",
         ]),
         "timed-out relative file writer",
         ExecutionBoundary::Announced,
-        ChildLimit::new(Duration::from_millis(500), Duration::from_millis(500)),
+        ChildLimit::new(DEFAULT_FIXTURE_CPU_LIMIT, Duration::from_millis(500)),
         ReadyWriterAction::Inherit,
     )
     .expect_err("the probe outlives its window");
-    assert!(error.contains("exceeded"), "{error}");
+    assert!(error.contains("exceeded the 500ms wall ceiling (CPU "), "{error}");
+    assert_reaped(read_pid(&pid_path));
+    let _ = fs::remove_file(pid_path);
     let recorded = fs::read_to_string(&dir_file).expect("probe recorded its directory");
     let timed_out_dir = PathBuf::from(recorded.trim_end());
     let _ = fs::remove_file(dir_file);
