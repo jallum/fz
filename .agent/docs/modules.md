@@ -266,16 +266,46 @@ call proven to pass anything else is refused at compile time where Erlang
 raises. `List.to_string/1` is built on it (`01959`).
 
 `lib/maps.fz` defines `:maps` with `to_list/1`, `keys/1`, `values/1`, `put/3`,
-`merge/2` and `from_list/1`. `to_list/1`, `keys/1` and `values/1` are each a
-single runtime walk of the map's entries; `put/3` is the extern `fz_map_put`,
-in OTP's argument order (`put(key, value, map)`); `from_list/1` builds through
-the extern `fz_map_from_kv` (the last pair for a key wins); and `merge/2` is
+`merge/2`, `from_list/1`, `iterator/1`, `next/1` and `fold/3`. `to_list/1`,
+`keys/1` and `values/1` are each a single runtime walk of the map's entries;
+`put/3` is the extern `fz_map_put`, in OTP's argument order
+(`put(key, value, map)`); `from_list/1` builds through the extern
+`fz_map_from_kv` (the last pair for a key wins); and `merge/2` is
 `from_list(to_list(a) ++ to_list(b))`. Each of `to_list/1`, `keys/1`,
-`values/1`, `put/3` and `merge/2` raises `BadMapError` for a non-map, behind an
-`is_map` guard (`merge/2` names the first argument that is none).
+`values/1`, `put/3`, `merge/2` and `iterator/1` raises `BadMapError` for a
+non-map, behind an `is_map` guard (`merge/2` names the first argument that is
+none).
+
+`iterator/1`, `next/1` and `fold/3` are `maps.erl`'s clauses. An iterator is
+the improper list `[0 | map]`: the number of entries gone past and the map.
+`next/1` answers `{key, value, iterator}` or `:none`, and an iterator it has
+already handed out, `{key, value, iterator}` itself, is its own next, so a walk
+calls into the runtime once per batch and not once per entry. `fold/3` over a
+map and an arity-3 function is `fold_1/4` over `next(iterator(map))`; over
+anything else it wraps the walk in a `try` that tags a `next/1` failure with a
+fresh `make_ref/0` and raises `BadMapError` for the third argument, as OTP does,
+and a function that is not of arity 3 raises `ArgumentError`. Each `try` in `next/1` and `try_next/2` is
+`catch :error, :badarg`, as in OTP. Ordered iterators
+(`iterator/2`) are not defined.
+
+`lib/erts_internal.fz` defines `:erts_internal` with `map_next/3` in iterator
+mode only. Its `path` is the number of entries the iterator has gone past, not
+the trie path OTP encodes. It calls the extern `fz_map_next_batch(map, index)`
+(`Heap::map_batch`), which answers the `{key, value, next}` tuple of up to
+`MAP_BATCH_LEN` (32) entries from entry `index`, each `next` the tuple holding
+the following entry; the last one's is `:none`, or the improper list
+`[index + 32 | map]` when entries remain. A map of 32 entries or fewer, and
+every struct, is one batch. `map_next/3` answers `:none` for `path` equal to the
+map's size and raises `ArgumentError` for a `path` that is not an integer from 0
+to the size, a non-map, or a mode other than `:iterator`; the extern is only
+called with an index below the entry count.
+
 `Map.to_list/1`, `keys/1`, `values/1`, `put/3`, `merge/2` and `new/1` delegate
-to them, as Elixir's `Map` does, and `Map.take/2`, `drop/2` and `filter/2` build
-their results through `from_list/1`. `Map.delete/2` and `Map.get/2` raise
+to `:maps`, as Elixir's `Map` does, and `Map.take/2` and `drop/2` build their
+results through `from_list/1`. `Map.filter/2`, `reject/2` and `split_with/2`
+walk with `:maps.iterator/1` and `:maps.next/1` and build their results through
+`from_list/1`, as Elixir's do; each guards `is_map(map) and is_function(fun, 1)`.
+`Map.delete/2` and `Map.get/2` raise
 `%BadMapError{}` for a non-map, and every `Map` function that returns a map
 says `:: map` in its spec.
 

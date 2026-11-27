@@ -1,0 +1,35 @@
+defmodule :erts_internal do
+  @moduledoc "The Erlang `:erts_internal` functions the Erlang standard library calls into the runtime through."
+
+  @doc """
+  Returns the batch of a map's entries that an iterator at entry `path` takes
+  next, in the map's own order: `{key, value, next}`, where `next` is the
+  tuple holding the following entry, and the last tuple's `next` is `:none`
+  when no entries remain and the improper list `[index | map]` otherwise, the
+  iterator that continues the walk at entry `index`. A batch holds 32 entries, and a map of 32 entries or
+  fewer is one batch. `path` is the number of entries the iterator has gone
+  past, so `0` starts at the first.
+
+  Returns `:none` when `path` is the number of entries the map has.
+
+  Raises `ArgumentError` when `map` is not a map, when `path` is not an integer
+  from 0 to the map's size, or when the third argument is not `:iterator`.
+
+  ## Examples
+
+      :erts_internal.map_next(0, %{a: 1, b: 2}, :iterator)
+      #=> {:a, 1, {:b, 2, :none}}
+
+      :erts_internal.map_next(2, %{a: 1, b: 2}, :iterator)
+      #=> :none
+
+  """
+  @spec map_next(integer, any, :iterator) :: {any, any, any} | :none
+  def map_next(path, map, :iterator) when is_integer(path) and path >= 0 and is_map(map) and path < map_size(map),
+    do: fz_map_next_batch(map, path)
+
+  def map_next(path, map, :iterator) when is_integer(path) and is_map(map) and path == map_size(map), do: :none
+  def map_next(_path, _map, _mode), do: :erlang.error(:badarg)
+
+  extern "fz" defp fz_map_next_batch(map, integer) :: any
+end

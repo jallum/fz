@@ -21,6 +21,7 @@ Got fz_trie_get_atom(const uint8_t *root, uint64_t atom, const Process *process)
 uint64_t fz_map_keys(const uint8_t *map, Bump *b);
 uint64_t fz_map_values(const uint8_t *map, Bump *b);
 uint64_t fz_map_pairs(const uint8_t *map, Bump *b, uint64_t pair_header);
+uint64_t fz_map_next_batch(const uint8_t *map, uint64_t index, Bump *b, uint64_t triple_header, uint64_t none);
 
 enum { BITSTRING = 5, INT = 0xD, ATOM = 0xF };
 enum { INSERT, REPLACE, SKIP };
@@ -224,6 +225,46 @@ static void check_walks(const uint8_t *m, uint8_t *arena, size_t size) {
         if (n && (mode == 0 ? fz_map_keys(m, &tight) : mode == 1 ? fz_map_values(m, &tight) : fz_map_pairs(m, &tight, PAIR_HEADER)) != 0) fail("walk past the bump");
     }
 }
+#define TRIPLE_HEADER 0x0000002b00000000ull
+#define NONE_ATOM 77ull
+#define BATCH 32
+#define MAP_KIND 2ull
+#define INT_KIND 0xDull
+#define LINK_TERMINATOR (1ull << 63)
+// The batch from entry `index`: its tuples hold the entries in order, each leads to the one placed after it,
+// and the last leads to the continuation or to none. A bump that cannot hold it places nothing.
+static void check_batch(const uint8_t *m, const Entry *e, int n, int index, uint8_t *arena, size_t size) {
+    int k = n - index < BATCH ? n - index : BATCH;
+    int more = index + k < n;
+    size_t used = (size_t)k * 48 + (more ? 32 : 0);
+    Bump b = {arena, arena + size};
+    uint64_t word = fz_map_next_batch(m, index, &b, TRIPLE_HEADER, NONE_ATOM);
+    if (word >> 56 != STRUCT_KIND) fail("batch word");
+    if ((size_t)(b.top - arena) != used) fail("batch size");
+    for (int i = 0; i < k; i++) {
+        const uint64_t *t = (const uint64_t *)(arena + (size_t)i * 48);
+        const Entry *entry = e + index + i;
+        int last = i == k - 1;
+        uint64_t next_kind = !last ? STRUCT_KIND : more ? LIST_KIND : ATOM;
+        if (t[0] != TRIPLE_HEADER || t[1] != entry->key || t[2] != entry->value) fail("batch tuple");
+        if (t[4] != (entry->kkind | entry->vkind << 8 | next_kind << 16) || t[5] != 0) fail("batch kinds");
+        if (!last) { if (t[3] != (uint64_t)(t + 6)) fail("batch next"); continue; }
+        if (!more) { if (t[3] != NONE_ATOM) fail("batch none"); continue; }
+        const uint64_t *cell = (const uint64_t *)t[3], *terminator = (const uint64_t *)(arena + used - 32);
+        if (cell != (const uint64_t *)(arena + used - 16)) fail("continuation cell");
+        if (cell[0] != (uint64_t)(index + k) || cell[1] != (INT_KIND << 56 | (uint64_t)terminator | LINK_TERMINATOR)) fail("continuation");
+        if (terminator[0] != (uint64_t)m || terminator[1] != MAP_KIND << 56) fail("continuation tail");
+    }
+    Bump exact = {arena, arena + used};
+    if (!fz_map_next_batch(m, index, &exact, TRIPLE_HEADER, NONE_ATOM)) fail("batch in exact room");
+    Bump tight = {arena, arena + used - 1};
+    if (fz_map_next_batch(m, index, &tight, TRIPLE_HEADER, NONE_ATOM) != 0) fail("batch past the bump");
+}
+static void check_batches(const uint8_t *m, uint8_t *arena, size_t size) {
+    static Entry e[400];
+    int n = entries_of(m, e);
+    for (int index = 0; index < n; index++) check_batch(m, e, n, index, arena, size);
+}
 static int test_trie(void) {
     static uint8_t arena[1 << 22], walk_arena[1 << 16];
     static H e[400];
@@ -258,6 +299,7 @@ static int test_trie(void) {
             if (!present && got.kind != (same_hash > 1 ? -2 : -1)) fail("trie get of an absent key");
         }
         check_walks(root, walk_arena, sizeof walk_arena);
+        check_batches(root, walk_arena, sizeof walk_arena);
     }
     return 0;
 }
@@ -296,6 +338,7 @@ static int test(void) {
             }
             m = r; check(m, e, n);
             check_walks(m, walk_arena, sizeof walk_arena);
+            check_batches(m, walk_arena, sizeof walk_arena);
         }
     }
     test_trie();

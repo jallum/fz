@@ -1968,6 +1968,16 @@ pub extern "C" fn fz_map_values(process: *mut Process, map_ref_word: u64) -> u64
     map_list(process, map_ref_word, MapPart::Values, "fz_map_values")
 }
 
+/// `:erts_internal.map_next/3` in iterator mode: the batch of the map's
+/// entries from entry `index`, as a `{key, value, next}` tuple (see
+/// `Heap::map_batch`). `index` is below the map's entry count.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_next_batch(process: *mut Process, map_ref_word: u64, index: i64) -> u64 {
+    let map = any_value_ref_from_word(map_ref_word, "fz_map_next_batch map");
+    let index = usize::try_from(index).expect("fz_map_next_batch index");
+    (unsafe { &mut *process }).heap.map_batch(map, index).raw_word()
+}
+
 fn map_list(process: *mut Process, map_ref_word: u64, part: MapPart, context: &str) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, context);
     (unsafe { &mut *process }).heap.map_list(map, part).raw_word()

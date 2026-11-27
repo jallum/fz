@@ -1,0 +1,74 @@
+#---
+# purpose: ":maps.iterator, next and fold walk an empty map, a flat map, a struct and a trie of 100 keys that crosses the 32-entry batch boundary; Map.filter, reject and split_with walk the same way; each misuse raises what Elixir raises"
+# oracle: self
+# oracle.stamp: 18f4a8fb33781a6d
+#---
+defmodule Pt do
+  defstruct [:x, :y]
+end
+
+defmodule Main do
+  # Every entry the iterator hands out, front to back.
+  def walk(iterator) do
+    case :maps.next(iterator) do
+      {k, v, rest} -> [{k, v} | walk(rest)]
+      :none -> []
+    end
+  end
+
+  def sum(map), do: :maps.fold(fn _k, v, acc -> v + acc end, 0, map)
+  def count(map), do: :maps.fold(fn _k, _v, acc -> acc + 1 end, 0, map)
+
+  def show(label, map) do
+    IO.puts("#{label}: walk #{inspect(Enum.sort(walk(:maps.iterator(map))))}")
+    IO.puts("#{label}: walk is to_list #{walk(:maps.iterator(map)) == :maps.to_list(map)}")
+    IO.puts("#{label}: fold #{inspect(Enum.sort(:maps.fold(fn k, v, acc -> [{k, v} | acc] end, [], map)))}")
+  end
+
+  def attempt(label, fun) do
+    try do
+      fun.()
+      IO.puts("#{label}: no raise")
+    rescue
+      e in BadMapError -> IO.puts("#{label}: #{inspect(e.__struct__)} #{inspect(e.term)}")
+      e -> IO.puts("#{label}: #{inspect(e.__struct__)}")
+    end
+  end
+
+  def main() do
+    show("empty", %{})
+    show("flat", %{"a" => 1, "b" => 2})
+    show("struct", %Pt{x: 1, y: 2})
+    IO.puts("iterator: #{inspect(:maps.iterator(%{"a" => 1}))}")
+    IO.puts("none: #{inspect(:maps.next(:none))}")
+
+    big = Map.new(1..100, fn i -> {i, i * 10} end)
+    IO.puts("big: sum #{sum(big)} count #{count(big)}")
+    IO.puts("big: keys #{Enum.sort(Enum.map(walk(:maps.iterator(big)), fn {k, _v} -> k end)) == Enum.to_list(1..100)}")
+
+    boundary = Map.new(1..32, fn i -> {i, i} end)
+    IO.puts("boundary: sum #{sum(boundary)} count #{count(boundary)}")
+    bigger = Map.new(1..33, fn i -> {i, i} end)
+    IO.puts("bigger: sum #{sum(bigger)} count #{count(bigger)}")
+
+    odd = fn {_k, v} -> rem(v, 2) == 1 end
+    small = %{1 => 1, 2 => 2, 3 => 3, 4 => 4}
+    IO.puts("filter: #{inspect(Map.filter(small, odd))}")
+    IO.puts("reject: #{inspect(Map.reject(small, odd))}")
+    IO.puts("split_with: #{inspect(Map.split_with(small, odd))}")
+    IO.puts("filter empty: #{inspect(Map.filter(%{}, odd))}")
+    IO.puts("reject empty: #{inspect(Map.reject(%{}, odd))}")
+    IO.puts("split_with empty: #{inspect(Map.split_with(%{}, odd))}")
+    IO.puts("filter big: #{map_size(Map.filter(big, fn {k, _v} -> rem(k, 3) == 0 end))}")
+    IO.puts("reject big: #{map_size(Map.reject(big, fn {k, _v} -> rem(k, 3) == 0 end))}")
+    {yes, no} = Map.split_with(big, fn {k, _v} -> k <= 40 end)
+    IO.puts("split_with big: #{map_size(yes)} #{map_size(no)} #{sum(yes)} #{sum(no)}")
+
+    attempt("iterator(1)", fn -> :maps.iterator(1) end)
+    attempt("next(:bad)", fn -> :maps.next(:bad) end)
+    attempt("fold non-map", fn -> :maps.fold(fn _k, _v, acc -> acc end, 0, :nope) end)
+    attempt("fold arity-2 fun", fn -> :maps.fold(fn _k, acc -> acc end, 0, %{a: 1}) end)
+  end
+end
+
+Main.main()

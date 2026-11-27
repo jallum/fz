@@ -47,6 +47,99 @@ defmodule :maps do
   extern "fz" defp fz_map_values(map) :: any
 
   @doc """
+  Returns an iterator over the map's entries, in the map's iteration order.
+  The iterator is the improper list `[0 | map]`: the number of entries gone
+  past, and the map. `next/1` and `fold/3` walk it. Raises `BadMapError` when
+  `map` is not a map.
+
+  ## Examples
+
+      :maps.iterator(%{"a" => 1})
+      #=> [0 | %{"a" => 1}]
+
+  """
+  @spec iterator(any) :: any
+  def iterator(map) when is_map(map), do: [0 | map]
+  def iterator(map), do: raise(%BadMapError{term: map})
+
+  @doc """
+  Returns the next entry of an iterator and the iterator after it, as
+  `{key, value, iterator}`, or `:none` when the iterator has gone past every
+  entry. The entries of a batch come with no call into the runtime: the
+  iterator after an entry is the batch's next tuple. Raises `ArgumentError`
+  when `iterator` is not an iterator.
+
+  ## Examples
+
+      :maps.next(:maps.iterator(%{"a" => 1}))
+      #=> {"a", 1, :none}
+
+      :maps.next(:none)
+      #=> :none
+
+  """
+  @spec next(any) :: {any, any, any} | :none
+  def next({key, value, iterator}), do: {key, value, iterator}
+
+  def next([path | map]) when (is_integer(path) or is_list(path)) and is_map(map) do
+    try do
+      :erts_internal.map_next(path, map, :iterator)
+    catch
+      :error, :badarg -> :erlang.error(:badarg)
+    end
+  end
+
+  def next(:none), do: :none
+  def next(_iterator), do: :erlang.error(:badarg)
+
+  @doc """
+  Calls `fun.(key, value, acc)` for each entry of a map, or of an iterator,
+  in iteration order, starting with `init` as `acc`, and returns the last
+  `acc`. Raises `BadMapError` when the third argument is neither a map nor an
+  iterator, and `ArgumentError` when `fun` is not a function of three
+  arguments.
+
+  ## Examples
+
+      :maps.fold(fn _k, v, acc -> v + acc end, 0, %{"a" => 1, "b" => 2})
+      #=> 3
+
+  """
+  @spec fold((any, any, a -> a), a, any) :: a when a: var
+  def fold(fun, init, map) when is_map(map) and is_function(fun, 3), do: fold_1(fun, init, next(iterator(map)), :undefined)
+
+  def fold(fun, init, iterator) when is_function(fun, 3) do
+    error_tag = make_ref()
+
+    try do
+      fold_1(fun, init, try_next(iterator, error_tag), error_tag)
+    catch
+      :error, ^error_tag -> raise(%BadMapError{term: iterator})
+    end
+  end
+
+  def fold(_fun, _init, _map), do: :erlang.error(:badarg)
+
+  @spec fold_1((any, any, a -> a), a, :none | {any, any, any}, any) :: a when a: var
+  defp fold_1(fun, acc, {key, value, iterator}, error_tag),
+    do: fold_1(fun, fun.(key, value, acc), try_next(iterator, error_tag), error_tag)
+
+  defp fold_1(_fun, acc, :none, _error_tag), do: acc
+
+  @spec try_next(any, any) :: {any, any, any} | :none
+  defp try_next({_key, _value, _iterator} = entry, _error_tag), do: entry
+  defp try_next(:none, _error_tag), do: :none
+  defp try_next(iterator, :undefined), do: next(iterator)
+
+  defp try_next(iterator, error_tag) do
+    try do
+      next(iterator)
+    catch
+      :error, :badarg -> :erlang.error(error_tag)
+    end
+  end
+
+  @doc """
   Returns the map with `value` set for `key`, overwriting any existing entry.
   Raises `BadMapError` when `map` is not a map.
 

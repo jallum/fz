@@ -237,6 +237,10 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         source: include_str!("../../lib/unicode.fz"),
     },
     RuntimeModuleSource {
+        name: ":erts_internal",
+        source: include_str!("../../lib/erts_internal.fz"),
+    },
+    RuntimeModuleSource {
         name: ":maps",
         source: include_str!("../../lib/maps.fz"),
     },

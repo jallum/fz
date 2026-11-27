@@ -813,8 +813,8 @@ An extern declares the types it really takes and returns, and the runtime
 helper trusts them: it does not test them again. The type check lives once, in
 fz, where the compiler can see it and drop it when the argument is proven.
 The map externs show the shape. `fz_map_put`, `fz_map_delete`,
-`fz_map_has_key`, `fz_map_count`, `fz_map_keys`, `fz_map_values` and
-`fz_map_to_list` take `map`, and `fz_map_put`, `fz_map_delete` and
+`fz_map_has_key`, `fz_map_count`, `fz_map_keys`, `fz_map_values`,
+`fz_map_to_list` and `fz_map_next_batch` take `map`, and `fz_map_put`, `fz_map_delete` and
 `fz_map_from_kv` return `map`. `Heap::expect_map_layout` reads the layout of
 its argument (flat, trie or struct, a choice of layout and not a type check)
 and asserts only in a debug build that the value is a map; `read_map_value`
@@ -826,7 +826,7 @@ The library wrapper carries the proof forward:
   parameter and guards it with `is_map`, or ends in a clause that raises
   `%BadMapError{term: x}` (`Map.put/3`, `Map.delete/2`, `Map.get/2`,
   `Map.has_key?/2`, `Kernel.map_size/1`, `:maps.to_list/1`, `keys/1`,
-  `values/1`, `put/3`, `merge/2`). The compiler drops the guard for a caller whose argument is
+  `values/1`, `put/3`, `merge/2`, `iterator/1`). The compiler drops the guard for a caller whose argument is
   proven a map.
 - A function that returns a map says `:: map` in its spec, so a loop that feeds
   one call's result to the next keeps the proof; a `:: any` return throws it
