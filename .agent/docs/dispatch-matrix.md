@@ -76,8 +76,9 @@ keeps that type. A clause that learns more -- `is_atom(form)` having passed --
 binds the narrower type to its own entry-block parameter, and the jump into the
 block converts the value; the tested `Var` is never retyped. `NativeFnCtx`
 records a `Var`'s type once (`record_value_type`): a different second type is a
-lowering panic. The one permitted sharpening is a parameter's own: it is born
-with the type of its lane and takes the type of the value bound to it
+lowering panic. The one permitted sharpening is a lane's own: a parameter, or
+a lane a machine call returns, is born with the type it travels in
+(`record_lane_type`) and takes the type of the value bound to it
 (`record_carried_type`). A constant's `Var` carries the exact type of the value
 it holds, so binding the value changes nothing.
 

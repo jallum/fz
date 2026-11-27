@@ -6610,7 +6610,7 @@ impl NativeFnCtx {
     fn emit_machine_call(&mut self, callee: FnId, args: Vec<Var>, result_tys: &[Ty]) -> Vec<Var> {
         let (lanes, _) = self.emit_let_many(result_tys.len(), Prim::MachineCall(callee, args));
         for (lane, ty) in lanes.iter().zip(result_tys) {
-            self.value_types.insert(*lane, *ty);
+            self.record_lane_type(*lane, *ty);
         }
         lanes
     }
@@ -6625,8 +6625,7 @@ impl NativeFnCtx {
         tys.into_iter()
             .map(|ty| {
                 let param = self.builder.fresh_var();
-                self.record_value_type(param, *ty);
-                self.lane_typed.insert(param);
+                self.record_lane_type(param, *ty);
                 param
             })
             .collect()
@@ -6670,9 +6669,16 @@ impl NativeFnCtx {
         );
     }
 
-    /// The value a parameter carries gives it the type that value has. A
-    /// parameter is born with the type of the lane it travels in, and the
-    /// value bound to it, the only one that ever is, sharpens that once. Any
+    /// Gives `var`, a lane a value travels in, the type of that lane. The
+    /// value later bound to it sharpens the type once (`record_carried_type`).
+    fn record_lane_type(&mut self, var: Var, ty: Ty) {
+        self.record_value_type(var, ty);
+        self.lane_typed.insert(var);
+    }
+
+    /// The value a lane carries gives it the type that value has. A lane is
+    /// born with the type it travels in, and the value bound to it, the only
+    /// one that ever is, sharpens that once. Any
     /// other `Var` keeps the type it was first recorded with.
     fn record_carried_type(&mut self, var: Var, ty: Ty) {
         if self.lane_typed.remove(&var) {
