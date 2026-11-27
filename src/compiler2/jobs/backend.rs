@@ -499,8 +499,8 @@ impl<'a> ReturnEndpoints<'a> {
         endpoints
     }
 
-    fn layout(&self, position: &TransportPosition) -> Result<&'a BackendValueLayout, FatalError> {
-        self.layouts.get(position).copied().ok_or(FatalError)
+    fn layout(&self, position: &TransportPosition) -> Option<&'a BackendValueLayout> {
+        self.layouts.get(position).copied()
     }
 
     fn diverges(&self, position: &TransportPosition) -> bool {
@@ -511,7 +511,7 @@ impl<'a> ReturnEndpoints<'a> {
 fn backend_call_edge(
     target: &CallEdge<ExecutableKey>,
     endpoints: &ReturnEndpoints<'_>,
-) -> Result<CallEdge<ExecutableKey, BackendReturnFlow>, FatalError> {
+) -> Result<CallEdge<ExecutableKey, BackendReturnFlow>, Box<ReturnFlowRefusal>> {
     Ok(match target {
         CallEdge::Direct(direct) => CallEdge::Direct(DirectCallEdge {
             callee: direct.callee.clone(),
@@ -530,7 +530,7 @@ fn backend_call_edge(
                         extern_marshals: arm.extern_marshals.clone(),
                     })
                 })
-                .collect::<Result<Vec<_>, FatalError>>()?,
+                .collect::<Result<Vec<_>, Box<ReturnFlowRefusal>>>()?,
         ))),
         CallEdge::Indirect(flow) => CallEdge::Indirect(resolve_return_flow(flow, endpoints)?),
     })
@@ -585,17 +585,43 @@ fn backend_entry_captures(
         .collect()
 }
 
+/// The check that refused to resolve a call's return flow, the position it
+/// refused at, and the flow it was resolving.
+#[derive(Debug)]
+struct ReturnFlowRefusal {
+    check: &'static str,
+    position: TransportPosition,
+    flow: CallReturnFlow,
+}
+
+impl std::fmt::Display for ReturnFlowRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at {:?} in {:?}", self.check, self.position, self.flow)
+    }
+}
+
 fn resolve_return_flow(
     flow: &super::super::artifact::CallReturnFlow,
     endpoints: &ReturnEndpoints<'_>,
-) -> Result<BackendReturnFlow, FatalError> {
-    let layout = |position: &TransportPosition| endpoints.layout(position);
+) -> Result<BackendReturnFlow, Box<ReturnFlowRefusal>> {
+    let refuse = |check: &'static str, position: &TransportPosition| {
+        Box::new(ReturnFlowRefusal {
+            check,
+            position: position.clone(),
+            flow: flow.clone(),
+        })
+    };
+    let layout = |position: &TransportPosition| {
+        endpoints
+            .layout(position)
+            .ok_or_else(|| refuse("position publishes no return layout", position))
+    };
     Ok(match flow {
         CallReturnFlow::NoReturn { local_source } => {
             if let Some(local_source) = local_source
                 && !endpoints.diverges(local_source)
             {
-                return Err(FatalError);
+                return Err(refuse("a no-return call's source returns", local_source));
             }
             BackendReturnFlow::NoReturn
         }
@@ -620,7 +646,7 @@ fn resolve_return_flow(
         },
         super::super::artifact::CallReturnFlow::Deliver { source, entry, .. } => {
             if endpoints.diverges(source) {
-                return Err(FatalError);
+                return Err(refuse("delivery out of a function that never returns", source));
             }
             let source = layout(source)?;
             BackendReturnFlow::Deliver {
@@ -814,18 +840,14 @@ fn lower_backend_entry(
             .iter()
             .map(|step| lowerer.lower_step(step))
             .collect::<Result<Vec<_>, _>>()?,
-        tail: lower_backend_tail(lowerer, abi, &entry.tail).unwrap_or_else(|_| {
-            panic!(
-                "symbolic backend entry {entry_index} tail is incomplete: {:?}",
-                entry.tail
-            )
-        }),
+        tail: lower_backend_tail(lowerer, abi, entry_index, &entry.tail)?,
     })
 }
 
 fn lower_backend_tail(
     lowerer: &mut BackendLowerer<'_, '_, impl crate::telemetry::Telemetry>,
     abi: &AbiReadyExecutable,
+    entry_index: usize,
     tail: &LoweredTail,
 ) -> Result<BackendTail, FatalError> {
     Ok(match tail {
@@ -850,7 +872,8 @@ fn lower_backend_tail(
             BackendTail::DirectCall {
                 value: *value,
                 callsite: *callsite,
-                target: backend_call_edge(edge.target(), &lowerer.return_endpoints)?,
+                target: backend_call_edge(edge.target(), &lowerer.return_endpoints)
+                    .map_err(|refusal| lowerer.refuse_tail(entry_index, refusal))?,
                 selector: callee.module_value(),
                 args: lowerer.lower_call_args(abi, *callsite, None, args)?,
                 dest: dest.clone(),
@@ -881,7 +904,8 @@ fn lower_backend_tail(
                 dest: dest.clone(),
                 return_flow: symbolic_call_edge_return_flow(target)
                     .map(|flow| resolve_return_flow(flow, &lowerer.return_endpoints))
-                    .transpose()?,
+                    .transpose()
+                    .map_err(|refusal| lowerer.refuse_tail(entry_index, refusal))?,
             }
         }
         LoweredTail::If {
@@ -954,6 +978,14 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> BackendLowerer<'a, 'tel, T> {
             return_endpoints,
             constructions,
         }
+    }
+
+    fn refuse_tail(&self, entry_index: usize, refusal: Box<ReturnFlowRefusal>) -> FatalError {
+        incomplete_backend_program(
+            self.telemetry,
+            self.root_id,
+            format!("symbolic backend entry {entry_index} tail is incomplete: {refusal}"),
+        )
     }
 
     fn capture_positions_for_entry(

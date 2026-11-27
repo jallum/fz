@@ -803,7 +803,10 @@ from that value. `diverges` is a fact of the executable's own return alone:
 `AbiReadyExecutable::return_endpoints` hold plain `BackendValueLayout`s for the
 payload and resume positions, which exist only because a callee returned.
 `resolve_return_flow` asks whether a source position is a diverging executable
-return (`ReturnEndpoints::diverges`).
+return (`ReturnEndpoints::diverges`). A refusal is a `ReturnFlowRefusal` naming
+the check, the position and the flow; `lower_backend_tail` reports it
+through `incomplete_backend_program` as a diagnostic, and `lower_backend_entry`
+propagates the error.
 
 That decision is carried by the emitted call form itself. A
 `BackendTail::ClosureCall` carries the `ClosureCallEdge` its artifact edge was

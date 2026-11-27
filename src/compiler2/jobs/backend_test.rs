@@ -342,3 +342,98 @@ fn an_update_that_may_miss_is_emitted_though_its_result_is_absent() {
         "an update whose miss flag is not proven absent must still raise: {lowered:?}"
     );
 }
+
+/// A tail whose call delivers a value out of a function that never returns
+/// is refused. The refusal is an error that carries a diagnostic naming the
+/// refused check, the position and the flow; it is not a panic.
+#[test]
+fn an_entry_whose_return_flow_is_refused_reports_the_check_that_refused_it() {
+    use crate::compiler2::artifact::{AbiReadyCallEdge, CallTarget, DirectCallEdge};
+    use crate::compiler2::body::{CallSiteId, ControlDestination, ControlEntryOrigin, DirectCallee};
+    use crate::source::Span;
+    use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+    let mut world = World::new();
+    let function = world.reference_function(crate::compiler2::ModuleId::GLOBAL, "refused_probe", 0);
+    let key = ExecutableKey {
+        activation: ActivationKey::from_inputs(RootId::for_test(0), function, &[], world.types_mut()),
+        need: ExecutableNeed::Value,
+    };
+    let nothing = world.intern_shape(ShapeDescr::Nothing);
+    let ty = world.types_mut().int();
+    let mut executable = BackendExecutable::for_test(key, ty, nothing);
+    let position = executable.abi.transport.return_position.clone();
+    let layout = BackendValueLayout {
+        structural: nothing,
+        carrier: TransportCarrier::Absent,
+        tys: Box::default(),
+        reprs: Box::default(),
+    };
+    let callsite = CallSiteId::new(0, Span::DUMMY);
+    let abi = Rc::make_mut(&mut executable.abi);
+    abi.call_edges.insert(
+        callsite,
+        AbiReadyCallEdge::Named {
+            target: CallEdge::Direct(DirectCallEdge {
+                callee: CallTarget::ProviderBoundary(function),
+                return_flow: CallReturnFlow::Deliver {
+                    source: position.clone(),
+                    resume: position.clone(),
+                    entry: ControlEntryId::from_u32(0),
+                },
+                extern_marshals: None,
+            }),
+            return_ty: ty,
+        },
+    );
+    let entry = LoweredEntry {
+        span: Span::DUMMY,
+        origin: ControlEntryOrigin::Clause,
+        params: Vec::new(),
+        captures: Vec::new(),
+        capture_owners: Vec::new(),
+        physical_captures: Vec::new(),
+        physical_params: Vec::new(),
+        steps: Vec::new(),
+        tail: LoweredTail::DirectCall {
+            value: ValueId::from_u32(0),
+            callsite,
+            callee: DirectCallee::Function(function),
+            args: Vec::new(),
+            dest: ControlDestination::Return,
+        },
+    };
+
+    let tel = ConfiguredTelemetry::new();
+    let diagnostics = Capture::new();
+    diagnostics.install(&tel, &["fz", "diag"]);
+    let endpoints = ReturnEndpoints {
+        layouts: HashMap::from_iter([(&position, &layout)]),
+        diverging_returns: HashSet::from_iter([&position]),
+    };
+    let mut lowerer = BackendLowerer::new(
+        &mut world,
+        &tel,
+        RootId::for_test(0),
+        &abi.value_layouts,
+        &abi.materialized.value_types,
+        endpoints,
+        ValueMap::new(),
+    );
+
+    assert!(lower_backend_entry(&mut lowerer, abi, 0, &entry).is_err());
+    let events = diagnostics.events();
+    let messages: Vec<_> = events
+        .iter()
+        .filter_map(|event| event.diagnostic.as_ref())
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect();
+    assert_eq!(messages.len(), 1, "one diagnostic: {messages:?}");
+    for named in [
+        "delivery out of a function that never returns",
+        "ExecutableReturn",
+        "Deliver",
+    ] {
+        assert!(messages[0].contains(named), "{named} missing from {:?}", messages[0]);
+    }
+}
