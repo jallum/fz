@@ -1,0 +1,46 @@
+#---
+# purpose: "the README's selective-receive sample: the reply the parked receive waits for crosses as the one value it binds, and every message nobody is waiting for crosses whole"
+#---
+#
+# This is the program under "Selective receive, sharpened" in README.md,
+# character for character. `main` asks the server two questions, then waits
+# for the second answer first. Each cross-process send logs one
+# `fz.runtime.send.probe`: the two questions miss (the server has not run
+# yet, so nothing is parked), the first reply misses `main`'s parked
+# `{:reply, ^ref_b, v}` and waits in its mailbox, the second reply hits and
+# its one bound value, the number `v`, crosses as a word with no copy, and
+# `{:stop}` hits the server's receive and binds nothing.
+def handle_get(ref, from, key) do
+  send(from, {:reply, ref, key})
+  server()
+end
+
+def server() do
+  receive do
+    {:get, ref, from, key} -> handle_get(ref, from, key)
+    {:stop}                -> nil
+  end
+end
+
+def main() do
+  s     = spawn(&server/0)
+  ref_a = make_ref()
+  ref_b = make_ref()
+  me    = self()
+
+  send(s, {:get, ref_a, me, 1})
+  send(s, {:get, ref_b, me, 2})
+
+  # Replies arrive in ref_a, ref_b order, but we want ref_b's first.
+  val_b = receive do
+    {:reply, ^ref_b, v} -> v
+  end
+
+  # ref_a's reply has been sitting in the mailbox the whole time.
+  val_a = receive do
+    {:reply, ^ref_a, v} -> v
+  end
+
+  dbg(val_a + val_b)
+  send(s, {:stop})
+end

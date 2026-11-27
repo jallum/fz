@@ -293,6 +293,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_queue,
         ),
         (
+            "the_readme_selective_receive_sample_copies_only_what_the_waiting_receive_binds",
+            the_readme_selective_receive_sample_copies_only_what_the_waiting_receive_binds,
+        ),
+        (
             "a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable",
             a_hit_gifts_the_roots_a_clause_reads_and_not_one_copy_per_variable,
         ),
@@ -4299,6 +4303,30 @@ fn a_send_probes_on_the_sender_and_gifts_its_result_through_the_receivers_in_que
             copied_list_cells_for_fixture(&unmatched, path, label),
             2,
             "{label}: the unmatched tuple's 2 cells are copied once"
+        );
+    }
+}
+
+/// README.md shows these five probes under its selective-receive sample, and
+/// fixture 02080 is that sample. A message no parked receive is waiting for
+/// crosses whole (48 bytes); the reply `main` is parked on binds one number,
+/// which crosses as its word and kind with no block; `{:stop}` binds nothing.
+/// Neither hit copies anything.
+fn the_readme_selective_receive_sample_copies_only_what_the_waiting_receive_binds() {
+    let sample = FixtureCase::new(
+        "fixtures/02080_the_readme_selective_receive_sample_copies_only_what_the_waiting_receive_binds.fz",
+    );
+    for (path, label) in RUNTIME_TELEMETRY_PATHS {
+        assert_eq!(
+            send_probe_events_for_fixture(&sample, path, label),
+            vec![
+                SendProbeEvent::new("miss", 2, 48, 1),
+                SendProbeEvent::new("miss", 2, 48, 1),
+                SendProbeEvent::new("miss", 1, 48, 1),
+                SendProbeEvent::new("hit", 1, 0, 0),
+                SendProbeEvent::new("hit", 2, 0, 0),
+            ],
+            "{label}: two questions and the unwanted reply cross whole; the wanted reply's one number and `{{:stop}}` copy nothing"
         );
     }
 }

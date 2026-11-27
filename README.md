@@ -15,8 +15,9 @@ whole-program compiler with types can do with them.
 What that means in practice: fz reads like Elixir, runs the actor model
 you already know, and compiles — through a set-theoretic type system, a
 Cranelift JIT, and an AOT path — to native code. One IR powers three
-execution modes (AOT executable, JIT, interpreter) -- and soon a REPL, 
-and a fixture matrix forces them to agree.
+execution modes (AOT executable, JIT, interpreter) — and soon a REPL —
+and a fixture matrix forces them to agree: the small programs in
+`fixtures/` run on every path that applies, and their output is checked.
 
 ```elixir
 def add(a, b), do: a + b
@@ -25,6 +26,17 @@ def main() do
   dbg(add(2, 3))
 end
 ```
+
+To run it, build the compiler, save the sample as `add.fz`, and run it:
+
+```sh
+cargo build --release
+target/release/fz2 run add.fz   # prints 5
+```
+
+`fz2` is fz's compiler and runner; the name comes from fz's second
+compiler, which replaced the first. *Trying it*, below, covers the other
+ways to run a program.
 
 A file can also be a script: its top-level expressions run in order as the
 program's `main/0` (a file with both top-level expressions and its own
@@ -73,17 +85,19 @@ right, and we are taking those wholesale:
   shared mutable state" is enforced by the runtime instead of by
   convention
 - **message passing** as the only way processes interact — copy on
-  send, no aliasing across the boundary
+  send, no mutable aliasing across the boundary (binaries over 64 bytes
+  are shared immutably by refcount, as on the BEAM)
 - **pattern matching at the core of the language**, not bolted on the
   side — function clauses, `case`, `with`, *and* `receive` all run
   through the same matcher
 - **lightweight processes by the thousand**, cooperatively scheduled
-  at receive and compiler-inserted yield points, cheap to spawn and
+  at receive and, in compiled code, at compiler-inserted yield points
+  on loop back edges, cheap to spawn and
   cheap to discard
 - **selective receive**, so a process can wait for the exact message
   it cares about instead of inventing a state machine around `next()`
 
-We are not trying to reinvent the wheel -- wheels are _great_. We
+We are not trying to reinvent the wheel — wheels are _great_. We
 want a faster one that can ship native binaries.
 
 The long-term goal is full interop: an fz node speaking Erlang's
@@ -96,23 +110,13 @@ sequenced behind getting the local semantics right first.
 
 Elixir compiles to BEAM bytecode. fz has its own compiler and its own
 native runtime, written in Rust: an interpreter, a Cranelift-based
-JIT, an AOT path that produces real executables, and a REPL — all
-sharing one IR.
+JIT, and an AOT path that produces real executables — all sharing one
+IR.
 
-The compiler doesn't exist for its own sake. It exists so we can do
-things the BEAM's interpreter structurally couldn't — and the two
-tricks teased above are both deliberate payoffs of owning the whole
-stack, from source to machine code:
-
-- **Running a receiver's matcher on the sender's heap**, so only the
-  values a `receive` actually asked for ever cross the process boundary.
-  (*Selective receive, sharpened*, below.)
-- **Building values straight into their final position**, so textbook
-  functional code allocates almost nothing — no reference counting, no
-  annotations. (*All of it together: quicksort*, below.)
-
-Both keep BEAM semantics exactly. The compiler just moves work ahead of
-time so the machine does less of it at runtime.
+Owning the whole stack, from source to machine code, is what pays for
+the two tricks teased at the top. The tour shows each one in full (*Selective
+receive, sharpened* and *All of it together: quicksort*); both keep BEAM
+semantics exactly.
 
 ---
 
@@ -130,16 +134,21 @@ def length([_ | rest]), do: 1 + length(rest)
 def describe(0), do: :zero
 def describe(1), do: :one
 def describe(_), do: :many
+
+def main() do
+  dbg(length([:a, :b, :c]))   # 3
+  dbg(describe(1))            # :one
+end
 ```
 
 Under the hood, every match in the language — function clauses,
 `case`, `with`, even `receive` — feeds into one tiny "sorting
 machine": ask yes/no questions about the shape, pluck out the pieces
 that matter, hand the winning branch the values it asked for. One
-machine, four surface forms. The machine also destructures shared
-shape exactly once — when two clauses both match `[h | t]`, as
-`partition` does in the quicksort below, the cons cell gets walked one
-time across both clauses, not twice. ([pattern-matching guide](guides/pattern-matching.html))
+machine, four surface forms. The machine also tests shared shape
+once — when adjacent clauses both match `[h | t]`, as `partition` does
+in the quicksort below, the cons test is asked one time across both
+clauses, not twice. ([pattern-matching guide](guides/pattern-matching.html))
 
 ### Values are immutable
 
@@ -184,8 +193,8 @@ first-class value handed to a brand-new process.
 
 ### Concurrency: processes, not threads
 
-A **process** is a tiny unit of execution with its own stack, its own
-heap, and its own mailbox. You spin up thousands; they don't share
+A **process** is a tiny unit of execution with its own heap (which also
+holds its pending calls) and its own mailbox. You spin up thousands; they don't share
 memory; they talk by passing messages.
 
 Three primitives carry the entire story:
@@ -197,10 +206,11 @@ Three primitives carry the entire story:
 Smallest possible ping:
 
 ```elixir
-def child(), do: send(1, 42)
+def child(parent), do: send(parent, 42)
 
 def main() do
-  spawn(child)
+  me = self()
+  spawn(fn() -> child(me) end)
   dbg(receive do x -> x end)   # 42
 end
 ```
@@ -221,17 +231,12 @@ end
 
 def main() do
   home = self()
-  head = spawn(fn() -> relay(4, home))
+  head = spawn(fn() -> relay(4, home) end)
   send(head, 0)
   got = receive do x -> x end
   dbg(got)   # 5
 end
 ```
-
-When a value is sent across processes, the sender measures it and copies it
-once, into one block of memory the recipient then adopts. There are no shared references because
-there are no references — only values. A process that sends to itself copies
-nothing: the message goes straight onto its own mailbox.
 
 ### Selective receive, sharpened
 
@@ -252,7 +257,7 @@ def server() do
 end
 
 def main() do
-  s     = spawn(server)
+  s     = spawn(&server/0)
   ref_a = make_ref()
   ref_b = make_ref()
   me    = self()
@@ -263,8 +268,6 @@ def main() do
   # Replies arrive in ref_a, ref_b order, but we want ref_b's first.
   val_b = receive do
     {:reply, ^ref_b, v} -> v
-  after
-    500 -> :timeout
   end
 
   # ref_a's reply has been sitting in the mailbox the whole time.
@@ -284,7 +287,7 @@ different is how the runtime gets there.
 
 When the receiver writes `receive do {:reply, ^ref_b, v} -> v end`,
 the compiler lowers that pattern into a tiny matcher program: a
-constant-time decision tree that knows exactly which shapes the
+decision tree that knows exactly which shapes the
 receiver will accept and which pieces of those shapes (`v`) it wants
 to bind. The compiler also wraps the winning clause's body and its
 captured bindings into a continuation — a closure ready to run. This
@@ -293,8 +296,8 @@ the **sending** side.
 
 So when `send(...)` runs:
 
-- **If the message matches**, the sender copies *only the values the
-  pattern bound* into one fresh block of its own memory and queues that
+- **If the message matches**, the sender copies *only the parts of the
+  message holding the values the pattern bound* into one fresh block of its own memory and queues that
   block for the receiver. The parts of the message the receiver didn't
   name (the `:reply` tag, the matched ref, anything else) stay in the
   sender's heap and get collected normally. The receiver wakes up,
@@ -316,10 +319,37 @@ asked for" — while keeping BEAM mailbox semantics intact. The
 receiver told us, by writing a `receive`, exactly what it cared
 about; the sender does the work on its own time and its own heap.
 
+You can watch it happen. Every send to another process logs one
+`fz.runtime.send.probe` event: its `outcome` says whether the message
+matched the receive the other process is parked on, and `gift_bytes`
+says how much the sender copied. Save the program as `selective.fz`:
+
+```sh
+fz2 --log-telemetry t.jsonl run selective.fz   # prints 3
+grep '"probe"' t.jsonl
+```
+
+| Send | The receiver is parked on | Outcome | Bytes copied |
+| ---- | ------------------------- | ------- | ------------ |
+| `{:get, ref_a, me, 1}` | nothing yet: the server hasn't run | miss | 48 |
+| `{:get, ref_b, me, 2}` | nothing yet | miss | 48 |
+| `{:reply, ref_a, 1}` | `{:reply, ^ref_b, v}` | miss | 48 |
+| `{:reply, ref_b, 2}` | `{:reply, ^ref_b, v}` | hit | 0: `v` is a number |
+| `{:stop}` | `{:get, …}` or `{:stop}` | hit | 0: it binds nothing |
+
+The reply `main` was waiting for crosses as the one value it binds,
+and a number needs no copy: it travels as a machine word beside its
+kind. The reply it wasn't waiting for crosses whole and waits in the
+mailbox. The same five events appear on `interp`, `run` and `build`;
+[fixture 02080](fixtures/02080_the_readme_selective_receive_sample_copies_only_what_the_waiting_receive_binds.fz)
+is this program, and its test pins them.
+
 A message is measured, then copied once by the sender into one block of
 memory the receiver adopts. No process ever writes into another process's heap: the receiver
 grafts the sender's block onto its own heap with pointer moves, and its
-next garbage collection copies out whatever is still live. Because the
+next garbage collection copies out whatever is still live. A process that
+sends to itself skips the scheduler's in-queue: the message is copied once,
+straight onto its own mailbox. Because the
 receiver's matcher runs on the sender, a `when` guard in a `receive`
 runs there too, so it must be pure; a call such as `self()` in a guard
 names the receiver, because the receiver evaluates it before it parks.
@@ -362,47 +392,56 @@ there, and **neither asks anything of you**:
   caller is about to destructure a pair, the callee hands back two
   register values and never builds the tuple. If a list's eventual tail
   is already known, the callee builds its cons cells pointing at that
-  tail from the start — so the `append` that would walk and re-copy the
-  list has nothing left to do.
-- **Owned-cons reuse** — when the compiler can prove a cons cell is still
-  private, the runtime reuses it in place instead of allocating. A single
-  alias bit in the cell guards it: still private, relink it; already
-  published, allocate a fresh one. This doesn't bend the immutability
+  tail from the start — so `append` never walks or re-copies a finished
+  list.
+- **Owned-cons reuse** — the compiler finds the places where a cons cell
+  can be reused in place instead of allocated. A single alias bit in the
+  cell, set when the cell is published, decides at runtime: still
+  private, relink it; already published, allocate a fresh one. This doesn't bend the immutability
   rule from above — the compiler only exploits privacy the program can
   never observe.
 
-The payoff is measurable and pinned. This exact program, sorting its
-eleven-element list, allocates **exactly the eleven input cons cells —
-zero tuples, zero continuation closures** on the native paths:
+The payoff is measurable and pinned
+([fixtures/01577_quicksort.fz](fixtures/01577_quicksort.fz), which adds a
+`System.alloc_stats()` readout to this program). Sorting its eleven-element
+list allocates **exactly the eleven input cons cells and zero tuples**. On the
+native paths the only closures are the two the scheduler builds to start any
+program:
 
 ```text
 list_cons_allocs = 11     # the input list's cells, nothing more
 struct_allocs    = 0      # no {lo, hi} tuple ever hits the heap
-closure_allocs   = 0      # no continuation closures on the fast path
+closure_allocs   = 2      # the scheduler's two start-up closures; none from the sort
 ```
 
-Here's what we like: **no reference counting, no borrowing annotations.**
+The non-tail recursion in `append` and `qsort` still needs somewhere to
+resume: on the JIT and AOT paths that is 44 heap continuation frames (2432
+bytes allocated over the run) — frames, not closures.
+
+Here's what we like: **no reference counting on lists, tuples or closures, no
+borrowing annotations.**
 Koka-style reuse leans on runtime refcounts; Rust-style reuse leans on
 lifetimes and `&` in your source. fz does neither — the source is the
 same direct functional code, with no `unique`, no linearity, no "this
-list is mine." The compiler proves it statically; the runtime pays one
+list is mine." The compiler finds the reuse sites; the runtime checks one
 bit. You get the readability of pure functional code with the memory
 profile of a hand-tuned loop.
 
 This is the JIT and the AOT compiler doing their job — turning the
 program you'd actually ship into native code that allocates like you
-hand-tuned it. (The interpreter and REPL run the same code to the same
+hand-tuned it. (The interpreter runs the same code to the same
 answers; they're there to keep us honest, not to win the allocation
 game.) ([the full walkthrough](guides/quicksort-without-temporaries.html))
 
 The same machinery now applies through the standard library too. The
 runtime-library `Enum.sort/1` is a merge sort with a default comparator
 closure. Native code proves that comparator is constant, erases it from
-the recursive sort frames, and keeps the hot path closure-free:
+the recursive sort frames, and keeps the hot path closure-free
+([fixtures/01460_enum_sort.fz](fixtures/01460_enum_sort.fz)):
 
 ```text
 Enum.sort list_cons_allocs = 22
-Enum.sort closure_allocs   = 0
+Enum.sort closure_allocs   = 2     # the scheduler's start-up pair; the comparator is gone
 Enum.sort heap_bytes       = 352
 ```
 
@@ -415,9 +454,9 @@ the abstraction boundary is no longer where optimization stops.
 The OS lives in C. fz doesn't try to hide that — it declares it:
 
 ```elixir
-extern "C" def libc::creat(c_string, integer) :: c_int
-extern "C" def libc::write(c_int, binary, integer) :: integer
-extern "C" def libc::close(c_int) :: c_int
+extern "C" defp libc::creat(c_string, integer) :: c_int
+extern "C" defp libc::write(c_int, binary, integer) :: integer
+extern "C" defp libc::close(c_int) :: c_int
 
 def main() do
   fd = libc::creat("/tmp/hello", 420)   # 0o644
@@ -426,8 +465,9 @@ def main() do
 end
 ```
 
-Each argument has a *marshal class* (`integer`, `c_int`, `binary`,
-`c_string`, `any`, `nil`) telling fz how to translate between tagged fz
+Each argument has a *marshal class* (`integer`, `float`, `boolean`,
+`c_int`, `binary`, `c_string`, `any`, `nil`, … — the externs guide lists
+them all) telling fz how to translate between tagged fz
 values and the slots C expects. `c_int` is the one that says a value is
 32 bits wide, so an error sentinel like `-1` stays `-1` on a machine
 whose C library leaves the other half of the register alone. The `c_string` class is a small
@@ -447,15 +487,16 @@ waiting on the compiler team to add features one by one.
 
 ### Types do two jobs
 
-Types catch mistakes — wrong shapes, missing clauses, the things you'd
-otherwise find at runtime. They also let the compiler skip work: the
+Types catch mistakes — calls outside a function's `@spec`, clauses that
+can never match, the things you'd otherwise find at runtime. (A missing
+clause is still a runtime `FunctionClauseError`, as in Elixir.) They also let the compiler skip work: the
 more fz can prove about a value, the more direct the code it can emit.
 You get both from the same investment.
 
 ```elixir
 def main() do
   x = 41 + 1
-  dbg(x)          # compiler knows x is an integer; uses the int debug path
+  dbg(x)          # x is known to be an integer: the add runs on raw machine words, untagged
 end
 ```
 
@@ -465,7 +506,7 @@ def kind(n) when n > 0, do: :positive
 def kind(_), do: :other
 
 def main() do
-  dbg(kind(5))   # compiler proves which clause wins, drops the rest
+  dbg(kind(5))   # kind/1 is inlined into main; its dispatch is three machine compares
 end
 ```
 
@@ -473,24 +514,6 @@ The type system is set-theoretic — unions, intersections, negations —
 following the Castagna line that Elixir's own typer is built on. Keep
 the source language small and pleasant; teach the compiler to learn as
 much as it can from it.
-
-### The pipeline
-
-```text
-source code
-  -> compiler2 source publication
-  -> local semantic facts
-  -> product-keyed artifact handoff
-  -> run it: interpreter, JIT, or AOT
-```
-
-One compiler2 source and semantic fact model, product-keyed artifacts for the
-runtime handoff. The ways to run it must agree at the observable boundary.
-
-The type stack is split by ownership. `src/compiler2/types/` owns compiler2's
-interned set-theoretic lattice, `src/compiler2/type_expr.rs` turns source type
-syntax into compiler2 facts, and compiler2 derives ABI, backend, and native
-artifacts from those facts by named demand.
 
 ### Looking inside the compiler
 
@@ -505,20 +528,16 @@ fz2 run --dump backend=/tmp/quicksort.backend fixtures/01577_quicksort.fz
 fz2 run --dump native=/tmp/quicksort.native fixtures/01577_quicksort.fz
 ```
 
-Compiler2 dumps are file sinks installed on a `run`, `interp`, or `build`
-command. The supported dump kinds are `activations`, `types`, `backend`,
-`native`, `fnir`, and `clif`. Each function in a `clif` dump ends with the
-symbol every callee reference (`fn0`, `fn1`, ...) names.
-
-Run/build/interp commands always submit the root source directly to compiler2.
-If the program pulls in built-in runtime modules such as `Utf8` or `Enum`, the
-compiler loads their checked-in source on demand and materializes only the
-root-reachable artifact set.
+A `run`, `interp`, or `build` command writes each dump to its file (`clif`
+needs `run` or `build`, which generate machine code). The supported dump kinds
+are `activations`, `types`, `backend`, `native`, `fnir`, and `clif`. Each
+function in a `clif` dump ends with the symbol every callee reference (`fn0`,
+`fn1`, ...) names.
 
 These answer the questions you actually have while changing things:
 *Did this call get folded? Did this function get specialized? Did
-the compiler skip something — and why?* Compiler2 telemetry and fixture
-contracts are the durable signal for compiler shape.
+the compiler skip something — and why?* How a source file becomes a running
+program is in [.agent/docs/pipeline.md](.agent/docs/pipeline.md).
 
 ---
 
@@ -567,66 +586,14 @@ Run through the interpreter:
 fz2 interp fixtures/01577_quicksort.fz
 ```
 
-Start the REPL:
-
-```sh
-fz repl
-```
-
 Run the whole test suite:
 
 ```sh
 cargo test --workspace
 ```
 
-The repository's Cargo configuration defaults to compact output: passing tests
-print progress characters instead of individual names, followed by each test
-binary's summary. Failure diagnostics and compiler warnings remain visible.
-Existing test commands work unchanged, including fixture tests and doctests.
-Use `cargo --config term.quiet=false test --workspace -- --format pretty` to
-restore individual test names (the custom fixture harness also defaults to terse);
-`-- --nocapture` still exposes test output when investigating a test.
-
-To suppress passing-test progress too, use [cargo-nextest](https://nexte.st/docs/installation/)
-and run doctests separately:
-
-```sh
-cargo nextest run --workspace --show-progress none --color never
-cargo test --workspace --doc
-```
-
-The repository's nextest defaults suppress individual passing results and
-successful-test output. Failed tests print their captured diagnostics immediately,
-once, and the final summary lists failures. Avoid `--nocapture` when keeping
-output compact. Add `--no-fail-fast` to finish the suite after a failure.
-
-Fixture tests run small `.fz` programs and compare their output
-across every execution path that applies (JIT, interpreter, AOT
-executable, REPL script mode). A fixture is more than a sample file
-— it is a tiny promise about the language. If quicksort works in
-the JIT but not in AOT, the fixture matrix catches it.
-
-Fixture conventions — how each fixture pins its claim — are explained in
-[.agent/docs/fixtures.md](.agent/docs/fixtures.md).
-
-CI runs lint, security audit, doctests, and workspace tests for pull requests
-and pushes to `main` and `develop`. Pushes to either branch also enforce the
-coverage threshold; only `main` updates the published coverage badge.
-
-### Pre-commit hook
-
-A tracked pre-commit hook lives in [`.githooks/`](.githooks/). It formats
-the staged Rust with `cargo fmt --all`, re-stages it, then runs
-`cargo check --all` and `cargo clippy --workspace --all-targets -- -D warnings`.
-The lint set itself lives in the workspace manifest, so the hook and CI both
-enforce the same ownership/cloning policy without carrying a second copy of
-the lint list. A clippy complaint aborts the commit before it ever reaches CI.
-Git looks for hooks in `.git/hooks` by default, so enable the tracked
-directory once per clone:
-
-```sh
-git config core.hooksPath .githooks
-```
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the rest of working on fz: test
+output, fixtures, CI, and the pre-commit hook.
 
 ---
 
@@ -642,20 +609,18 @@ git config core.hooksPath .githooks
 - first-class functions and closures
 - processes: `spawn`, `self`, `send`, `receive`, refs, selective
   receive with sender-side matching
-- a working interpreter, JIT (Cranelift), AOT path, and REPL
+- a working interpreter, JIT (Cranelift), and AOT path
 - C externs with marshal classes and resource destructors
-- destination planning + reusable-cons transport: textbook functional code
-  compiled to near-zero-allocation native code (JIT/AOT), no reference
-  counting, no borrow annotations
+- destination planning and owned-cons reuse (see *All of it together:
+  quicksort*)
 
 ---
 
 ## Status
 
-fz is early. The compiler, the runtime, four execution paths, the type
-system, the sender-side matcher, and the destination-planning /
-reusable-cons path that gives native code its near-zero-allocation
-profile are all working today — but the language is small, the standard
+fz is early. The compiler, the runtime, three execution paths, the type
+system, the sender-side matcher, destination planning and owned-cons reuse
+are all working today — but the language is small, the standard
 library is smaller, and the edges are sharp. Expect to read the dumps
 when things surprise you.
 
@@ -671,8 +636,9 @@ What's next, roughly in order:
   Nx-shaped buffers: Nx-shape ergonomics, in-place buffer reuse, no
   `defn` ceremony, BLAS/MKL via externs
 - **Autodiff** over fz IR
+- **A REPL** on the same IR as the other three paths
 
-The current focus is keeping the four execution paths in lockstep and
+The current focus is keeping the three execution paths in lockstep and
 teaching the compiler to turn more obvious functional code into
 efficient native code. Every other goal sits on top of that one.
 
@@ -690,8 +656,8 @@ them out properly. The ones that left the deepest marks:
 
 - **Luc Maranget, _Compiling Pattern Matching to Good Decision Trees_**
   (ML '08). The "one tiny sorting machine" behind every match in the
-  language — the constant-time decision tree that asks yes/no questions
-  about shape and destructures shared structure exactly once — is this
+  language — the decision tree that asks yes/no questions about shape
+  and shares the tests adjacent clauses have in common — is this
   paper.
   [pdf](http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf)
 
@@ -699,8 +665,8 @@ them out properly. The ones that left the deepest marks:
   _Perceus: Garbage Free Reference Counting with Reuse_** (PLDI '21).
   The "garbage-free, reuse cells you can prove are private" goal behind
   reusable-cons transport. Perceus reaches it with runtime reference counts;
-  fz chases the same near-zero-allocation profile but proves privacy
-  statically and pays a single alias bit instead.
+  fz chases the same near-zero-allocation profile but finds reuse sites
+  statically and checks a single alias bit instead of counting references.
   [pdf](https://xnning.github.io/papers/perceus.pdf)
 
 - **Anton Lorenzen, Daan Leijen & Wouter Swierstra, _FP²: Fully in-Place

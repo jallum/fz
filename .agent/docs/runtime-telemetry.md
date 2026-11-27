@@ -386,11 +386,17 @@ pins each of fixture 00903's three gifts (`gift_bytes` 16032, 64 and 16, one
 block each).
 `many_senders_into_one_guarded_receive_gift_one_message_each_and_leave_the_misses_queued`
 pins fixture 00910's hundred probes on `run`, `interp` and `build` (fifty misses of 80
-bytes, the one hit of 48, then forty-nine misses; 7968 bytes in all), and
+bytes, the one hit of 32, then forty-nine misses; 7952 bytes in all), and
 `a_large_list_passed_back_and_forth_crosses_as_one_gift_per_message_on_every_path`
 pins fixture 00911's nine hits (the empty announcement, then eight balls of
-320016 bytes: 20000 cells plus the bound number as a boxed scalar). Both
+320000 bytes: the 20000 cells; the bound number crosses as its word and
+kind, with no block). Both
 fixtures have the same probes on all three paths.
+`the_readme_selective_receive_sample_copies_only_what_the_waiting_receive_binds`
+pins fixture 02080, the selective-receive sample in `README.md`, whose probe
+table it backs: three misses of 48 bytes, then two hits that gift nothing: the one
+value the first binds is a number, which crosses as its word and kind, and
+the second binds nothing. The same five appear on all three paths.
 
 ## `fz.runtime.gc`
 
