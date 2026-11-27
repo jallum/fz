@@ -1,0 +1,57 @@
+#---
+# purpose: two atoms order by name under every comparison operator, two equal atoms are equal under every equality operator, and an atom against another kind keeps its place in the term order
+# kind: run
+# oracle: self
+# oracle.stamp: 70cd5532a30ba89b
+#---
+#
+# Each row is the eight answers `< <= > >= == != === !==` for one pair. The
+# atoms are built at run time so no comparison folds away. Names that share
+# their first eight bytes decide by the rest of the name, a name with a NUL
+# byte decides by it, and an atom against an integer or a binary orders by
+# kind: numbers before atoms before binaries.
+defmodule Atoms do
+  def answers(a, b), do: [a < b, a <= b, a > b, a >= b, a == b, a != b, a === b, a !== b]
+
+  def atoms(names), do: Enum.map(names, &String.to_atom/1)
+end
+
+atoms =
+  Atoms.atoms([
+    "a",
+    "z",
+    "eight888",
+    "eight888a",
+    "eight888b",
+    "a\0",
+    "a\0b",
+    "é",
+    "nil",
+    "true",
+    "false"
+  ])
+
+for a <- atoms, b <- atoms do
+  IO.inspect({a, b, Atoms.answers(a, b)})
+end
+
+IO.inspect(Atoms.answers(:a, :z))
+IO.inspect(Atoms.answers(true, false))
+IO.inspect(Atoms.answers(nil, nil))
+
+[one, text] = ["1", "text"]
+number = String.to_integer(one)
+binary = text <> ""
+atom = String.to_atom("a")
+
+IO.inspect(Atoms.answers(atom, number))
+IO.inspect(Atoms.answers(number, atom))
+IO.inspect(Atoms.answers(atom, binary))
+IO.inspect(Atoms.answers(binary, atom))
+IO.inspect(Atoms.answers(atom, 1.0))
+IO.inspect(Atoms.answers(1.0, atom))
+
+Enum.each(Enum.sort(atoms), &IO.inspect/1)
+Enum.each(Enum.sort(atoms, fn left, right -> left >= right end), &IO.inspect/1)
+IO.inspect(Enum.sort([:b, 3, "b", :a, 1.5, nil, true, "a", 2]))
+IO.inspect({Enum.min(atoms), Enum.max(atoms)})

@@ -92,8 +92,20 @@ unregistered atoms still panics), two pids or references, two identical floats
 and two bitstrings (bit length, then bytes, ignoring the padding past the last
 bit) without an ordering, and answers false for terms of different categories;
 everything else, including an integer against a float, goes to `compare`.
-`compare` itself returns early for two integers, two atoms of one id and two
-bitstrings, after its entry asserts.
+`compare` itself returns early for two scalars of one kind and two bitstrings,
+after its entry asserts.
+
+**Two integers or two atoms are answered from their stored words** by one
+pair of functions, `stored_scalar_order` and `stored_scalar_equal`
+(`runtime/src/term.rs`, beside `stored_key_order`). Integers order as `i64`,
+atoms by `Node::cmp_atom_ids` (one id is equal to itself, any two others
+order by name), and equality is word equality; the numeric mode never
+matters for these pairs, and any other pair (a float, a heap value, two
+kinds) is `None`. `fz_value_cmp_ref`, `fz_op_eq`, `fz_op_neq`, `fz_op_identical`
+and `fz_op_not_identical` ask them on the words they receive, before decoding
+either operand or touching the registry; `fz_value_cmp_raw_const` asks them on
+its two decoded operands; `TermComparator::order`, `equal` and `key_order` ask
+them too, so a scalar pair has one implementation however it arrives.
 
 **Ordering** — the same `TermComparator`, reached through `fz_value_cmp_ref`
 and unboxed scalar adapters, owns every published finite term's order:
@@ -101,7 +113,8 @@ and unboxed scalar adapters, owns every published finite term's order:
 A pid and a reference each have a `ValueKind` of their own, so each stands in
 its category and two of one kind order by their words; a resource stands with
 the references, below the functions. For the atom category it delegates to
-`Node::cmp_atom_names`, the single owner of atom name order. The atom table
+`Node::cmp_atom_names`, the single owner of atom name order (`cmp_atom_ids` adds
+only the equal-id shortcut). The atom table
 keeps the first eight bytes of each name as a big-endian word; two atoms order
 by those words, and by their names when the words agree. Atom ids are handed out in first-seen order, so ordering by
 id would depend on which atom the program mentioned first. Ordinary comparison

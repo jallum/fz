@@ -97,7 +97,7 @@ fz_map_delete(process, map, key_word, key_kind)     -> map ref
 fz_list_head_ref(list) / fz_list_tail_ref(list)   -- the interpreter and `hd/1`, `tl/1`; compiled patterns load the cell inline
 fz_struct_get_field_ref(process, struct, field_offset)
 fz_value_eq_ref / fz_value_eq_widening_ref(process, a_word, a_kind, b_word, b_kind) -> 0 or 1
-fz_value_cmp_ref(process, a_word, a_kind, b_word, b_kind)  -> -1, 0 or 1
+fz_value_cmp_ref(process, a_word, a_kind, b_word, b_kind)  -> -1, 0 or 1 (two ints or two atoms: answered from the words, undecoded)
 fz_inspect(process, word, kind) / fz_inspect_with(process, word, kind, options)  -> binary
 fz_struct_store_ref(process, struct, slot_offset, kind_offset, value_word, value_kind)
 fz_closure_set_capture_ref(process, closure, index, value_word, value_kind)

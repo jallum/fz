@@ -31,7 +31,7 @@ fn window_of_new_buffer(
 }
 
 thread_local! {
-    pub(super) static COMPARISON_CALLS: Cell<usize> = const { Cell::new(0) };
+    pub(crate) static COMPARISON_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 fn heap_value(bits: u64) -> AnyValue {
@@ -857,4 +857,64 @@ fn an_integer_and_an_atom_with_the_same_word_are_different_keys() {
     let only_atom = map_of(&mut pool.heap, &[(atom, AnyValue::int(2))]);
     let layout = pool.heap.map_layout(only_atom).unwrap();
     assert!(!pool.heap.map_view_has_key(layout, twin));
+}
+
+/// Intent: two scalars of one kind are answered from their stored words, in
+/// the order and equality the full comparator gives, in either numeric mode;
+/// every other pair is left to the comparator.
+#[test]
+fn a_scalar_pair_is_answered_from_its_words_as_the_comparator_answers_it() {
+    let mut pool = Pool::mixed();
+    pool.values.extend([i64::MIN, i64::MAX, -1, 0, 1].map(AnyValue::int));
+    for name in [
+        "",
+        "a",
+        "a\0",
+        "a\0b",
+        "eight888a",
+        "eight888b",
+        "zebra",
+        "nil",
+        "true",
+        "false",
+    ] {
+        let atom = pool.atom(name);
+        pool.values.push(atom);
+    }
+    let registry = pool.schemas.borrow();
+    let cmp = TermComparator::new(&pool.node, &registry);
+    let (mut answered, mut declined) = (0, 0);
+    for a in &pool.values {
+        for b in &pool.values {
+            let (sa, sb) = (Stored::of(*a), Stored::of(*b));
+            let scalars = a.kind() == b.kind() && matches!(a.kind(), ValueKind::INT | ValueKind::ATOM);
+            assert_eq!(
+                stored_scalar_order(&pool.node, sa, sb).is_some(),
+                scalars,
+                "{a:?} vs {b:?}"
+            );
+            assert_eq!(stored_scalar_equal(sa, sb).is_some(), scalars, "{a:?} vs {b:?}");
+            if !scalars {
+                declined += 1;
+                continue;
+            }
+            answered += 1;
+            for mode in [NumericMode::Strict, NumericMode::Widening] {
+                assert_eq!(
+                    stored_scalar_order(&pool.node, sa, sb),
+                    Some(cmp.compare(*a, *b, mode)),
+                    "{a:?} vs {b:?}"
+                );
+                assert_eq!(
+                    stored_scalar_equal(sa, sb),
+                    Some(cmp.equal(*a, *b, mode)),
+                    "{a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+    assert!(
+        answered > 100 && declined > 100,
+        "{answered} answered, {declined} declined"
+    );
 }

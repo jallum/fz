@@ -1,0 +1,154 @@
+{:a, :a, [false, true, false, true, true, false, true, false]}
+{:a, :z, [true, true, false, false, false, true, false, true]}
+{:a, :eight888, [true, true, false, false, false, true, false, true]}
+{:a, :eight888a, [true, true, false, false, false, true, false, true]}
+{:a, :eight888b, [true, true, false, false, false, true, false, true]}
+{:a, :"a\0", [true, true, false, false, false, true, false, true]}
+{:a, :"a\0b", [true, true, false, false, false, true, false, true]}
+{:a, :é, [true, true, false, false, false, true, false, true]}
+{:a, nil, [true, true, false, false, false, true, false, true]}
+{:a, true, [true, true, false, false, false, true, false, true]}
+{:a, false, [true, true, false, false, false, true, false, true]}
+{:z, :a, [false, false, true, true, false, true, false, true]}
+{:z, :z, [false, true, false, true, true, false, true, false]}
+{:z, :eight888, [false, false, true, true, false, true, false, true]}
+{:z, :eight888a, [false, false, true, true, false, true, false, true]}
+{:z, :eight888b, [false, false, true, true, false, true, false, true]}
+{:z, :"a\0", [false, false, true, true, false, true, false, true]}
+{:z, :"a\0b", [false, false, true, true, false, true, false, true]}
+{:z, :é, [true, true, false, false, false, true, false, true]}
+{:z, nil, [false, false, true, true, false, true, false, true]}
+{:z, true, [false, false, true, true, false, true, false, true]}
+{:z, false, [false, false, true, true, false, true, false, true]}
+{:eight888, :a, [false, false, true, true, false, true, false, true]}
+{:eight888, :z, [true, true, false, false, false, true, false, true]}
+{:eight888, :eight888, [false, true, false, true, true, false, true, false]}
+{:eight888, :eight888a, [true, true, false, false, false, true, false, true]}
+{:eight888, :eight888b, [true, true, false, false, false, true, false, true]}
+{:eight888, :"a\0", [false, false, true, true, false, true, false, true]}
+{:eight888, :"a\0b", [false, false, true, true, false, true, false, true]}
+{:eight888, :é, [true, true, false, false, false, true, false, true]}
+{:eight888, nil, [true, true, false, false, false, true, false, true]}
+{:eight888, true, [true, true, false, false, false, true, false, true]}
+{:eight888, false, [true, true, false, false, false, true, false, true]}
+{:eight888a, :a, [false, false, true, true, false, true, false, true]}
+{:eight888a, :z, [true, true, false, false, false, true, false, true]}
+{:eight888a, :eight888, [false, false, true, true, false, true, false, true]}
+{:eight888a, :eight888a, [false, true, false, true, true, false, true, false]}
+{:eight888a, :eight888b, [true, true, false, false, false, true, false, true]}
+{:eight888a, :"a\0", [false, false, true, true, false, true, false, true]}
+{:eight888a, :"a\0b", [false, false, true, true, false, true, false, true]}
+{:eight888a, :é, [true, true, false, false, false, true, false, true]}
+{:eight888a, nil, [true, true, false, false, false, true, false, true]}
+{:eight888a, true, [true, true, false, false, false, true, false, true]}
+{:eight888a, false, [true, true, false, false, false, true, false, true]}
+{:eight888b, :a, [false, false, true, true, false, true, false, true]}
+{:eight888b, :z, [true, true, false, false, false, true, false, true]}
+{:eight888b, :eight888, [false, false, true, true, false, true, false, true]}
+{:eight888b, :eight888a, [false, false, true, true, false, true, false, true]}
+{:eight888b, :eight888b, [false, true, false, true, true, false, true, false]}
+{:eight888b, :"a\0", [false, false, true, true, false, true, false, true]}
+{:eight888b, :"a\0b", [false, false, true, true, false, true, false, true]}
+{:eight888b, :é, [true, true, false, false, false, true, false, true]}
+{:eight888b, nil, [true, true, false, false, false, true, false, true]}
+{:eight888b, true, [true, true, false, false, false, true, false, true]}
+{:eight888b, false, [true, true, false, false, false, true, false, true]}
+{:"a\0", :a, [false, false, true, true, false, true, false, true]}
+{:"a\0", :z, [true, true, false, false, false, true, false, true]}
+{:"a\0", :eight888, [true, true, false, false, false, true, false, true]}
+{:"a\0", :eight888a, [true, true, false, false, false, true, false, true]}
+{:"a\0", :eight888b, [true, true, false, false, false, true, false, true]}
+{:"a\0", :"a\0", [false, true, false, true, true, false, true, false]}
+{:"a\0", :"a\0b", [true, true, false, false, false, true, false, true]}
+{:"a\0", :é, [true, true, false, false, false, true, false, true]}
+{:"a\0", nil, [true, true, false, false, false, true, false, true]}
+{:"a\0", true, [true, true, false, false, false, true, false, true]}
+{:"a\0", false, [true, true, false, false, false, true, false, true]}
+{:"a\0b", :a, [false, false, true, true, false, true, false, true]}
+{:"a\0b", :z, [true, true, false, false, false, true, false, true]}
+{:"a\0b", :eight888, [true, true, false, false, false, true, false, true]}
+{:"a\0b", :eight888a, [true, true, false, false, false, true, false, true]}
+{:"a\0b", :eight888b, [true, true, false, false, false, true, false, true]}
+{:"a\0b", :"a\0", [false, false, true, true, false, true, false, true]}
+{:"a\0b", :"a\0b", [false, true, false, true, true, false, true, false]}
+{:"a\0b", :é, [true, true, false, false, false, true, false, true]}
+{:"a\0b", nil, [true, true, false, false, false, true, false, true]}
+{:"a\0b", true, [true, true, false, false, false, true, false, true]}
+{:"a\0b", false, [true, true, false, false, false, true, false, true]}
+{:é, :a, [false, false, true, true, false, true, false, true]}
+{:é, :z, [false, false, true, true, false, true, false, true]}
+{:é, :eight888, [false, false, true, true, false, true, false, true]}
+{:é, :eight888a, [false, false, true, true, false, true, false, true]}
+{:é, :eight888b, [false, false, true, true, false, true, false, true]}
+{:é, :"a\0", [false, false, true, true, false, true, false, true]}
+{:é, :"a\0b", [false, false, true, true, false, true, false, true]}
+{:é, :é, [false, true, false, true, true, false, true, false]}
+{:é, nil, [false, false, true, true, false, true, false, true]}
+{:é, true, [false, false, true, true, false, true, false, true]}
+{:é, false, [false, false, true, true, false, true, false, true]}
+{nil, :a, [false, false, true, true, false, true, false, true]}
+{nil, :z, [true, true, false, false, false, true, false, true]}
+{nil, :eight888, [false, false, true, true, false, true, false, true]}
+{nil, :eight888a, [false, false, true, true, false, true, false, true]}
+{nil, :eight888b, [false, false, true, true, false, true, false, true]}
+{nil, :"a\0", [false, false, true, true, false, true, false, true]}
+{nil, :"a\0b", [false, false, true, true, false, true, false, true]}
+{nil, :é, [true, true, false, false, false, true, false, true]}
+{nil, nil, [false, true, false, true, true, false, true, false]}
+{nil, true, [true, true, false, false, false, true, false, true]}
+{nil, false, [false, false, true, true, false, true, false, true]}
+{true, :a, [false, false, true, true, false, true, false, true]}
+{true, :z, [true, true, false, false, false, true, false, true]}
+{true, :eight888, [false, false, true, true, false, true, false, true]}
+{true, :eight888a, [false, false, true, true, false, true, false, true]}
+{true, :eight888b, [false, false, true, true, false, true, false, true]}
+{true, :"a\0", [false, false, true, true, false, true, false, true]}
+{true, :"a\0b", [false, false, true, true, false, true, false, true]}
+{true, :é, [true, true, false, false, false, true, false, true]}
+{true, nil, [false, false, true, true, false, true, false, true]}
+{true, true, [false, true, false, true, true, false, true, false]}
+{true, false, [false, false, true, true, false, true, false, true]}
+{false, :a, [false, false, true, true, false, true, false, true]}
+{false, :z, [true, true, false, false, false, true, false, true]}
+{false, :eight888, [false, false, true, true, false, true, false, true]}
+{false, :eight888a, [false, false, true, true, false, true, false, true]}
+{false, :eight888b, [false, false, true, true, false, true, false, true]}
+{false, :"a\0", [false, false, true, true, false, true, false, true]}
+{false, :"a\0b", [false, false, true, true, false, true, false, true]}
+{false, :é, [true, true, false, false, false, true, false, true]}
+{false, nil, [true, true, false, false, false, true, false, true]}
+{false, true, [true, true, false, false, false, true, false, true]}
+{false, false, [false, true, false, true, true, false, true, false]}
+[true, true, false, false, false, true, false, true]
+[false, false, true, true, false, true, false, true]
+[false, true, false, true, true, false, true, false]
+[false, false, true, true, false, true, false, true]
+[true, true, false, false, false, true, false, true]
+[true, true, false, false, false, true, false, true]
+[false, false, true, true, false, true, false, true]
+[false, false, true, true, false, true, false, true]
+[true, true, false, false, false, true, false, true]
+:a
+:"a\0"
+:"a\0b"
+:eight888
+:eight888a
+:eight888b
+false
+nil
+true
+:z
+:é
+:é
+:z
+true
+nil
+false
+:eight888b
+:eight888a
+:eight888
+:"a\0b"
+:"a\0"
+:a
+[1.5, 2, 3, :a, :b, nil, true, "a", "b"]
+{:a, :é}

@@ -764,6 +764,15 @@ impl Node {
         self.atoms.borrow().by_id.clone()
     }
 
+    /// Order two atoms by their names, the same atom being equal to itself
+    /// without a lookup.
+    pub fn cmp_atom_ids(&self, left_id: u32, right_id: u32) -> Ordering {
+        if left_id == right_id {
+            return Ordering::Equal;
+        }
+        self.cmp_atom_names(left_id, right_id)
+    }
+
     /// Order two atoms by their names. The stored name prefixes settle most
     /// pairs; the names are read only when the prefixes agree. Published
     /// values always name registered atoms.
