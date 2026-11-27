@@ -1017,7 +1017,7 @@ impl Process {
     /// park record while its closures and pinned values move. Gifts waiting in
     /// the in-queue are not roots (see `Heap::collect`).
     pub fn collect(&mut self, transient: &mut (impl Roots + ?Sized)) -> Collected<'_> {
-        debug_assert!(
+        assert!(
             self.raised.is_none(),
             "a collection ran between a raise and its handler: the raised value is not a root"
         );
