@@ -553,7 +553,11 @@ per executable, where each entry lives (`EntryFns::for_executable` in
   executable is one, plus its entries, plus the copied size of each callee it
   calls (one for a callee past the limit); a forwarder, whose body is only a
   call it returns, costs what its callee does. So a caller's code is bounded by
-  its own calls, not by the depth of what they call. A cold block, such as an
+  its own calls, not by the depth of what they call. An executable's own
+  functions are lowered only when something refers to them: the program's
+  entry, a construction wrapper's member, or a call or closure call that does
+  not copy it (`NativeLowerer::refer_to`). A callee copied into every caller
+  has no function and no `executable_entries` row. A cold block, such as an
   integer add's overflow path, reads the process register again after a
   runtime call rather than carrying a copy over it: a value held over a call
   takes a callee-saved register, which the function then saves in its prologue

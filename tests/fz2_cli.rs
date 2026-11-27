@@ -2620,8 +2620,8 @@ fn byte_size_and_bit_size_of_a_proven_binary_import_no_runtime_function() {
     let _ = remove_file(&source_path);
     let _ = remove_file(&clif_path);
     assert!(
-        clif.contains("fz_bitstring_byte_extent__e") && clif.contains("fz_bitstring_bit_extent__e"),
-        "the dump must contain the functions that wrap the externs, or this test observes nothing"
+        clif.contains("; fn main__e"),
+        "the dump must contain `main`'s code, where `size` and the externs under it are copied, or this test observes nothing"
     );
     for symbol in ["fz_bitstring_byte_extent", "fz_bitstring_bit_extent"] {
         let import = format!("= {symbol}\n");
@@ -2731,7 +2731,7 @@ fn a_construction_that_starts_with_an_unsized_binary_asks_the_runtime_to_extend_
             &source_path,
             format!(
                 "def build(a, b, c) when is_integer(a) and is_integer(b) and is_binary(c),\n  do: {body}\n\
-                 def main() do\n  dbg(build(1, 2, \"abc\"))\n  nil\nend\n"
+                 def main(), do: build(1, 2, \"abc\")\n"
             ),
         )
         .expect("write construction program");
@@ -2746,11 +2746,7 @@ fn a_construction_that_starts_with_an_unsized_binary_asks_the_runtime_to_extend_
         let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
         let _ = remove_file(&source_path);
         let _ = remove_file(&clif_path);
-        let functions = || clif.split("\n; fn ").filter(|function| function.starts_with("build__"));
-        let build = functions()
-            .find(|function| function.lines().next().is_some_and(|name| name.contains("__machine")))
-            .or_else(|| functions().next())
-            .expect("the dump has `build`'s own code");
+        let build = clif_functions_of(&clif, "__entry__");
         let imports = |symbol: &str| build.contains(&format!("= {symbol}\n"));
         (imports("fz_bs_append_unfilled"), imports("fz_heap_room"))
     };
@@ -2811,8 +2807,20 @@ fn a_short_literal_in_an_append_is_stored_not_copied() {
     assert!(stored < memcpy_calls("a <> a"), "a runtime binary is copied");
 }
 
-/// The code of `function` in `program`'s clif dump, without the line that
-/// names it.
+/// The code of every function of `function` in a clif dump, without the lines
+/// that name them: its body and the resume points after its calls. A callee
+/// small enough to be copied into its caller is part of the caller's code.
+fn clif_functions_of(clif: &str, function: &str) -> String {
+    let own = format!("\n{clif}")
+        .split("\n; fn ")
+        .filter(|code| code.starts_with(&format!("{function}__")))
+        .map(|code| code.split_once('\n').expect("a function header").1.to_string())
+        .collect::<Vec<_>>();
+    assert!(!own.is_empty(), "the dump has `{function}`'s own code");
+    own.join("\n")
+}
+
+/// The code of `function` in `program`'s clif dump.
 fn clif_body_of(program: &str, function: &str) -> String {
     let source_path = unique_temp_path("fz2_constant_construction", ".fz");
     let clif_path = unique_temp_path("fz2_constant_construction", ".clif");
@@ -2828,15 +2836,7 @@ fn clif_body_of(program: &str, function: &str) -> String {
     let clif = std::fs::read_to_string(&clif_path).expect("read the clif dump");
     let _ = remove_file(&source_path);
     let _ = remove_file(&clif_path);
-    let own = || {
-        clif.split("\n; fn ")
-            .filter(|code| code.starts_with(&format!("{function}__")))
-    };
-    let code = own()
-        .find(|code| code.lines().next().is_some_and(|name| name.contains("__machine")))
-        .or_else(|| own().next())
-        .unwrap_or_else(|| panic!("the dump has `{function}`'s own code"));
-    code.split_once('\n').expect("a function header").1.to_string()
+    clif_functions_of(&clif, function)
 }
 
 /// A construction whose fields are all constants is the literal binary it
@@ -2845,12 +2845,7 @@ fn clif_body_of(program: &str, function: &str) -> String {
 /// `fz_bs_*` function and places nothing.
 #[test]
 fn a_construction_of_constants_compiles_to_the_code_of_its_literal() {
-    let program = |built: &str, literal: &str| {
-        format!(
-            "def built(), do: {built}\ndef lit(), do: {literal}\n\
-             def main() do\n  dbg(built())\n  dbg(lit())\n  nil\nend\n"
-        )
-    };
+    let program = |value: &str, name: &str| format!("def {name}(), do: {value}\ndef main(), do: {name}()\n");
     for (built, literal) in [
         ("<<65>>", "\"A\""),
         ("\"a\" <> \"b\"", "\"ab\""),
@@ -2860,9 +2855,12 @@ fn a_construction_of_constants_compiles_to_the_code_of_its_literal() {
             "<<226, 130, 172, 63, 192, 0, 0, 120, 7, 0>>",
         ),
     ] {
-        let source = program(built, literal);
-        let built_code = clif_body_of(&source, "built");
-        assert_eq!(built_code, clif_body_of(&source, "lit"), "{built} is {literal}");
+        let built_code = clif_body_of(&program(built, "built"), "__entry__");
+        assert_eq!(
+            built_code,
+            clif_body_of(&program(literal, "lit"), "__entry__"),
+            "{built} is {literal}"
+        );
         for forbidden in ["fz_bs_", "fz_heap_room", "memcpy"] {
             assert!(
                 !built_code.contains(forbidden),
@@ -2906,10 +2904,6 @@ fn comparison_of_two_proven_binaries_calls_only_to_read_bytes() {
     let _ = remove_file(&clif_path);
     let rows = ["eq", "neq", "lt", "lte", "gt", "gte"].map(|op| format!("fz_op_{op}_bb"));
     for symbol in &rows {
-        assert!(
-            clif.contains(&format!("{symbol}__e")),
-            "the dump must contain the function that wraps `{symbol}`, or this test observes nothing"
-        );
         assert!(
             clif.contains(&format!("= {symbol}\n")),
             "the bytes comparison `{symbol}` is a call in the dump"

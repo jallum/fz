@@ -1307,8 +1307,8 @@ fn a_base_is_read_only_where_no_call_separates_it_from_its_selection() {
         .module
         .fns
         .iter()
-        .find(|function| function.name.starts_with("pick"))
-        .expect("the matcher is a native function");
+        .find(|function| function.name.starts_with("main"))
+        .expect("main, which the matcher is copied into, is a native function");
     let selects: Vec<_> = function
         .blocks
         .iter()
@@ -1448,10 +1448,10 @@ fn two_binary_clauses_on_one_argument_read_its_length_once() {
         concat!(
             "defp tell(<<>>), do: 0\n",
             "defp tell(<<_c, _rest :: binary>>), do: 1\n",
-            "def main(), do: tell(<<>>) + tell(<<3, 4>>) - 1\n",
+            "def main(), do: tell(<<3, 4>>)\n",
         ),
     );
-    let asked = questions_of(&counts, "tell");
+    let asked = questions_of(&counts, "main");
     assert_eq!(asked.lengths, 1, "the argument's length is read once for both");
 }
 
@@ -1470,7 +1470,7 @@ fn three_literal_clauses_on_one_argument_ask_its_kind_length_and_base_once() {
             "def main(), do: val(:binary.copy(\"t\", 1) <> \"rue\")\n",
         ),
     );
-    let asked = questions_of(&counts, "val");
+    let asked = questions_of(&counts, "main");
     assert_eq!(asked.lengths, 1, "the argument's header is read once for all clauses");
     assert_eq!(asked.bases, 1, "the argument's base is selected once for all clauses");
 }
@@ -1496,8 +1496,8 @@ fn sibling_literal_clauses_of_unequal_length_read_their_common_bytes_once() {
         .module
         .fns
         .iter()
-        .find(|function| function.name.starts_with("val"))
-        .expect("the matcher is a native function");
+        .find(|function| function.name.starts_with("main"))
+        .expect("main, which the matcher is copied into, is a native function");
     let reads: Vec<_> = function
         .blocks
         .iter()
@@ -1564,12 +1564,15 @@ fn entry_dispatch_decides_a_lane_form_tuple_without_reboxing_it() {
         .filter_map(|function| executable_entry_of(&function.name).map(|owner| (owner, function)))
         .collect::<Vec<_>>();
     assert!(!entries.is_empty(), "the program has executable entry functions");
-    for owner in ["unwrap", "tag"] {
+    for owner in ["main"] {
         let deciding = entries
             .iter()
             .filter(|(entry_owner, _)| *entry_owner == owner)
             .collect::<Vec<_>>();
-        assert!(!deciding.is_empty(), "{owner} has a clause-dispatch entry of its own");
+        assert!(
+            !deciding.is_empty(),
+            "{owner}, which `unwrap` and `tag` are copied into, has a clause-dispatch entry"
+        );
         for (_, function) in deciding {
             let boxed = function
                 .blocks
@@ -8437,8 +8440,8 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     }
 
     let program = native.last(root_id).program;
-    let open_id = function_id(&functions, "libc::open", 2);
-    let body = native_executable_body(&program, open_id);
+    let main_id = function_id(&functions, "main", 0);
+    let body = native_executable_body(&program, main_id);
     assert_eq!(
         program.module.externs.len(),
         1,
@@ -8452,7 +8455,7 @@ fn compiler2_native_program_preserves_variadic_extern_wrappers_and_marshals() {
     assert_eq!(
         sorted_extern_marshals(body),
         vec![ExternTy::CString, ExternTy::I32, ExternTy::I64],
-        "native extern wrapper bodies should carry the exact settled C wire classes for a variadic site",
+        "the body that calls the variadic extern should carry the exact settled C wire classes for the site",
     );
 }
 
@@ -8683,16 +8686,16 @@ fn compiler2_native_program_jit_runs_spawn_then_receive_through_compiler2_codege
     let program = native.last(root_id).program;
     let child_id = function_id(&functions, "child", 0);
     let spawn_id = function_id(&functions, "spawn", 1);
-    let fz_spawn_id = function_id(&functions, "fz_spawn", 1);
+    let spawn = program
+        .module
+        .externs
+        .iter()
+        .find(|decl| decl.symbol == "fz_spawn")
+        .expect("the program declares the spawn extern");
     assert_eq!(
-        native_executable_body(&program, spawn_id).param_reprs,
-        vec![AbiValueRepr::ValueRef],
-        "spawn/1 should accept callable values through the boxed closure-ref lane",
-    );
-    assert_eq!(
-        native_executable_body(&program, fz_spawn_id).param_reprs,
-        vec![AbiValueRepr::ValueRef],
-        "fz_spawn/1 should preserve the boxed closure-ref lane at the extern seam",
+        spawn.params,
+        vec![ExternTy::Any],
+        "the callable crosses the spawn extern seam as a boxed closure ref",
     );
     let callable_targets = native_callable_boundary_uses(&program)
         .into_iter()
@@ -9295,7 +9298,7 @@ fn compiler2_native_tail_of_a_list_that_may_be_improper_tests_the_terminator_fla
          \x20 def rest([_ | t]), do: t\n\
          end\n\
          def main(), do: IO.inspect(P.rest([1 | 2]))\n";
-    let clif = lowered_clif_of(source, "rest");
+    let clif = lowered_clif_of(source, "main");
     let flag = format!("= {}", fz_runtime::any_value::LIST_LINK_TERMINATOR_MASK as i64);
     assert!(
         clif.lines()
@@ -9347,7 +9350,7 @@ fn compiler2_native_map_pattern_walks_a_trie_where_the_test_stands() {
     let reads_atom_key_hash = format!("+{}\n", fz_runtime::process_abi::PROCESS_ATOM_KEY_HASHES_OFFSET);
     let finalizes = format!(" = {}\n", fz_runtime::term_hash::FINALIZE_MULTIPLIERS[0] as i64);
     for (key, hashes) in [(":k", &reads_atom_key_hash), ("7", &finalizes)] {
-        let clif = lowered_clif_of(&program(key), "at");
+        let clif = lowered_clif_of(&program(key), "main");
         let hashed = clif.contains(hashes.as_str());
         assert!(hashed, "the key {key} is hashed where the test stands:\n{clif}");
         assert!(
@@ -9378,18 +9381,32 @@ fn compiler2_native_map_put_passes_an_integer_as_its_word_and_kind() {
          \x20 def counted(m, n) when is_integer(n), do: Map.put(m, :count, n + 1)\n\
          end\n\
          def main(), do: P.counted(%{}, 41)\n",
-        "fz_map_put",
+        "main",
     );
     let constant_kind = |kind: ValueKind| format!("iconst.i64 {}\n", kind.tag());
     assert!(
-        clif.contains("; fn0 = fz_map_put\n")
+        clif.contains(" = fz_map_put\n")
             && clif.contains(&constant_kind(ValueKind::ATOM))
             && clif.contains(&constant_kind(ValueKind::INT)),
         "the key and the value cross with the constant kinds of an atom and an integer:\n{clif}"
     );
+    let put = clif
+        .lines()
+        .find_map(|line| line.strip_prefix("; ")?.strip_suffix(" = fz_map_put"))
+        .unwrap_or_else(|| panic!("the runtime's put is imported:\n{clif}"));
+    let raise = clif
+        .lines()
+        .find_map(|line| line.strip_prefix("; ")?.strip_suffix(" = fz_panic_reason"));
+    let raises = |block: &&str| raise.is_some_and(|raise| block.contains(&format!("call {raise}(")));
+    let put_path = clif.split("\n\n").filter(|block| !raises(block)).collect::<Vec<_>>();
     assert!(
-        !clif.contains("ushr") && clif.matches(" = call ").count() == 1,
-        "nothing reads a kind at run time or boxes the integer before the put:\n{clif}"
+        put_path.iter().all(|block| !block.contains("ushr"))
+            && put_path
+                .iter()
+                .map(|block| block.matches(&format!("call {put}(")).count())
+                .sum::<usize>()
+                == 1,
+        "nothing on the way to the put reads a kind at run time or boxes the integer:\n{clif}"
     );
 }
 
@@ -9404,20 +9421,19 @@ fn compiler2_native_integer_add_in_a_frame_free_caller_calls_no_function_of_the_
          \x20 def twice(a, b) when is_integer(a) and is_integer(b), do: add(a, b) + 1\n\
          end\n\
          def main(), do: P.twice(1, 2)\n";
-    for function in ["add", "twice"] {
-        let clif = lowered_clif_of(source, function);
-        assert!(
-            !clif.contains("= colocated u0:"),
-            "{function} calls a function of the program for its `+`:\n{clif}"
-        );
-    }
+    let clif = lowered_clif_of(source, "main");
+    assert!(
+        !clif.contains("= colocated u0:"),
+        "`twice`, with `add` and `+` copied into it, calls a function of the program for its `+`:\n{clif}"
+    );
 }
 
 /// `big`, a function of forty-one clauses: too big to copy into a caller, and
 /// with no way to fail. `bad` is as big and can fail, for no clause need match.
 /// `mid` is the biggest function a caller copies, and `via_mid` calls it
-/// through a forwarder.
-fn big_machine_callees() -> String {
+/// through a forwarder. `main` is the program's entry: a function it calls once
+/// is copied into it, so each test asks for the one call whose code it observes.
+fn big_machine_callees(main: &str) -> String {
     let clauses = |name: &str, count: usize, last: &str| {
         (0..count)
             .map(|i| format!("  def {name}({i}), do: {}\n", i + 1))
@@ -9433,7 +9449,7 @@ fn big_machine_callees() -> String {
          \x20 def fwd_mid(x), do: mid(x)\n\
          \x20 def via_mid(x) when is_integer(x), do: fwd_mid(x) + 1\n\
          end\n\
-         def main(), do: P.safe(3) + P.unsafe(3) + P.via_fwd(1) + P.via_mid(1)\n",
+         def main(), do: {main}\n",
         clauses("big", 40, "  def big(_), do: 0\n"),
         clauses("bad", 40, ""),
         clauses("mid", 30, "  def mid(_), do: 0\n"),
@@ -9448,7 +9464,7 @@ fn lines_of(clif: &str) -> Vec<&str> {
 /// process: one load of the unwinding word and one branch on it.
 #[test]
 fn compiler2_native_the_raise_check_after_a_machine_call_is_one_load_and_one_branch() {
-    let clif = lowered_clif_of(&big_machine_callees(), "unsafe");
+    let clif = lowered_clif_of(&big_machine_callees("P.unsafe(3)"), "main");
     let lines = lines_of(&clif);
     let call = lines
         .iter()
@@ -9466,11 +9482,14 @@ fn compiler2_native_the_raise_check_after_a_machine_call_is_one_load_and_one_bra
 /// unwinding word in its caller is the one on the caller's own overflow path.
 #[test]
 fn compiler2_native_a_call_to_a_callee_that_cannot_raise_has_no_raise_check() {
-    let source = big_machine_callees();
-    let loads = |function: &str| lowered_clif_of(&source, function).matches("uload8").count();
+    let loads = |call: &str| {
+        lowered_clif_of(&big_machine_callees(call), "main")
+            .matches("uload8")
+            .count()
+    };
     assert_eq!(
-        loads("unsafe"),
-        loads("safe") + 1,
+        loads("P.unsafe(3)"),
+        loads("P.safe(3)") + 1,
         "only the call to the callee that can raise is checked"
     );
 }
@@ -9485,7 +9504,7 @@ fn compiler2_native_a_leaf_add_carries_no_value_over_its_runtime_call() {
          \x20 def add(a, b) when is_integer(a) and is_integer(b), do: a + b\n\
          end\n\
          def main(), do: P.add(1, 2)\n";
-    let clif = lowered_clif_of(source, "add");
+    let clif = lowered_clif_of(source, "main");
     let mut pinned_before_call = Vec::new();
     let mut seen_call = false;
     for line in lines_of(&clif) {
@@ -9516,13 +9535,12 @@ fn compiler2_native_a_leaf_add_carries_no_value_over_its_runtime_call() {
 /// a caller of it pays what a caller of its callee does.
 #[test]
 fn compiler2_native_a_forwarder_is_a_tail_jump_and_its_caller_calls_its_callee() {
-    let source = big_machine_callees();
-    let forwarder = lowered_clif_of(&source, "fwd");
+    let forwarder = lowered_clif_of(&big_machine_callees("P.fwd(1)"), "main");
     assert!(
         forwarder.contains("return_call fn0") && !forwarder.contains("store") && !forwarder.contains("load"),
         "the forwarder is one tail jump:\n{forwarder}"
     );
-    let caller = lowered_clif_of(&source, "via_mid");
+    let caller = lowered_clif_of(&big_machine_callees("P.via_mid(1)"), "via_mid");
     assert!(
         !caller.contains("= colocated u0:"),
         "the forwarder costs what its callee does, so both are copied in:\n{caller}"
@@ -9627,11 +9645,10 @@ fn compiler2_native_is_map_guard_of_an_unknown_value_reads_no_schema_id() {
 #[test]
 fn compiler2_native_is_binary_of_an_unknown_value_tests_one_kind_mask() {
     let source = "defmodule P do\n\
-         \x20 def pick([h | _]), do: h\n\
          \x20 def tag(x) when is_binary(x), do: 1\n\
          \x20 def tag(_), do: 0\n\
          end\n\
-         def main(), do: P.tag(P.pick([\"ab\", :x]))\n";
+         def main(), do: Enum.map([\"ab\", :x], &P.tag/1)\n";
     let clif = lowered_clif_of(source, "tag");
     let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
     let kind_reads = clif
@@ -9661,11 +9678,10 @@ fn compiler2_native_is_binary_of_an_unknown_value_tests_one_kind_mask() {
 #[test]
 fn compiler2_native_is_binary_of_a_stored_value_tests_the_kind_it_travels_with() {
     let source = "defmodule P do\n\
-         \x20 def pick([h | _]), do: h\n\
          \x20 def tag(x) when is_binary(x), do: 1\n\
          \x20 def tag(_), do: 0\n\
          end\n\
-         def main(), do: P.tag(P.pick([\"ab\", 7]))\n";
+         def main(), do: Enum.map([\"ab\", 7], &P.tag/1)\n";
     let clif = lowered_clif_of(source, "tag");
     let kind_shift = format!("= {}", fz_runtime::any_value::AnyValueRefPacking::current().tag_shift());
     let kind_reads = clif
@@ -9702,7 +9718,7 @@ fn compiler2_native_map_update_reads_the_kind_only_of_an_unproven_base() {
          \x20 def upd(v), do: %{v | a: 1}\n\
          end\n\
          def main(), do: P.upd(%{a: 0, b: 2})\n",
-        "upd",
+        "main",
     );
     assert!(
         !proven.contains("brif "),
@@ -9710,10 +9726,9 @@ fn compiler2_native_map_update_reads_the_kind_only_of_an_unproven_base() {
     );
     let unproven = lowered_clif_of(
         "defmodule P do\n\
-         \x20 def pick([h | _]), do: h\n\
          \x20 def upd(v), do: %{v | a: 1}\n\
          end\n\
-         def main(), do: P.upd(P.pick([%{a: 0}, :x]))\n",
+         def main(), do: Enum.map([%{a: 0}, :x], &P.upd/1)\n",
         "upd",
     );
     let lines: Vec<&str> = unproven.lines().collect();
@@ -9760,20 +9775,21 @@ fn branches_in(clif: &str) -> usize {
 /// edge would multiply the code by three with every clause added.
 #[test]
 fn compiler2_native_a_guarded_clause_chain_is_lowered_linearly() {
-    let clif_of = |clauses| lowered_clif_of(&guarded_closure_clauses(clauses), "pd");
-    let one = clif_of(1);
-    let eleven = clif_of(11);
+    let clif_of = |clauses| lowered_clif_text(&guarded_closure_clauses(clauses));
+    let (one, two, eleven) = (clif_of(1), clif_of(2), clif_of(11));
+    let per_clause = |count: fn(&str) -> usize| count(&two) - count(&one);
 
     assert_eq!(
-        branches_in(&eleven),
-        11 * branches_in(&one),
+        branches_in(&eleven) - branches_in(&one),
+        10 * per_clause(branches_in),
         "each clause's questions are asked once, not once per way of failing the clauses before it:\n{eleven}"
     );
+    let lines = |clif: &str| clif.lines().count();
     assert!(
-        eleven.lines().count() < 11 * one.lines().count() * 2,
-        "eleven clauses are about eleven times one clause: {} lines against {} for one",
-        eleven.lines().count(),
-        one.lines().count()
+        lines(&eleven) - lines(&one) < 10 * per_clause(lines) * 2,
+        "ten more clauses are about ten times one more: {} lines against {} for one more",
+        lines(&eleven) - lines(&one),
+        per_clause(lines)
     );
 }
 
@@ -9783,7 +9799,7 @@ fn compiler2_native_a_guarded_clause_chain_is_lowered_linearly() {
 /// kind to `fz_panic` and asks nothing at run time.
 #[test]
 fn compiler2_native_raising_a_static_literal_asks_nothing_of_its_kind() {
-    let clif = lowered_clif_of(&guarded_closure_clauses(1), "pd");
+    let clif = lowered_clif_of(&guarded_closure_clauses(1), "main");
     let panic_fn = clif
         .lines()
         .find_map(|line| {
@@ -9845,7 +9861,7 @@ fn compiler2_native_literal_binary_clauses_read_each_offset_and_length_once() {
          \x20 def val(_), do: 4\n\
          end\n\
          def main(), do: P.val(P.pick([\"false\", 7]))\n";
-    let clif = lowered_clif_of(source, "val");
+    let clif = lowered_clif_of(source, "main");
     let loads = |width: &str| {
         let load = format!(" = load.{width} ");
         clif.lines().filter(|line| line.contains(&load)).count()
@@ -9875,7 +9891,7 @@ fn compiler2_native_binary_clauses_joining_with_different_facts_lower_verified()
          \x20 def val(_), do: 7\n\
          end\n\
          def main(), do: P.val(P.pick([\"false\", 7]))\n";
-    let clif = lowered_clif_of(source, "val");
+    let clif = lowered_clif_of(source, "main");
     assert!(clif.contains("brif "), "the dispatch is lowered whole:\n{clif}");
 }
 
@@ -9944,7 +9960,7 @@ fn compiler2_native_field_read_asks_the_kind_only_of_an_unproven_base() {
          \x20 def read(v), do: v.a\n\
          end\n\
          def main(), do: P.read(%{a: 0, b: 2})\n",
-        "read",
+        "main",
     );
     assert!(
         !proven.contains("brif "),
@@ -9952,10 +9968,9 @@ fn compiler2_native_field_read_asks_the_kind_only_of_an_unproven_base() {
     );
     let unproven = lowered_clif_of(
         "defmodule P do\n\
-         \x20 def pick([h | _]), do: h\n\
          \x20 def read(v), do: v.a\n\
          end\n\
-         def main(), do: P.read(P.pick([%{a: 0}, 7]))\n",
+         def main(), do: Enum.map([%{a: 0}, 7], &P.read/1)\n",
         "read",
     );
     assert_eq!(
@@ -9974,7 +9989,7 @@ fn compiler2_native_index_read_asks_the_kind_only_of_an_unproven_base() {
          \x20 def read(v), do: v[:a]\n\
          end\n\
          def main(), do: P.read(%{a: 0, b: 2})\n",
-        "read",
+        "main",
     );
     assert!(
         !proven.contains("brif "),
@@ -9982,10 +9997,9 @@ fn compiler2_native_index_read_asks_the_kind_only_of_an_unproven_base() {
     );
     let unproven = lowered_clif_of(
         "defmodule P do\n\
-         \x20 def pick([h | _]), do: h\n\
          \x20 def read(v), do: v[:a]\n\
          end\n\
-         def main(), do: P.read(P.pick([%{a: 0}, 7]))\n",
+         def main(), do: Enum.map([%{a: 0}, 7], &P.read/1)\n",
         "read",
     );
     assert_eq!(
@@ -10022,7 +10036,7 @@ fn compiler2_native_share_is_inline_and_follows_the_shared_values_type() {
              \x20 def pair(a, b), do: {{a, b}}\n\
              \x20 def retained(v){guard}, do: pair(keep(v), v)\n\
              end\n\
-             def main(), do: P.retained({argument})\n"
+             def main(), do: Enum.map([{argument}], &P.retained/1)\n"
         )
     };
     let mark = format!("{:#x}", fz_runtime::any_value::BINARY_SHARED_MASK);
@@ -10062,7 +10076,7 @@ fn compiler2_native_share_is_inline_and_follows_the_shared_values_type() {
     );
 
     let stored = lowered_clif_of(
-        "defmodule P do\n  def boxed(v) when is_binary(v), do: %{k: {:ok, v}}\nend\ndef main(), do: P.boxed(\"ab\" <> \"cd\")\n",
+        "defmodule P do\n  def boxed(v) when is_binary(v), do: %{k: {:ok, v}}\nend\ndef main(), do: Enum.map([\"ab\" <> \"cd\"], &P.boxed/1)\n",
         "boxed",
     );
     assert!(
@@ -12617,17 +12631,21 @@ fn compiler2_native_program_resource_fixture_shapes_callable_boundaries_explicit
         vec![AbiValueRepr::RawInt],
         "resource destructor executable bodies should specialize their native entry lane to the raw payload type",
     );
-    let make_resource_id = function_id(&functions, "fz_make_resource", 2);
-    let make_resource_body = native_executable_body(&program, make_resource_id);
+    let make_resource = program
+        .module
+        .externs
+        .iter()
+        .find(|decl| decl.symbol == "fz_make_resource")
+        .expect("the program declares the make-resource extern");
     assert_eq!(
-        make_resource_body.param_reprs,
-        vec![AbiValueRepr::RawInt, AbiValueRepr::ValueRef],
-        "fz_make_resource/2 must take the payload through the raw integer lane and the destructor closure through the boxed value lane",
+        make_resource.params,
+        vec![ExternTy::I64, ExternTy::Any],
+        "the payload crosses as a raw integer and the destructor closure as a boxed value",
     );
     assert_eq!(
-        make_resource_body.return_reprs,
-        vec![AbiValueRepr::ValueRef],
-        "make_resource inspects fz_make_resource/2's result for the refusal `nil`, so the return is transported as a value ref",
+        make_resource.ret,
+        ExternTy::Any,
+        "make_resource inspects the result for the refusal `nil`, so the result comes back as a boxed value",
     );
 
     let native_callable_boundary = program
@@ -17994,7 +18012,7 @@ end
         224,
         "preserving the source list type avoids a redundant 16-byte cons"
     );
-    assert!(run.source_and_rebuild_share_return);
+    assert!(run.source_and_rebuild_are_both_kept);
     assert_eq!(run.output, ["{{[1, 2]}, [1, 2]}"]);
 }
 
@@ -18254,7 +18272,7 @@ struct ListRetentionRun {
     attempts: u64,
     reused: u64,
     bytes_used: usize,
-    source_and_rebuild_share_return: bool,
+    source_and_rebuild_are_both_kept: bool,
     output: Vec<String>,
 }
 
@@ -18294,23 +18312,61 @@ fn list_retention_run(name: &str, source: &str) -> ListRetentionRun {
     let exit = exits.last().expect("runtime process exit telemetry");
     let list = reuses.retention().list;
     let (_, constructions, physical_captures) = list_retention.last().expect("list-retention compilation telemetry");
-    let source_and_rebuild_share_return = list_retention_source_and_rebuild_share_return(&native.last(root_id).program);
+    let source_and_rebuild_are_both_kept =
+        list_retention_source_and_rebuild_are_both_kept(&native.last(root_id).program);
     ListRetentionRun {
         constructions,
         physical_captures,
         attempts: list.attempts(),
         reused: list.hits,
         bytes_used: exit.bytes_used,
-        source_and_rebuild_share_return,
+        source_and_rebuild_are_both_kept,
         output: dbg.lines(),
     }
 }
 
-fn list_retention_source_and_rebuild_share_return(program: &NativeProgram) -> bool {
+/// Whether the program keeps a retained list and the source it was rebuilt
+/// from, each in a tuple it builds: the rebuilt list and its source both leave
+/// the function that rebuilds them. A value that crosses a jump is the same
+/// value under the parameter's name.
+fn list_retention_source_and_rebuild_are_both_kept(program: &NativeProgram) -> bool {
+    use crate::fz_ir::Var;
     program.module.fns.iter().any(|function| {
-        function.blocks.iter().flat_map(|block| &block.stmts).any(|stmt| {
-            let IrStmt::Let(rebuilt, IrPrim::MakeList(_, _, Some(retention))) = stmt else { return false };
-            function.blocks.iter().any(|block| matches!(&block.terminator, IrTerm::ReturnLanes(lanes) if lanes.contains(&retention.source) && lanes.contains(rebuilt)))
+        let stmts = || function.blocks.iter().flat_map(|block| &block.stmts);
+        let mut passed_as: HashMap<Var, Vec<Var>> = HashMap::default();
+        for block in &function.blocks {
+            if let IrTerm::Goto(target, args) = &block.terminator {
+                let params = function
+                    .blocks
+                    .iter()
+                    .find(|b| b.id == *target)
+                    .map_or(&[][..], |b| &b.params);
+                for (param, arg) in params.iter().zip(args) {
+                    passed_as.entry(*param).or_default().push(*arg);
+                }
+            }
+        }
+        let origins = |var: Var| {
+            let (mut seen, mut pending) = (HashSet::default(), vec![var]);
+            while let Some(next) = pending.pop() {
+                if seen.insert(next) {
+                    pending.extend(passed_as.get(&next).into_iter().flatten().copied());
+                }
+            }
+            seen
+        };
+        let kept_in_a_tuple = |var: Var| {
+            let wanted = origins(var);
+            stmts().any(|stmt| {
+                matches!(stmt, IrStmt::Let(_, IrPrim::MakeTuple(fields))
+                    if fields.iter().any(|field| !origins(*field).is_disjoint(&wanted)))
+            })
+        };
+        stmts().any(|stmt| {
+            let IrStmt::Let(rebuilt, IrPrim::MakeList(_, _, Some(retention))) = stmt else {
+                return false;
+            };
+            kept_in_a_tuple(retention.source) && kept_in_a_tuple(*rebuilt)
         })
     })
 }
@@ -26540,10 +26596,12 @@ fn a_reach_waited_on_behind_a_parked_job_is_answered_before_the_drive_resolves()
 
 /// Kernel's `+` and `rem` are each their extern wrapper alone: the failure of
 /// the C call is a branch to the raise inside that wrapper, so no result
-/// decoder and no continuation stand between a caller and the C symbol.
+/// decoder and no continuation stand between a caller and the C symbol. Each
+/// wrapper is small enough to be copied into its callers, so the program has no
+/// function of either, and nothing resumes after an extern call.
 /// Fixture 01088 calls both.
 #[test]
-fn a_sum_and_a_remainder_each_compile_to_one_native_function() {
+fn a_sum_and_a_remainder_are_copied_into_their_callers_with_no_resume_after_their_extern_call() {
     let settled = Drive::fixture(1088).dump_stage(super::dump::DumpStage::Native);
     let names = settled
         .native_program()
@@ -26553,16 +26611,15 @@ fn a_sum_and_a_remainder_each_compile_to_one_native_function() {
         .map(|function| function.name.clone())
         .collect::<Vec<_>>();
     for operator in ["+__", "rem__", "fz_op_add_ii__", "fz_op_rem_ii__"] {
-        let of_operator = names
-            .iter()
-            .filter(|name| name.starts_with(operator) && !name.ends_with("__machine"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            of_operator.len(),
-            1,
-            "`{operator}` is one native function, with no resume after its extern call: {names:?}"
+        assert!(
+            !names.iter().any(|name| name.starts_with(operator)),
+            "`{operator}` is copied into its callers, so it has no function: {names:?}"
         );
     }
+    assert!(
+        !names.iter().any(|name| name.contains("__resume")),
+        "no continuation resumes after an extern call: {names:?}"
+    );
 }
 
 /// The bare drive is a frame on the drive stack. A product drive its serve loop
@@ -27034,7 +27091,7 @@ fn three_literal_clauses_on_one_argument_share_one_kind_test_and_header_load() {
             "  def val(<<\"false\", _r :: binary>>), do: 3\n",
             "  def val(_), do: 0\n",
             "end\n",
-            "def main(), do: P.val(:binary.copy(\"t\", 1) <> \"rue\")\n",
+            "def main(), do: Enum.map([:binary.copy(\"t\", 1) <> \"rue\"], &P.val/1)\n",
         ),
         "val",
     );
