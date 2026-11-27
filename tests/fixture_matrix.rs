@@ -101,6 +101,10 @@ use std::time::{Duration, Instant};
 mod child_limit;
 #[path = "fixture_matrix/child_limit_test.rs"]
 mod child_limit_test;
+#[path = "fixture_matrix/oracle_guard.rs"]
+mod oracle_guard;
+#[path = "fixture_matrix/oracle_guard_test.rs"]
+mod oracle_guard_test;
 
 use child_limit::{ChildLimit, SAMPLE_INTERVAL, Window, group_cpu_time};
 
@@ -412,6 +416,22 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             diagnostic_build_path_cleans_every_output,
         ),
         ("oracle_goldens_match_elixir", oracle_goldens_match_elixir),
+        (
+            "two_agreeing_runs_yield_that_output",
+            oracle_guard_test::two_agreeing_runs_yield_that_output,
+        ),
+        (
+            "two_differing_runs_fail_naming_the_fixture_and_both_outputs",
+            oracle_guard_test::two_differing_runs_fail_naming_the_fixture_and_both_outputs,
+        ),
+        (
+            "a_regen_that_differs_between_runs_leaves_the_golden_alone",
+            oracle_guard_test::a_regen_that_differs_between_runs_leaves_the_golden_alone,
+        ),
+        (
+            "a_regen_without_a_named_fixture_is_refused",
+            oracle_guard_test::a_regen_without_a_named_fixture_is_refused,
+        ),
         (
             "oracle_regen_leaves_a_golden_that_already_matches_untouched",
             oracle_regen_leaves_a_golden_that_already_matches_untouched,
@@ -2740,12 +2760,15 @@ fn run_path_logged_to(
 /// the Elixir output; `ORACLE=check` ignores stamps, runs Elixir for every pair
 /// and fails on any difference from the golden (the check after an Elixir
 /// upgrade; CI runs it on a pull request that changes the pinned Elixir or OTP
-/// version). `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture. Requires the `elixir` binary on PATH (Elixir 1.19+); a spawn
+/// version). `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture and `ORACLE=regen` requires it. Requires the `elixir` binary on PATH (Elixir 1.19+); a spawn
 /// failure fails loudly by design — the oracle is the signal, so a missing
 /// oracle is a hard error, not a skip.
 fn oracle_goldens_match_elixir() {
     let mode = OracleMode::from_env();
     let only = var("ORACLE_FIXTURE").ok();
+    if let Err(refusal) = oracle_guard::require_named_fixture_for_regen(mode, only.as_deref()) {
+        panic!("{refusal}");
+    }
     let mut failures: Vec<String> = Vec::new();
     let mut selected = 0usize;
     for fixture in discover() {
@@ -2803,7 +2826,7 @@ fn verify_oracle_pair(fixture: &FixtureCase, header: &Header, oracle_path: &Path
             failure: None,
         };
     }
-    let outcome = run_elixir_oracle(fixture, header, oracle_path).and_then(|actual| match mode {
+    let outcome = run_elixir_oracle_for(fixture, header, oracle_path, mode).and_then(|actual| match mode {
         OracleMode::Verify => compare_oracle_golden(fixture, &actual).and_then(|()| {
             if current {
                 Ok(())
@@ -2818,6 +2841,22 @@ fn verify_oracle_pair(fixture: &FixtureCase, header: &Header, oracle_path: &Path
         spawned_elixir: true,
         failure: outcome.err(),
     }
+}
+
+/// Elixir's output for one pair. A regen runs Elixir twice and accepts only an
+/// output both runs agree on.
+fn run_elixir_oracle_for(
+    fixture: &FixtureCase,
+    header: &Header,
+    oracle_path: &Path,
+    mode: OracleMode,
+) -> Result<String, String> {
+    let first = run_elixir_oracle(fixture, header, oracle_path)?;
+    if !matches!(mode, OracleMode::Regen) {
+        return Ok(first);
+    }
+    let second = run_elixir_oracle(fixture, header, oracle_path)?;
+    oracle_guard::require_one_answer(fixture, first, second)
 }
 
 /// The oracle bytes a stamp hashes: the twin's bytes, or for `oracle: self` the

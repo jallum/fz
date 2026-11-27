@@ -1,7 +1,7 @@
 #---
 # purpose: "Enum.uniq and uniq_by keep the first of each strictly equal value, in order, over 20,000 elements with thousands of distinct values, as Elixir does"
 # oracle: self
-# oracle.stamp: 5fe565f3a7df6a10
+# oracle.stamp: e62b8c1c3e6c665a
 #---
 #
 # Values are told apart strictly: 1 and 1.0 are both kept. The large inputs
@@ -22,7 +22,7 @@ defmodule Main do
     IO.inspect(Enum.uniq([1, 1.0, 1, 2, 2.0, 1.0, :a, "a", :a, {1, 2}, {1, 2}, {1, 2.0}, [1], [1], %{k: 1}, %{k: 1}, %{k: 1.0}]))
     IO.inspect(Enum.uniq_by([{1, :x}, {1.0, :y}, {1, :z}, {2, :w}], fn {k, _} -> k end))
     IO.inspect(Enum.uniq(Enum.map(1..100, fn i -> if rem(i, 2) == 0, do: i, else: i * 1.0 end)) |> length())
-    IO.inspect({Enum.uniq([]), Enum.uniq(%{a: 1, b: 1}), Enum.uniq_by(%{a: 1, b: 1}, fn {_, v} -> v end)})
+    IO.inspect({Enum.uniq([]), Enum.sort(Enum.uniq(%{a: 1, b: 1})), Enum.uniq_by(Enum.sort(%{a: 1, b: 1}), fn {_, v} -> v end)})
   end
 end
 
