@@ -140,7 +140,7 @@ where
 {
     fn struct_type(&mut self, module: &ModuleTarget, _span: Span) -> Result<Ty, SourcePatternError> {
         let module_id = self.world.resolve_module_target(self.namespace, module);
-        Ok(self.world.struct_value_ty(module_id, &[], &[]))
+        Ok(self.world.struct_record_ty(module_id, Vec::new()))
     }
 
     fn module_alias_atom(

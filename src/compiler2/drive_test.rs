@@ -25090,9 +25090,9 @@ fn only_erlang_error_normalises_and_a_rescue_converts_nothing() {
 /// The built-in exceptions are library modules, defined when something names
 /// them. An uncaught exception is asked for its message through its module, so
 /// a program defines the exceptions it can raise: here the `KeyError` it
-/// writes and the five the library code it reaches can raise (the update
+/// writes and the four the library code it reaches can raise (the update
 /// that raises it can raise `BadMapError` too), and none of the other
-/// sixteen. `Exception.message` is called on the `KeyError` alone, so
+/// seventeen. `Exception.message` is called on the `KeyError` alone, so
 /// no module without `message/1` is a target of its call.
 #[test]
 fn a_program_defines_only_the_exception_modules_it_can_raise() {
@@ -25103,7 +25103,6 @@ fn a_program_defines_only_the_exception_modules_it_can_raise() {
             "ArgumentError",
             "ArithmeticError",
             "BadMapError",
-            "FunctionClauseError",
             "KeyError",
             "Protocol.UndefinedError"
         ]
@@ -26849,4 +26848,38 @@ fn three_literal_clauses_on_one_argument_share_one_kind_test_and_header_load() {
         not_binary_tests, 0,
         "no clause asks again whether the subject is a binary:\n{clif}"
     );
+}
+
+/// `e in ArgumentError` binds `e` as an `%ArgumentError{}`, so the handler
+/// reads the struct it names, not the union of every exception the program
+/// can raise.
+#[test]
+fn a_rescued_exception_named_by_its_struct_has_that_struct_s_type() {
+    let settled = Drive::source(
+        "rescued_exception_type.fz",
+        "def raiser(n) when n > 0, do: raise(ArgumentError, \"x\")\ndef raiser(_n), do: raise(RuntimeError, \"y\")\n\ndef main() do\n  try do\n    raiser(:erlang.unique_integer())\n  rescue\n    e in ArgumentError -> e\n  end\nend\n",
+    )
+    .settle();
+    let main = settled.function("main", 0);
+    let ty = settled.return_types().last_for_function(settled.root(), main).return_ty;
+    let shown = settled.compiler().display_ty_for_test(ty);
+    assert!(
+        shown.contains("ArgumentError") && !shown.contains("RuntimeError"),
+        "main returns {shown}"
+    );
+}
+
+/// A struct pattern's type is the struct with every field it declares, so a
+/// value known only to match `%Point{}` has a proven `x` and `y`.
+#[test]
+fn a_struct_pattern_has_the_type_of_the_struct_with_its_declared_fields() {
+    let settled = Drive::source(
+        "struct_pattern_type.fz",
+        "defmodule Spot do\n  defstruct [:x, :y]\nend\n\ndef main() do\n  received =\n    receive do\n      message -> message\n    after\n      0 -> nil\n    end\n\n  case received do\n    %Spot{} = point -> point\n    _ -> nil\n  end\nend\n",
+    )
+    .settle();
+    let main = settled.function("main", 0);
+    let ty = settled.return_types().last_for_function(settled.root(), main).return_ty;
+    let shown = settled.compiler().display_ty_for_test(ty);
+    assert!(shown.contains(":x") && shown.contains(":y"), "main returns {shown}");
 }

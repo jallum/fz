@@ -496,7 +496,11 @@ one that names a module with no struct is `resolve/not-a-struct`, each under
 the name (fixtures `01315`, `01316`). Elixir warns for both; fz compiles the
 whole program at once, so such a clause can never match and is refused. A
 struct that is not an exception is accepted, as in Elixir. Matching itself is
-on the name's atom (`rescue_arms`).
+on the name's atom (`rescue_arms`). A clause that binds `e in Mod` matches the bound
+value against the pattern `%Mod{}` as well, so `e` has the type of `Mod` with every
+field it declares, not the union of every exception the program can raise. The struct
+pattern's type is `World::struct_record_ty`, so any `%Mod{}` pattern carries the
+struct's declared fields.
 
 A `try` with only a `do` block is `missing :catch/:rescue/:after option in
 "try"`; a repeated section is `duplicate "rescue" clauses given for "try"`; a
@@ -597,7 +601,7 @@ module:
 |---|---|
 | `exception(fields)`, a list | `struct!(__MODULE__, fields)` |
 | `exception(message)`, a binary, when `fields` has `:message` | `%__MODULE__{message: message}` |
-| `message(exception)`, when `fields` has `:message` | the `message` field |
+| `message(exception)`, when `fields` has `:message` | the `message` field, by the clause `message(%{message: message})`; a second clause, `message(_)`, answers `nil` so the function is total over every exception struct |
 
 Both are marked `defoverridable`, so a `def` of the same name and arity
 further down the module replaces the default, and the replaced default is
