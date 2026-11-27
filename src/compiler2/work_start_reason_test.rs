@@ -253,7 +253,7 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // A job gated on a fact its subject already carries never starts to
         // discover that fact missing, then wake once the fact lands
         // (`Job::missing_gates`).
-        (2803, 15, 31, 190),
+        (2814, 15, 31, 190),
         "ordinary generic helper work has the exact source/module/executable-fact census"
     );
     // Every applied work step is a run, and every run is charged to exactly
@@ -282,9 +282,10 @@ fn root_entries_and_caller_discovered_callees_share_the_activation_frontier() {
         // `DeriveRuntimeDemand` completions, the wakes that enqueued them,
         // and those wakes split by the prerequisite that caused each one:
         // construction target, settled executable facts, one exact runtime-
-        // demand input, the whole input vector, and unclassified.
+        // demand input or the activation's joined inputs, the whole input
+        // vector, and unclassified.
         // The last slot is zero because every wake names the fact that moved.
-        (408, 410, [24, 190, 0, 196, 0]),
+        (419, 421, [24, 190, 11, 196, 0]),
         "every demand completion and ordinary helper wake retains its precise cause",
     );
     assert_eq!(

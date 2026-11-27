@@ -213,6 +213,9 @@ pub struct World {
     callsite_targets: CallSiteTargetsMap,
     executable_facts: HashMap<ExecutableKey, std::rc::Rc<super::executable_facts::ExecutableFacts>>,
     callable_construction_targets: HashMap<CallableConstructionTargetKey, ExecutableKey>,
+    /// A projection is a function of its type alone: it reads the type
+    /// calculator and no fact, so an entry never goes stale and any job may
+    /// add one.
     runtime_demand_type_projections: HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>>,
     runtime_demands: HashMap<ExecutableKey, std::rc::Rc<ExecutableRuntimeDemand>>,
     runtime_demand_inputs: HashMap<ExecutableKey, Vec<RuntimeDemand>>,
@@ -481,6 +484,14 @@ impl World {
 
     pub(crate) fn runtime_demand_type_projection(&self, ty: Ty) -> Option<&std::rc::Rc<RuntimeDemandTypeProjection>> {
         self.runtime_demand_type_projections.get(&ty)
+    }
+
+    /// The types of `tys` that have no runtime-demand projection yet.
+    pub(crate) fn types_missing_runtime_demand_projection(&self, tys: &[Ty]) -> Vec<Ty> {
+        tys.iter()
+            .copied()
+            .filter(|ty| !self.runtime_demand_type_projections.contains_key(ty))
+            .collect()
     }
 
     pub(crate) fn runtime_demand_type_projections(&self) -> &HashMap<Ty, std::rc::Rc<RuntimeDemandTypeProjection>> {
@@ -1023,6 +1034,14 @@ impl World {
     pub(crate) fn activation_inputs_joined(&self, key: &ActivationKey) -> Option<&[Ty]> {
         self.fact_revision(&FactKey::ActivationInputs(key.clone()))?;
         Some(self.activation_inputs.get(key)?.joined())
+    }
+
+    /// The types an activation's inputs carry: the joined evidence its callers
+    /// published, or, for an activation with no input rows, the columns of its
+    /// key.
+    pub(crate) fn activation_input_types<'a>(&'a self, key: &'a ActivationKey) -> &'a [Ty] {
+        self.activation_inputs_joined(key)
+            .unwrap_or_else(|| key.inputs(&self.types))
     }
 
     pub fn activation_analysis(&self, key: &ActivationKey) -> Option<&ActivationAnalysis> {

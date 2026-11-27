@@ -1536,7 +1536,7 @@ fn target_fixture_reports_exercise_all_five_request_scenarios() {
                 runtime_demand.runtime_demand_evaluations,
                 // Executable facts are a pure function of their declared reads, so a reached leaf
                 // edit re-derives nothing it did not change and walks exactly the edited body.
-                [[109, 0, 0, 1, 4], [442, 0, 0, 1, 4], [466, 0, 0, 1, 4]][fixture_index][scenario],
+                [[109, 0, 0, 1, 4], [442, 0, 0, 1, 4], [477, 0, 0, 1, 4]][fixture_index][scenario],
                 "{fixture} {name}: count actual body walks, not scheduler completions; all scenarios: {:?}",
                 reports
                     .iter()
