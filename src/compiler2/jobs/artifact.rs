@@ -37,7 +37,7 @@ use super::super::semantic::ExecutableRuntimeDemand;
 use super::super::semantic::{ActivationAnalysis, CallSiteSummary, CallTargetSummary, SelectedCallee};
 #[cfg(test)]
 use super::super::transport::ShapeDescr;
-use super::super::transport::{ExecutableSymbol, PhysicalLaneSource, TransportPosition};
+use super::super::transport::{ExecutableSymbol, TransportPosition};
 use super::super::types::{Ty, Types};
 use super::super::world::World;
 use super::transport::{ClosureCallForm, closure_call_form, whole_value_layout};
@@ -1685,8 +1685,7 @@ fn build_abi_executable(
 }
 
 /// The typed lanes a layout occupies, and the physical form each travels in.
-/// A carrier lane is always the one public word; a structural lane takes the
-/// form its own type asks for.
+/// Every lane, carrier or structural, takes the form its own type asks for.
 fn backend_value_layout(world: &mut World, layout: TransportLayout) -> BackendValueLayout {
     let contract = abi_layout_contract(world, layout);
     BackendValueLayout {
@@ -1703,18 +1702,9 @@ pub(super) fn abi_layout_contract(world: &mut World, layout: TransportLayout) ->
         .into_iter()
         .map(|physical| {
             let ty = world.lane(physical.lane).ty;
-            (ty, physical_lane_repr(world, physical.source, ty))
+            (ty, AbiValueRepr::for_ty(world, ty))
         })
         .collect()
-}
-
-/// The form one physical lane travels in: a carrier is always the boxed word,
-/// a structural lane takes the form its type gives.
-pub(super) fn physical_lane_repr(world: &mut World, source: PhysicalLaneSource, ty: Ty) -> AbiValueRepr {
-    match source {
-        PhysicalLaneSource::Structural => AbiValueRepr::for_ty(world, ty),
-        PhysicalLaneSource::Carrier => AbiValueRepr::ValueRef,
-    }
 }
 
 /// A tail-position direct call whose callsite settled on no reachable target.

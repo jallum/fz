@@ -645,7 +645,7 @@ def main(), do: make()
     assert!(
         wrappers
             .iter()
-            .all(|wrapper| wrapper.return_form == super::artifact::BackendCallableReturn::ValueRef),
+            .all(|wrapper| wrapper.return_form == super::artifact::BackendCallableReturn::Stored),
         "published callable wrappers expose one public result word"
     );
     assert!(
@@ -655,7 +655,7 @@ def main(), do: make()
 }
 
 #[test]
-fn compiler2_callable_wrapper_keeps_capture_carriers_distinct_from_raw_arguments() {
+fn compiler2_callable_wrapper_capture_carrier_takes_the_form_its_type_gives() {
     let source = r#"
 def main() do
   flag = self() == self()
@@ -716,7 +716,11 @@ end
         })
         .expect("the boundary has a runtime wrapper member");
     assert_eq!(wrapper.captures[0].layout.structural, capture.structural);
-    assert_eq!(wrapper.captures[0].layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    assert_eq!(
+        wrapper.captures[0].layout.reprs.as_ref(),
+        &[AbiValueRepr::RawF64],
+        "a capture carrier's lane takes the form its type gives, as every lane does"
+    );
     let capture_input = &member
         .target_inputs
         .iter()

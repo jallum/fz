@@ -368,7 +368,7 @@ impl<'a, 'tel, T: crate::telemetry::Telemetry> NativeLowerer<'a, 'tel, T> {
                 .capture_reprs
                 .iter()
                 .copied()
-                .chain(std::iter::repeat_n(AbiValueRepr::ValueRef, boundary.call_arity))
+                .chain(std::iter::repeat_n(AbiValueRepr::Stored, boundary.call_arity))
                 .collect(),
             self.world.types_mut().any(),
             // A wrapper over members that all diverge never reaches a

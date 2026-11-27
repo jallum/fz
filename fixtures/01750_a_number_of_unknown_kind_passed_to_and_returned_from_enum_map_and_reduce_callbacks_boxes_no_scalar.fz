@@ -1,0 +1,47 @@
+#---
+# purpose: an integer or a float is passed to and returned from Enum.map and Enum.reduce callbacks that are chosen at run time as its word and kind, without boxing a scalar, and the answers are Elixir's
+# kind: run
+# oracle: 01750_a_number_of_unknown_kind_passed_to_and_returned_from_enum_map_and_reduce_callbacks_boxes_no_scalar.oracle.exs
+# oracle.stamp: a488bb4081d4f682
+#---
+#
+# The list holds integers and floats, so each element is a number of either
+# kind. Which callback runs comes out of a receive, so the call goes through a
+# closure, which takes each argument as a stored word and its kind and hands its
+# result back the same way. The program prints what a map and a reduce answer,
+# then runs a thousand of each and checks that none of them boxed a scalar.
+defmodule P do
+  def opaque(x) do
+    send(self(), x)
+
+    receive do
+      value -> value
+    end
+  end
+
+  def bump(list, up) do
+    Enum.map(list, if(up, do: fn x -> x + 1 end, else: fn x -> x - 1 end))
+  end
+
+  def total(list, up) do
+    Enum.reduce(list, 0, if(up, do: fn x, acc -> acc + x end, else: fn x, acc -> acc - x end))
+  end
+
+  def repeat(0, _list, acc), do: acc
+
+  def repeat(n, list, acc) do
+    repeat(n - 1, list, acc + length(bump(list, P.opaque(true))) + total(list, P.opaque(true)))
+  end
+end
+
+list = [1, 2.5, 3, 4.5]
+dbg(P.bump(list, P.opaque(true)))
+dbg(P.bump(list, P.opaque(false)))
+dbg(P.total(list, P.opaque(true)))
+dbg(P.total(list, P.opaque(false)))
+
+before = System.alloc_stats()[:scalar_box_allocs]
+sum = P.repeat(1000, list, 0)
+boxes = System.alloc_stats()[:scalar_box_allocs] - before
+dbg(sum)
+boxes == 0 || raise("a number crosses a callback as its word and kind, so map and reduce box no scalar")

@@ -109,7 +109,7 @@ fn resolve_return_flow_rejects_divergence_contradictions() {
 /// shipped green through every gate (the fz-kdt.157 pattern).
 /// A hand-built program with one Absent wrapper and one boxed closure
 /// call delivering a lane is the mismatch `a_mixed` hits when the
-/// producer half is reverted; agreement (ValueRef wrapper) must pass.
+/// producer half is reverted; agreement (Stored wrapper) must pass.
 #[test]
 fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
     use crate::compiler2::artifact::{
@@ -147,7 +147,7 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
             callee,
             value_layout(
                 TransportCarrier::ValueRef(LaneId::for_test(0)),
-                vec![AbiValueRepr::ValueRef],
+                vec![AbiValueRepr::Stored],
             ),
         );
         executable.body = BackendBody::Clauses {
@@ -175,7 +175,7 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
                         source: Box::new(BackendReturnLayout {
                             layout: value_layout(
                                 TransportCarrier::ValueRef(LaneId::for_test(0)),
-                                vec![AbiValueRepr::ValueRef],
+                                vec![AbiValueRepr::Stored],
                             ),
                             diverges: false,
                         }),
@@ -226,7 +226,7 @@ fn the_seam_tripwire_refuses_a_lane_mismatch_and_passes_agreement() {
         "a boxed call delivering one lane must refuse an Absent wrapper it can reach"
     );
     assert!(
-        program(BackendCallableReturn::ValueRef)
+        program(BackendCallableReturn::Stored)
             .validate_boxed_contract(&tel, RootId::for_test(0))
             .is_ok(),
         "agreement at one lane must pass"

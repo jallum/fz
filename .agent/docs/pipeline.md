@@ -209,9 +209,9 @@ never inventories World structs or decodes rendered types. Transport layouts
 remain on their exact ABI and materialized owners, not a root-wide aggregate.
 
 A callable target keeps its exact private return layout. A first-class callable
-wrapper publishes one uniform contract: `Diverges`, `Absent`, or one `ValueRef`
-for every nonempty returning result. Native lowering decodes the private target
-layout and materializes the public word once; no consumer derives a second
+wrapper publishes one uniform contract: `Diverges`, `Absent`, or one `Stored`
+(a word and its kind) for every nonempty returning result. Native lowering
+decodes the private target layout and materializes the stored word once; no consumer derives a second
 return contract from semantic types or target enumeration.
 
 The planning artifact `../pull-based.html` documents the pull-based design
@@ -845,12 +845,13 @@ follow, and they are two halves of one convention:
   demand, and retracts with its owning construction. This is the one place
   the seam's existence is a local fact, and it stops a grounded sibling
   callsite from erasing data the wrapper still hands back.
-- A call through the seam reads back one boxed word, whatever the caller does
-  with the result. The call's return position carries the recipe
-  `ClosureCallReturn`, and when the caller cannot supply the target's captures
-  that recipe resolves to the public callable return
-  (`public_callable_return_layout`): the result's own layout when it has one,
-  and one whole boxed word when the result is discarded. Whether a call goes
+- A call through the seam reads back one stored word and kind, whatever the
+  caller does with the result, and passes each argument the same way. The
+  call's return position carries the recipe `ClosureCallReturn`, and when the
+  caller cannot supply the target's captures that recipe resolves to the public
+  callable return (`public_callable_return_layout`): the result's own layout
+  when it has one, and one whole value when the result is discarded, with its
+  carrier lane typed `any`, so the lane is `Stored` for every callee. Whether a call goes
   through the seam is a property of the callee VALUE as transport sees it, not
   of the callsite and not of this body's demand: a callsite that names an
   exact target is still a boxed call when the same lambda is handed out of the
@@ -880,7 +881,7 @@ Getting either half alone is never a diagnostic on its own. Where the lane
 COUNTS differ the program dies at the first call — the wrapper writes its
 returned value into the register the continuation reads as its own closure
 pointer, and it aborts in `fz_closure_get_capture_atom`. Where the counts agree
-and the LANES do not, nothing dies: the caller reads the seam's boxed word as a
+and the LANES do not, nothing dies: the caller reads the seam's stored word as a
 raw integer and prints an address. So each backend body records its boxed-call
 argument arities and the exact reprs its destination expects, a tail call
 through the seam recording its own return reprs because that is what its caller
@@ -992,8 +993,9 @@ an unboxed tuple remains decomposed even when one child is boxed, and field
 projection interprets that child later without rebuilding the parent. A single
 `ValueRef` lane can therefore be a callable's capture, not its outer carrier;
 wrapper adapters read the layout, never infer semantic form from ABI width. ABI
-physical-layout contracts retain this provenance, so a carrier lane is always `ValueRef`; only a
-structural scalar lane may use a raw representation. A callable boundary keeps
+physical-layout contracts retain this provenance, so a carrier lane takes the form its type gives
+(`AbiValueRepr::for_ty`), as a structural lane does; the public return of a
+callable wrapper is typed `any`, so it is `Stored`. A callable boundary keeps
 surface argument layouts and its callable descriptor keeps capture layouts.
 Construction stores one complete runtime value per lexical capture. Wrappers
 project those values to the member's exact layouts through the existing
@@ -1190,7 +1192,7 @@ inventory. Boundary publication follows first-class callable surfaces,
 independently of whether any member returns. The wrapper owns all
 resolved members, retained captures, semantic input mappings, private member
 layouts, member selection, and one public return form: `Diverges`, `Absent`, or
-`ValueRef`. Every nonempty returning member adapts to that one public word;
+`Stored`. Every nonempty returning member adapts to that one stored word and kind;
 mixed empty and nonempty returning members are invalid. The public form is not
 copied from one private member or reconstructed from a semantic return type.
 The construction owner contributes every member's exact return contract.

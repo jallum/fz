@@ -78,7 +78,7 @@ pub struct BackendConstructionWrapper {
 pub enum BackendCallableReturn {
     Diverges,
     Absent,
-    ValueRef,
+    Stored,
 }
 
 impl BackendCallableReturn {
@@ -95,7 +95,7 @@ impl BackendCallableReturn {
         match self {
             Self::Diverges => None,
             Self::Absent => Some(Box::default()),
-            Self::ValueRef => Some(Box::new([AbiValueRepr::ValueRef])),
+            Self::Stored => Some(Box::new([AbiValueRepr::Stored])),
         }
     }
 }
