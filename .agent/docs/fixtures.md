@@ -391,12 +391,21 @@ tests `oracle_stamps_in_the_tree_are_current_so_no_elixir_starts` and
 - `ORACLE=regen` runs Elixir for each pair, rewrites `expected.txt` only when
   its normalized text differs from Elixir's normalized output (a matching
   golden stays byte for byte; empty output removes the file), and writes the
-  pair's `oracle.stamp` after the `oracle:` line.
+  pair's `oracle.stamp` after the `oracle:` line. It runs Elixir twice per
+  pair and, when the two outputs differ, writes nothing and fails naming the
+  fixture with both outputs. It requires `ORACLE_FIXTURE`; a bare
+  `ORACLE=regen` panics with a message saying to name the fixture.
 - `ORACLE=check` runs Elixir for every pair, ignoring stamps, and fails on any
   difference from the golden. Stamps do not hash the Elixir version, so CI
   runs it on every pull request whose `.github/workflows/ci.yml` changes an
   `otp-version` or `elixir-version` line (`.github/scripts/beam-pins` decides).
 - `ORACLE_FIXTURE=<stem>` narrows either mode to one fixture.
+
+**One defined output.** An oracle fixture prints what Elixir defines, so a
+result Elixir leaves unordered is normalized in the source: a map printed with
+`IO.inspect(x, custom_options: [sort_maps: true])`, or a map's enumeration
+passed through `Enum.sort`. A small atom-keyed map otherwise iterates in
+atom-creation order, which varies per VM start.
 
 ```
 ORACLE=regen cargo test --test fixture_matrix oracle_goldens_match_elixir

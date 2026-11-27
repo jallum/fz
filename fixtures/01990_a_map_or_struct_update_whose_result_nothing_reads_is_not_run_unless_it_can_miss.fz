@@ -2,7 +2,7 @@
 # purpose: "A map or struct update whose result is discarded compiles and runs: one that cannot miss is not emitted, and one that can miss still raises KeyError; the effects inside a discarded update still happen; a returned update is the control"
 # kind: run
 # oracle: self
-# oracle.stamp: 7568a79c9f435c50
+# oracle.stamp: f82e161f73e86b4a
 #---
 defmodule P do
   def upd(v), do: %{v | a: 1}
@@ -56,6 +56,6 @@ end
 IO.inspect(Main.discard_map())
 IO.inspect(Main.discard_struct())
 IO.inspect(Main.discard_miss())
-IO.inspect(Main.returned())
+IO.inspect(Main.returned(), custom_options: [sort_maps: true])
 IO.inspect(Main.discard_sending_update())
 IO.inspect(Main.discard_inline_sending_update())

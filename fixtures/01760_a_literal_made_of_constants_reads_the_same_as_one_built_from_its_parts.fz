@@ -1,7 +1,7 @@
 #---
 # purpose: "a list, tuple or map written out of constants holds the value its source writes, and matches, updates and compares like one built from variables"
 # oracle: self
-# oracle.stamp: 9d3e12de40af88e5
+# oracle.stamp: ec54ce281706a6b5
 #---
 #
 # A literal whose every part is a constant is one constant in the compiled
@@ -23,12 +23,12 @@ defmodule Main do
     IO.inspect(options())
     IO.inspect(point())
     IO.inspect({first(point()), second(point())})
-    IO.inspect({table(), table().b, map_size(table())})
+    IO.inspect({table(), table().b, map_size(table())}, custom_options: [sort_maps: true])
     IO.inspect({mixed()["k"], mixed()[2], mixed()[{3, 4}]})
     IO.inspect(built(:boolean, 1) == {options(), table()})
     IO.inspect({[], {}, %{}, [[]], {[], %{}}})
     IO.inspect([0 | [1, 2, 3]] ++ [4, 5])
-    IO.inspect(%{table() | a: 10})
+    IO.inspect(%{table() | a: 10}, custom_options: [sort_maps: true])
     IO.inspect(wrapped(point() |> elem(0)))
 
     case {:ok, [1, 2]} do
