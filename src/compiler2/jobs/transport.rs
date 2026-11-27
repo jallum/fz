@@ -531,7 +531,6 @@ pub(super) fn position_ty(
         TransportPosition::ExecutableInput { semantic_index, .. } => {
             Some(joined_input_ty(world, executable, *semantic_index))
         }
-        TransportPosition::ExecutableReturn { .. } => world.activation_return(&executable.activation),
         TransportPosition::Value { value, .. } => Some(value_ty(world, value)),
         TransportPosition::CallArg {
             callsite,
@@ -548,7 +547,7 @@ pub(super) fn position_ty(
             })
         }
         // The payload is the CALLSITE RESULT's contract. A tail-positioned
-        // call's result IS the caller's return, so those alias; a delivered
+        // call's result IS the caller's return, so those alias (the guarded arm below); a delivered
         // result has its own value, whose type and demand are the contract --
         // a discarded result carries no demand and publishes no lanes, the
         // same zero its callee-side boundary derives, unless the call crosses
@@ -556,12 +555,13 @@ pub(super) fn position_ty(
         // word the wrapper hands back. Deriving the delivered case from the
         // caller's OWN return instead compiled the two halves of one calling
         // convention against different lane counts.
+        TransportPosition::ExecutableReturn { .. } => world.activation_return(&executable.activation),
+        TransportPosition::ReturnPayload { .. } if position_aliases_caller_return(facts, position) => {
+            world.activation_return(&executable.activation)
+        }
         TransportPosition::ReturnPayload { callsite, .. } => {
-            let caller_return_ty = world.activation_return(&executable.activation)?;
-            Some(match callsite_result(facts.body(), *callsite) {
-                Some((value, false)) => value_ty(world, &value),
-                _ => caller_return_ty,
-            })
+            let (value, _) = callsite_result(facts.body(), *callsite)?;
+            Some(value_ty(world, &value))
         }
         TransportPosition::EntryCapture {
             entry, capture_index, ..
@@ -1696,6 +1696,20 @@ pub(super) fn callsite_result(body: &LoweredBody, callsite: CallSiteId) -> Optio
             Some((*value, matches!(dest, ControlDestination::Return)))
         }
         _ => None,
+    }
+}
+
+/// Whether the position's type is the caller's own return type: its return,
+/// and the payload of a call that is the caller's return. A delivered call's
+/// payload and a resume payload carry the type of the one value delivered, so a
+/// caller that never returns still has them.
+pub(super) fn position_aliases_caller_return(facts: &ExecutableFacts, position: &TransportPosition) -> bool {
+    match position {
+        TransportPosition::ExecutableReturn { .. } => true,
+        TransportPosition::ReturnPayload { callsite, .. } => {
+            !matches!(callsite_result(facts.body(), *callsite), Some((_, false)))
+        }
+        _ => false,
     }
 }
 

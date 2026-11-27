@@ -552,10 +552,7 @@ fn zero_lane_inputs_preserve_tuple_structure_without_inventing_absence() {
                 .is_semantically_absent(),
             index == 0
         );
-        let layout = crate::compiler2::BackendReturnLayout {
-            layout: input.layout.clone(),
-            diverges: false,
-        };
+        let layout = input.layout.clone();
         let result = bind_delivered_value(
             &transport,
             &empty_backend_program(),

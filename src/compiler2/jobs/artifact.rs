@@ -347,7 +347,7 @@ struct ExecutableAbiPlan {
     param_reprs: Vec<AbiValueRepr>,
     semantic_inputs: Box<[BackendSemanticInputLayout]>,
     return_layout: BackendReturnLayout,
-    return_endpoints: Box<[(TransportPosition, BackendReturnLayout)]>,
+    return_endpoints: Box<[(TransportPosition, BackendValueLayout)]>,
     value_layouts: ValueMap<BackendValueLayout>,
 }
 
@@ -1602,7 +1602,6 @@ fn build_executable_abi_plan(
         .return_payload_positions
         .iter()
         .chain(transport.resume_positions.iter())
-        .chain(std::iter::once(return_position))
         .map(|position| {
             let layout = transport_plan
                 .layout_at(position)
@@ -1610,14 +1609,11 @@ fn build_executable_abi_plan(
             let contract = abi_layout_contract(world, layout);
             (
                 position.clone(),
-                BackendReturnLayout {
-                    layout: BackendValueLayout {
-                        structural: layout.structural,
-                        carrier: layout.carrier,
-                        tys: contract.iter().map(|(ty, _)| *ty).collect(),
-                        reprs: contract.iter().map(|(_, repr)| *repr).collect(),
-                    },
-                    diverges: world.types().is_empty(&executable.return_ty),
+                BackendValueLayout {
+                    structural: layout.structural,
+                    carrier: layout.carrier,
+                    tys: contract.iter().map(|(ty, _)| *ty).collect(),
+                    reprs: contract.iter().map(|(_, repr)| *repr).collect(),
                 },
             )
         })

@@ -33,8 +33,8 @@ use super::transport::{
     DirectClosureTarget, RecipeLayout, TransportRecipe, assemble_local_callable, bottom_transport_layout,
     callable_capture_demands, callable_capture_tys, contract_transport_layout, cut_transport_layout,
     entry_capture_value, evaluate_transport_recipe, executable_key_for_transport_position, local_callable_construction,
-    origin_transport_recipe, position_demand, position_requires_value_ref, position_ty, resume_payload_origin,
-    return_edge_is_cut, with_value_ref_carrier,
+    origin_transport_recipe, position_aliases_caller_return, position_demand, position_requires_value_ref, position_ty,
+    resume_payload_origin, return_edge_is_cut, with_value_ref_carrier,
 };
 use fz_engine::{FactUse, FatalError, SemanticOrd};
 
@@ -420,10 +420,8 @@ impl LayoutInputs {
     /// cut: a return with no type yet and a position nothing is demanded of
     /// are bottom without it.
     fn asks_the_cut(&self, world: &World, position: &TransportPosition, recipe: &TransportRecipe) -> bool {
-        let typed = !matches!(
-            position,
-            TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. }
-        ) || world.activation_return(&self.executable.activation).is_some();
+        let typed = !position_aliases_caller_return(&self.facts, position)
+            || world.activation_return(&self.executable.activation).is_some();
         typed && !demands_nothing(&position_demand(&self.facts, &self.runtime, position), recipe)
     }
 
@@ -588,7 +586,7 @@ impl<'i> ExecutableLayouts<'i> {
         let activation = self.inputs.executable.activation.clone();
         match position {
             TransportPosition::ExecutableInput { .. } => self.settled(world, FactKey::ActivationInputs(activation)),
-            TransportPosition::ExecutableReturn { .. } | TransportPosition::ReturnPayload { .. } => {
+            _ if position_aliases_caller_return(&self.inputs.facts, position) => {
                 self.settled(world, FactKey::ReturnType(activation))
             }
             _ => true,

@@ -239,7 +239,7 @@ end
         .return_endpoints
         .iter()
         .filter(|(position, _)| matches!(position, TransportPosition::ResumePayload { .. }))
-        .map(|(_, layout)| layout.layout.reprs.as_ref())
+        .map(|(_, layout)| layout.reprs.as_ref())
         .collect::<Vec<_>>();
     assert_eq!(
         joins,
@@ -286,8 +286,8 @@ end
         .iter()
         .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the non-tail call has a delivered return endpoint");
-    assert_eq!(resume.layout.structural, producer.abi.return_layout.layout.structural);
-    assert_eq!(resume.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
+    assert_eq!(resume.structural, producer.abi.return_layout.layout.structural);
+    assert_eq!(resume.reprs.as_ref(), &[AbiValueRepr::RawF64]);
     let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
         panic!("main has clauses")
     };
@@ -529,8 +529,8 @@ def main(), do: inc(1.0)
             .then_some(layout)
         })
         .expect("the callsite payload has an emitted ABI endpoint");
-    assert_eq!(endpoint.layout.structural, *payload_shape);
-    assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::RawF64]);
+    assert_eq!(endpoint.structural, *payload_shape);
+    assert_eq!(endpoint.reprs.as_ref(), &[AbiValueRepr::RawF64]);
 }
 
 #[test]
@@ -591,9 +591,9 @@ fn compiler2_transport_flow_names_non_tail_return_payload_position() {
             .then_some(layout)
         })
         .expect("the non-tail producer payload has an emitted ABI endpoint");
-    assert_eq!(endpoint.layout.structural, payload_shape);
+    assert_eq!(endpoint.structural, payload_shape);
     assert!(
-        !endpoint.layout.reprs.is_empty(),
+        !endpoint.reprs.is_empty(),
         "producer payload retains physical ABI lanes"
     );
     let super::artifact::BackendBody::Clauses { entries, .. } = &retained_executable(&program, &executable).body else {
@@ -956,11 +956,8 @@ end
         .iter()
         .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the tuple call has a continuation endpoint");
-    assert_eq!(endpoint.layout.structural, pair_return);
-    assert_eq!(
-        endpoint.layout.reprs.as_ref(),
-        &[AbiValueRepr::RawF64, AbiValueRepr::RawInt]
-    );
+    assert_eq!(endpoint.structural, pair_return);
+    assert_eq!(endpoint.reprs.as_ref(), &[AbiValueRepr::RawF64, AbiValueRepr::RawInt]);
     let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
         panic!("main has clauses")
     };
@@ -1055,8 +1052,8 @@ end
         .iter()
         .find_map(|(position, layout)| matches!(position, TransportPosition::ResumePayload { .. }).then_some(layout))
         .expect("the binary result has a continuation endpoint");
-    assert_eq!(endpoint.layout.structural, id_box_return);
-    assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
+    assert_eq!(endpoint.structural, id_box_return);
+    assert_eq!(endpoint.reprs.as_ref(), &[AbiValueRepr::ValueRef]);
     let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
         panic!("main has clauses")
     };
@@ -1383,11 +1380,11 @@ end
         .return_endpoints
         .iter()
         .find_map(|(position, layout)| {
-            (matches!(position, TransportPosition::ResumePayload { .. }) && layout.layout.structural == double_return)
+            (matches!(position, TransportPosition::ResumePayload { .. }) && layout.structural == double_return)
                 .then_some(layout)
         })
         .expect("double/1 has an emitted continuation endpoint");
-    assert_eq!(endpoint.layout.reprs.as_ref(), &[AbiValueRepr::RawInt]);
+    assert_eq!(endpoint.reprs.as_ref(), &[AbiValueRepr::RawInt]);
     let super::artifact::BackendBody::Clauses { entries, .. } = &consumer.body else {
         panic!("main has clauses")
     };
@@ -2029,9 +2026,9 @@ fn assert_tuple_returned_callable_resume_publishes_its_boundary(source: &str) {
         .iter()
         .position(|lane| lane.lane == boundary.1.published_value_lane)
         .expect("the resumed tuple physically carries its published closure word");
-    assert_eq!(endpoint.layout.structural, resume_shape);
+    assert_eq!(endpoint.structural, resume_shape);
     assert_eq!(
-        endpoint.layout.reprs[closure_index],
+        endpoint.reprs[closure_index],
         AbiValueRepr::ValueRef,
         "the returned callable enters the continuation as a published closure pointer"
     );

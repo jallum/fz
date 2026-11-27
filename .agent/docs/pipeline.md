@@ -757,6 +757,20 @@ wrapper construction and packaging, not for rediscovering how the call is made.
 Public delivery names the caller-owned `ReturnPayload` as its source and adapts
 it into the separate delivered-resume destination.
 
+Only two positions carry the caller's own return type:
+the executable's `ExecutableReturn` and the `ReturnPayload` of a call in tail
+position (`transport::position_aliases_caller_return` is the one authority;
+`position_ty`, `asks_the_cut` and `position_fact_settled` all ask it). The
+`ReturnPayload` of a delivered call and a `ResumePayload` carry the type of the
+one value delivered, so an executable that never returns still lays them out
+from that value. `diverges` is a fact of the executable's own return alone:
+`BackendReturnLayout { layout, diverges }` is `AbiReadyExecutable::return_layout`
+(and a construction member's `target_return`), while
+`AbiReadyExecutable::return_endpoints` hold plain `BackendValueLayout`s for the
+payload and resume positions, which exist only because a callee returned.
+`resolve_return_flow` asks whether a source position is a diverging executable
+return (`ReturnEndpoints::diverges`).
+
 That decision is carried by the emitted call form itself. A
 `BackendTail::ClosureCall` carries the `ClosureCallEdge` its artifact edge was
 minted with, and that one value is what every consumer reads. Native lowers
@@ -1224,8 +1238,8 @@ the requested ABI; there is no construction-set lookup or duplicated payload.
 Packaged call flow is `NoReturn`, `Tail`, `Continue { source }`, or
 `Deliver { source, entry }`. Every settled-empty callsite or exact target
 publishes `NoReturn` before physical packaging, including public indirect
-calls. A local target's return endpoint must independently agree that it
-diverges. `Continue` and `Deliver` carry the resolved source return layout; a
+calls. A local target's executable return must independently agree that it
+diverges. `Continue` and `Deliver` carry the resolved source `BackendValueLayout`; a
 divergent target carries no delivery layout and creates no continuation. Native
 callable wrappers likewise tail-call divergent members while returning members,
 including returning zero-lane members, retain their return adapters. The caller

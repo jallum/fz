@@ -961,7 +961,7 @@ impl ProgramCanon<'_> {
             BackendEntryOrigin::Handler => "handler".to_string(),
             BackendEntryOrigin::DeliveredResume { value, layout } => {
                 let name = self.names.value(*value);
-                format!("delivered_resume {name} {}", self.return_layout(layout))
+                format!("delivered_resume {name} {}", self.layout(layout))
             }
         }
     }
@@ -1380,9 +1380,9 @@ impl ProgramCanon<'_> {
         match flow {
             BackendReturnFlow::NoReturn => "no_return".to_string(),
             BackendReturnFlow::Tail => "tail".to_string(),
-            BackendReturnFlow::Continue { source } => format!("continue({})", self.return_layout(source)),
+            BackendReturnFlow::Continue { source } => format!("continue({})", self.layout(source)),
             BackendReturnFlow::Deliver { source, entry } => {
-                format!("deliver({}) e{}", self.return_layout(source), entry.as_u32())
+                format!("deliver({}) e{}", self.layout(source), entry.as_u32())
             }
         }
     }
