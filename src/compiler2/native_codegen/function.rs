@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::compiler2::NativeEntryAbi;
-use crate::fast_hash::HashMap;
+use crate::fast_hash::{HashMap, HashSet};
 use crate::fz_ir::{Block, FnIr, Prim, SourceInfo, Stmt};
 use crate::ir_dce::classify_var_uses;
 use crate::source::Span;
@@ -63,13 +63,15 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         }
     }
 
+    let (if_only, all_used) = classify_var_uses(f);
+    let if_only: HashSet<u32> = if_only.into_iter().map(|v| v.0).collect();
     for blk in &f.blocks {
         if blk.id == f.entry {
             continue;
         }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         for p in &blk.params {
-            append_block_param_for_repr(&mut b, cl_blk, block_param_repr(native_body, p));
+            append_block_param_for_repr(&mut b, cl_blk, block_param_repr(native_body, &if_only, p));
         }
     }
 
@@ -105,11 +107,8 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
 
     body.cache.own_continuation = self_ref;
     body.cache.loop_head = loops.then_some(entry_cl);
-    {
-        let (if_only, all_used) = classify_var_uses(f);
-        body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
-        body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
-    }
+    body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
+    body.cache.if_only_conds = if_only;
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
     order.push(f.block(f.entry));
@@ -126,7 +125,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
             let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
             let mut param_cursor = 0;
             for p in &blk.params {
-                let repr = block_param_repr(native_body, p);
+                let repr = block_param_repr(native_body, &body.cache.if_only_conds, p);
                 var_env.insert(p.0, take_param_binding(&params, &mut param_cursor, repr));
             }
         }

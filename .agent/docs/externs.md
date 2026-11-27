@@ -303,6 +303,15 @@ A row answers in one of three shapes (`Emitted`) and no others:
 - `Condition`: an `I8` the next branch uses directly. It is a
   `CodegenValue::Condition` when every use of the variable is a branch
   (`if_only_conds`), the atom boolean otherwise (`condition_value`).
+  `if_only_conds` (`ir_dce::classify_var_uses`) also holds a variable that
+  only a `Goto` hands on to a block parameter that is itself branch-only, when
+  that block has exactly one predecessor and is not the function's entry. Such
+  a parameter is an `I8` block parameter (`block_param_repr`), and a `Goto`
+  edge turns its argument into the condition (`value_truthy` unless it already
+  is one). The entry is excluded because calls, frames and continuations supply
+  its parameters; every other block is reached only by a `Goto`, `If` or `Try`
+  of its own function, so a condition never reaches a frame, a capture or an
+  extern.
 - `Checked`: a value and the `I8` condition that says it failed, in place of
   the C scalar pair. The failed field is bound the same way a `Condition` is,
   and the same holds for a checked extern that has no row: the pair's boolean

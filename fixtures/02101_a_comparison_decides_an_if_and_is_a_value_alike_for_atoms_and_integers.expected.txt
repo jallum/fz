@@ -1,0 +1,28 @@
+{:then, :else, :then, :else}
+{true, false, true, false}
+{true, :then, {:then, true}, :then}
+[true, false, true, false]
+{:else, :then, :else, :then}
+{false, true, false, true}
+{false, :else, {:else, false}, :else}
+[false, true, false, true]
+{:else, :then, :else, :then}
+{false, true, false, true}
+{false, :else, {:else, false}, :else}
+[false, true, false, true]
+{:then, :else, :then, :else}
+{true, false, true, false}
+{true, :then, {:then, true}, :then}
+[true, false, true, false]
+{:then, :else, :then, :else}
+{true, false, true, false}
+{true, :then, {:then, true}, :then}
+[true, false, true, false]
+{:else, :then, :else, :then}
+{false, true, false, true}
+{false, :else, {:else, false}, :else}
+[false, true, false, true]
+{:then, :else, :then, :else}
+{true, false, true, false}
+{true, :then, {:then, true}, :then}
+[true, false, true, false]

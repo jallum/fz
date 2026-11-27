@@ -9286,6 +9286,52 @@ fn compiler2_native_partition_step_over_proven_integers_calls_no_runtime_functio
     assert!(clif.contains(" = icmp slt "), "the head is compared in place:\n{clif}");
 }
 
+/// `if a == b` over two atoms is the instruction pair the comparison is: one
+/// `icmp` of the two atom ids, which the `brif` takes as a raw condition.
+/// No atom boolean is selected, nothing re-tests one, and the runtime's
+/// equality is not called.
+#[test]
+fn compiler2_native_if_on_an_atom_equality_branches_on_one_icmp() {
+    let source = "defmodule P do\n\
+         \x20 def same(a, b), do: if(a == b, do: 1, else: 2)\n\
+         end\n\
+         def main(), do: IO.inspect(P.same(String.to_atom(\"x\"), String.to_atom(\"y\")))\n";
+    let clif = lowered_clif_of(source, "same");
+    assert_eq!(clif.matches("brif ").count(), 1, "one branch:\n{clif}");
+    assert!(clif.contains(" = icmp eq "), "the atom ids are compared:\n{clif}");
+    assert_eq!(clif.matches(" = icmp ").count(), 1, "one comparison:\n{clif}");
+    for retest in [" = select ", " = bor ", " = bxor_imm "] {
+        assert!(
+            !clif.contains(retest),
+            "no atom boolean is built or re-tested ({retest}):\n{clif}"
+        );
+    }
+    assert!(
+        !declared_functions(&clif).contains(&"fz_op_eq"),
+        "the runtime's equality is not called:\n{clif}"
+    );
+}
+
+/// A comparison that an `if` branches on and the function also returns is a
+/// value as well as a condition: the branch does not take the value from it.
+#[test]
+fn compiler2_native_a_comparison_used_by_an_if_and_as_a_value_stays_a_value() {
+    let source = "defmodule P do\n\
+         \x20 def both(a, b) do\n\
+         \x20   same = a == b\n\
+         \x20   if same, do: {1, same}, else: {0, same}\n\
+         \x20 end\n\
+         end\n\
+         def main() do\n\
+         \x20 x = String.to_atom(\"x\")\n\
+         \x20 y = String.to_atom(\"y\")\n\
+         \x20 {then_arm, kept_true} = P.both(x, x)\n\
+         \x20 {else_arm, kept_false} = P.both(x, y)\n\
+         \x20 then_arm * 1000 + (if kept_true, do: 100, else: 0) + else_arm * 10 + (if kept_false, do: 1, else: 0)\n\
+         end\n";
+    assert_eq!(halt_values_of_processes_sharing_one_program(source, 1), vec![1100]);
+}
+
 /// A list that ends in a value that is not a list is read through the
 /// runtime's tail only when the link says so: the terminator flag is tested
 /// where the tail is read, and a proper list never reaches the call.

@@ -25,9 +25,11 @@ pub(crate) enum ArgRepr {
     RawF64,
     RawAtom,
     Stored,
-    /// Raw i1 from a comparison or TypeTest whose var is in `if_only_conds`
-    /// — the tagged form is never materialised unless tagged_get is called,
-    /// which emits bool_to_fz lazily at the use site.
+    /// A raw condition (`I8`) from a comparison or type test whose var is in
+    /// `if_only_conds`: only branches read it, so the tagged form is never
+    /// built. It is also the form of a block parameter that only branches
+    /// read; such a block has one predecessor and is not the entry, so no
+    /// call, frame or continuation supplies the parameter.
     Condition,
 }
 
@@ -35,7 +37,7 @@ impl ArgRepr {
     pub(crate) fn cl_type(&self) -> types::Type {
         match self {
             ArgRepr::RawF64 => types::F64,
-            ArgRepr::Condition => unreachable!("Condition vars are never block/fn params"),
+            ArgRepr::Condition => types::I8,
             _ => types::I64,
         }
     }
@@ -105,9 +107,17 @@ impl ExternLane for ExternTy {
     }
 }
 
-/// The form a block parameter arrives in. A parameter the native body does not
-/// name travels as a value reference.
-pub(crate) fn block_param_repr(native_body: &crate::compiler2::NativeBody, param: &crate::fz_ir::Var) -> ArgRepr {
+/// The form a block parameter arrives in. A parameter only branches read
+/// (`if_only_conds`) arrives as the raw condition; a parameter the native body
+/// does not name travels as a value reference.
+pub(crate) fn block_param_repr(
+    native_body: &crate::compiler2::NativeBody,
+    if_only_conds: &crate::fast_hash::HashSet<u32>,
+    param: &crate::fz_ir::Var,
+) -> ArgRepr {
+    if if_only_conds.contains(&param.0) {
+        return ArgRepr::Condition;
+    }
     native_body
         .block_param_reprs
         .get(param)

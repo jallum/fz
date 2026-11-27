@@ -397,7 +397,11 @@ impl GotoEdges<'_> {
         let mut arg_vals = Vec::with_capacity(args.len());
         for (arg, param) in args.iter().zip(params) {
             let binding = *var_env.get(&arg.0).expect("unbound goto arg");
-            body.push_binding_as_abi_arg(&mut arg_vals, binding, block_param_repr(self.native_body, param));
+            body.push_binding_as_abi_arg(
+                &mut arg_vals,
+                binding,
+                block_param_repr(self.native_body, &body.cache.if_only_conds, param),
+            );
         }
         let arg_vals: Vec<BlockArg> = arg_vals.into_iter().map(BlockArg::Value).collect();
         body.b.ins().jump(successor, &arg_vals);
