@@ -119,11 +119,24 @@ impl<'a> TermComparator<'a> {
         if a_kind.is_binary_repr() && b_kind.is_binary_repr() {
             return unsafe { Bin::of_stored(a, a_kind).cmp(&Bin::of_stored(b, b_kind)) };
         }
+        self.decoded_key_order(a, a_kind, b, b_kind)
+    }
+
+    /// The order of two stored keys the words and kinds do not settle by
+    /// themselves: by class when the classes differ, else from the decoded values.
+    #[inline(never)]
+    fn decoded_key_order(&self, a: u64, a_kind: ValueKind, b: u64, b_kind: ValueKind) -> Ordering {
+        // Two kinds of different class order by class, with nothing decoded.
+        if let (Some(a_class), Some(b_class)) = (kind_category(a_kind), kind_category(b_kind))
+            && a_class != b_class
+        {
+            return a_class.cmp(&b_class);
+        }
         let a = AnyValue::decode_parts(a, a_kind.tag()).expect("stored map key");
         let b = AnyValue::decode_parts(b, b_kind.tag()).expect("stored map key");
         assert_language_value(a);
         assert_language_value(b);
-        self.order(a, b, NumericMode::Strict)
+        self.order_decoded(a, b, NumericMode::Strict)
     }
 
     /// `key_order` of two keys held as values.
@@ -139,6 +152,11 @@ impl<'a> TermComparator<'a> {
         if let Some(order) = same_simple_kind_cmp(self.node, a, b) {
             return order;
         }
+        self.order_decoded(a, b, mode)
+    }
+
+    /// `order` for a pair the scalar question has already been asked of.
+    fn order_decoded(&self, a: AnyValue, b: AnyValue, mode: NumericMode) -> Ordering {
         let category = self.category(a);
         let order = category.cmp(&self.category(b));
         if order != Ordering::Equal {
@@ -177,19 +195,10 @@ impl<'a> TermComparator<'a> {
     /// Where a value stands among the kinds of term. A struct stands with the
     /// maps, whichever layout holds it.
     pub(crate) fn category(&self, value: AnyValue) -> Category {
-        match value.kind() {
-            ValueKind::INT | ValueKind::FLOAT => Category::Number,
-            ValueKind::ATOM => Category::Atom,
-            ValueKind::REF => Category::Reference,
-            ValueKind::PID => Category::Pid,
-            ValueKind::RESOURCE => Category::Resource,
-            ValueKind::CLOSURE => Category::Closure,
-            ValueKind::STRUCT if self.struct_map_keys(address(value)).is_some() => Category::Map,
-            ValueKind::STRUCT => Category::Tuple,
-            ValueKind::MAP => Category::Map,
-            ValueKind::LIST => Category::List,
-            ValueKind::BITSTRING | ValueKind::BINVIEW => Category::Bitstring,
-            _ => unreachable!("runtime value kind"),
+        match kind_category(value.kind()) {
+            Some(category) => category,
+            None if self.struct_map_keys(address(value)).is_some() => Category::Map,
+            None => Category::Tuple,
         }
     }
 
@@ -534,6 +543,7 @@ fn is_bitstring(value: AnyValue) -> bool {
 /// The order of two values of one simple kind, which needs neither the
 /// category lookup nor the mode: two scalars by their words, two bitstrings by
 /// their bits. A float is excluded because the mode decides how it orders.
+#[inline(always)]
 fn same_simple_kind_cmp(node: &Node, a: AnyValue, b: AnyValue) -> Option<Ordering> {
     stored_scalar_order(node, Stored::of(a), Stored::of(b)).or_else(|| match (a, b) {
         (AnyValue::HeapRef(_), AnyValue::HeapRef(_)) if is_bitstring(a) && is_bitstring(b) => {
@@ -554,6 +564,24 @@ fn same_simple_kind_equal(a: AnyValue, b: AnyValue) -> Option<bool> {
             Some(bin_of(a) == bin_of(b))
         }
         _ => None,
+    })
+}
+
+/// The class a kind of value stands in, or `None` for a struct, whose schema
+/// decides between tuple and map.
+fn kind_category(kind: ValueKind) -> Option<Category> {
+    Some(match kind {
+        ValueKind::INT | ValueKind::FLOAT => Category::Number,
+        ValueKind::ATOM => Category::Atom,
+        ValueKind::REF => Category::Reference,
+        ValueKind::PID => Category::Pid,
+        ValueKind::RESOURCE => Category::Resource,
+        ValueKind::CLOSURE => Category::Closure,
+        ValueKind::MAP => Category::Map,
+        ValueKind::LIST => Category::List,
+        ValueKind::BITSTRING | ValueKind::BINVIEW => Category::Bitstring,
+        ValueKind::STRUCT => return None,
+        _ => unreachable!("runtime value kind"),
     })
 }
 
